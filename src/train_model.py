@@ -1,12 +1,12 @@
 import torch
-import yaml
+import json
 import hashlib
 import sys
 import shutil
 import subprocess
 import datetime
 from pathlib import Path
-from datasets import load_from_disk
+from datasets import load_dataset
 from transformers import LlamaConfig, LlamaForCausalLM, Trainer, TrainingArguments, PreTrainedTokenizerFast, DataCollatorForLanguageModeling
 
 # ログ設定
@@ -33,89 +33,52 @@ sys.stderr = Logger(log_file)
 
 print(f"CUDA available: {torch.cuda.is_available()}", flush=True)
 
-# Paths
-# Now loaded from config
-# DATASET_PATH = Path("data/dataset")
-# TOKENIZER_PATH = Path("data/tokenizer.json")
-# OUTPUT_DIR = Path("models/novel-llm-llama")
-
 def get_git_revision_hash():
     try:
         return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
     except:
         return "unknown"
 
-def get_model_class(model_type):
-    if model_type == "llama":
-        return LlamaConfig, LlamaForCausalLM
-    raise ValueError(f"Unsupported model type: {model_type}")
-
 def load_config(config_path):
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
-
-def get_dataset_hash(dataset):
-    return hashlib.md5(str(dataset['train'][:100]).encode()).hexdigest()
-
-def save_metadata(output_dir, config_path, dataset_hash, git_hash):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Copy config
-    shutil.copy(config_path, output_dir / "config.yaml")
-    
-    # Save meta
-    with open(output_dir / "dataset_meta.txt", "w") as f:
-        f.write(f"dataset_hash: {dataset_hash}\n")
-        f.write(f"git_hash: {git_hash}\n")
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def train(config_path):
-    yaml_config = load_config(config_path)
+    config = load_config(config_path)
     git_hash = get_git_revision_hash()
     
-    # Paths from config
-    dataset_path = Path(yaml_config['paths']['dataset_path'])
-    tokenizer_path = Path(yaml_config['paths']['tokenizer_path'])
-    output_dir_base = Path(yaml_config['paths'].get('output_dir', 'models/output'))
-    
+    # データのロード
     print("Starting dataset load...")
-    dataset = load_from_disk(str(dataset_path))
-    dataset_hash = get_dataset_hash(dataset)
+    dataset = load_dataset("json", data_files=config['data_path'])
     print(f"Dataset loaded. Size: {len(dataset['train'])}")
-    print(f"Dataset hash: {dataset_hash}")
-    print(f"Git commit: {git_hash}")
     
-    # Load tokenizer
+    # トークナイザー設定 (仮: data/tokenizer.json があると仮定)
     print("Loading tokenizer...")
-    tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path))
-    tokenizer.pad_token = yaml_config['tokenizer']['pad_token']
-    tokenizer.bos_token = yaml_config['tokenizer']['bos_token']
-    tokenizer.eos_token = yaml_config['tokenizer']['eos_token']
+    tokenizer = PreTrainedTokenizerFast(tokenizer_file="data/tokenizer.json")
+    tokenizer.pad_token = "[PAD]"
+    tokenizer.bos_token = "[CLS]"
+    tokenizer.eos_token = "[SEP]"
     print("Tokenizer loaded.")
 
-    # Model initialization via factory
+    # モデル初期化
     print("Initializing model...")
-    config_cls, model_cls = get_model_class(yaml_config['model']['type'])
-    
-    config = config_cls(
-        **yaml_config['model']['params'],
+    model_config = LlamaConfig(
+        **config['model_params'],
         pad_token_id=tokenizer.pad_token_id,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id
     )
-    
-    model = model_cls(config)
+    model = LlamaForCausalLM(model_config)
     print("Model initialized.")
     
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     
     print("Initializing trainer...")
-    # Use output_dir from training config or fall back to paths config
-    output_dir = yaml_config['training'].pop('output_dir', str(output_dir_base))
-    
     training_args = TrainingArguments(
-        output_dir=output_dir,
-        **yaml_config['training']
+        output_dir="models/output",
+        learning_rate=config['hpo']['max_lr_2d'],
+        per_device_train_batch_size=config['hpo']['batch_size_seqs'],
+        num_train_epochs=1,
     )
     
     trainer = Trainer(
@@ -124,23 +87,14 @@ def train(config_path):
         train_dataset=dataset['train'],
         data_collator=data_collator,
     )
+    
     print("Trainer initialized. Starting training...", flush=True)
+    trainer.train()
     
-    try:
-        trainer.train()
-    except Exception as e:
-        print(f"Error during training: {e}", flush=True)
-        raise e
-    
-    model.save_pretrained(output_dir)
-    tokenizer.save_pretrained(output_dir)
-    
-    # Save metadata
-    save_metadata(output_dir, config_path, dataset_hash, git_hash)
-    
-    print(f"Training finished. Metadata saved to {output_dir}")
+    model.save_pretrained("models/output")
+    tokenizer.save_pretrained("models/output")
+    print("Training finished.")
 
 if __name__ == "__main__":
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "config/config.yaml"
+    config_path = sys.argv[1]
     train(config_path)
-
