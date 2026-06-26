@@ -3,8 +3,8 @@ import json
 import os
 from pathlib import Path
 
-# 設定: 相対パスで指定
-DB_PATH = Path("tools/data_import/novels.db")
+# 設定: 指定したデータパスを使用
+DB_PATH = Path(r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\data\novels.db")
 OUTPUT_FILE = Path("data/dataset.jsonl")
 
 def export():
