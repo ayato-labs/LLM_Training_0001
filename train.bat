@@ -1,16 +1,14 @@
 @echo off
-echo Starting LLM Training...
-echo Using virtual environment at .venv
+setlocal
 
-:: Ensure the environment is present
-if not exist ".venv\Scripts\python.exe" (
-    echo Virtual environment not found. Please run setup first.
-    pause
-    exit /b
-)
+:: Use argument if provided, otherwise default to config/config.yaml
+set CONFIG_FILE=%1
+if "%~1"=="" set CONFIG_FILE=config\config.yaml
 
-:: Run the training script
-.venv\Scripts\python.exe src\train_model.py
+echo Running training with: %CONFIG_FILE%
 
-echo Training finished.
+:: Run the script
+.venv\Scripts\python.exe -u src\train_model.py %CONFIG_FILE%
+
 pause
+endlocal
