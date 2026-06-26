@@ -1,0 +1,21 @@
+{
+    "model_params": {
+        "n_params": 60000000,
+        "hidden_size": 768,
+        "num_hidden_layers": 12,
+        "num_attention_heads": 12
+    },
+    "hpo": {
+        "n_params": 60000000,
+        "n_tokens": 5000000,
+        "seq_len": 512,
+        "max_lr_2d": 0.00058,
+        "max_lr_1d": 0.000173,
+        "min_lr": 1e-05,
+        "batch_size_tokens": 3877,
+        "batch_size_seqs": 7,
+        "stable_lr_ratio": 0.55,
+        "stable_lr_2d": 0.000319
+    },
+    "data_path": "data/dataset.jsonl"
+}

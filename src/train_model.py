@@ -47,19 +47,29 @@ def train(config_path):
     config = load_config(config_path)
     git_hash = get_git_revision_hash()
     
-    # データのロード
-    print("Starting dataset load...")
-    dataset = load_dataset("json", data_files=config['data_path'])
-    print(f"Dataset loaded. Size: {len(dataset['train'])}")
-    
-    # トークナイザー設定 (仮: data/tokenizer.json があると仮定)
+    # トークナイザー設定
     print("Loading tokenizer...")
     tokenizer = PreTrainedTokenizerFast(tokenizer_file="data/tokenizer.json")
     tokenizer.pad_token = "[PAD]"
     tokenizer.bos_token = "[CLS]"
     tokenizer.eos_token = "[SEP]"
     print("Tokenizer loaded.")
-
+    
+    # データのロード
+    print("Starting dataset load...")
+    dataset = load_dataset("json", data_files=config['data_path'])
+    
+    # テキストのトークン化
+    def tokenize_function(examples):
+        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=512)
+    
+    tokenized_datasets = dataset.map(tokenize_function, batched=True)
+    # 不必要な列を削除
+    tokenized_datasets = tokenized_datasets.remove_columns(["text", "metadata"])
+    # 形式を整える
+    tokenized_datasets.set_format("torch")
+    print(f"Dataset loaded. Size: {len(tokenized_datasets['train'])}")
+    
     # モデル初期化
     print("Initializing model...")
     model_config = LlamaConfig(
@@ -77,14 +87,17 @@ def train(config_path):
     training_args = TrainingArguments(
         output_dir="models/output",
         learning_rate=config['hpo']['max_lr_2d'],
-        per_device_train_batch_size=config['hpo']['batch_size_seqs'],
+        per_device_train_batch_size=1, # バッチサイズを最小にする
+        gradient_accumulation_steps=16, # 累積を増やす
+        gradient_checkpointing=True, # Gradient Checkpointingを有効化
         num_train_epochs=1,
+        remove_unused_columns=False,
     )
     
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=dataset['train'],
+        train_dataset=tokenized_datasets['train'],
         data_collator=data_collator,
     )
     

@@ -1,7 +1,12 @@
 import json
 import subprocess
 import sys
+import os
 from pathlib import Path
+
+# プロジェクトルートをパスに追加してモジュール解決できるようにする
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from LLM_Hyperparameter_Optimization.src.step_law import compute_hpo_for_target
 
 def scale_hpo_to_target(proxy_hpo, target_params):
@@ -18,8 +23,9 @@ def scale_hpo_to_target(proxy_hpo, target_params):
 
 def orchestrate():
     # 1. ハードウェア制約 (RTX 3050 4GB VRAM)
-    target_params = 125_000_000 # 限界値
-    proxy_params = 70_000_000   # 探索用モデル
+    # RTX 3050 で動作させるためにサイズをさらに縮小
+    target_params = 60_000_000 
+    proxy_params = 30_000_000   # 探索用モデル
     n_tokens = 5_000_000
     
     print(f"Orchestrator: Starting Proxy Exploration (Size: {proxy_params})")

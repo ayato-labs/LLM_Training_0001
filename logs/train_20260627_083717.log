@@ -1,0 +1,93 @@
+CUDA available: True
+Loading tokenizer...
+Tokenizer loaded.
+Starting dataset load...
+Dataset loaded. Size: 1482
+Initializing model...
+Model initialized.
+Initializing trainer...
+Trainer initialized. Starting training...
+  0%|          | 0/212 [00:00<?, ?it/s]  0%|          | 0/212 [00:00<?, ?it/s]Traceback (most recent call last):
+Traceback (most recent call last):
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\src\train_model.py", line 111, in <module>
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\src\train_model.py", line 111, in <module>
+        train(config_path)train(config_path)
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\src\train_model.py", line 103, in train
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\src\train_model.py", line 103, in train
+        trainer.train()trainer.train()
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1433, in train
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1433, in train
+        return inner_training_loop(return inner_training_loop(
+
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1515, in _inner_training_loop
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1515, in _inner_training_loop
+        self._run_epoch(self._run_epoch(
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1743, in _run_epoch
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1743, in _run_epoch
+        tr_loss_step = self.training_step(model, inputs, num_items_in_batch)tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1915, in training_step
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1915, in training_step
+        loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1987, in compute_loss
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1987, in compute_loss
+        outputs = model(**inputs)outputs = model(**inputs)
+
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1736, in _wrapped_call_impl
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1736, in _wrapped_call_impl
+        return self._call_impl(*args, **kwargs)return self._call_impl(*args, **kwargs)
+
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1747, in _call_impl
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\nn\modules\module.py", line 1747, in _call_impl
+        return forward_call(*args, **kwargs)return forward_call(*args, **kwargs)
+
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\utils\generic.py", line 907, in wrapper
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\utils\generic.py", line 907, in wrapper
+        output = func(self, *args, **kwargs)output = func(self, *args, **kwargs)
+
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\models\llama\modeling_llama.py", line 491, in forward
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\models\llama\modeling_llama.py", line 491, in forward
+        loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\loss\loss_utils.py", line 70, in ForCausalLMLoss
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\loss\loss_utils.py", line 70, in ForCausalLMLoss
+        loss = fixed_cross_entropy(logits, shift_labels, num_items_in_batch, ignore_index, **kwargs)loss = fixed_cross_entropy(logits, shift_labels, num_items_in_batch, ignore_index, **kwargs)
+
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\loss\loss_utils.py", line 40, in fixed_cross_entropy
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\loss\loss_utils.py", line 40, in fixed_cross_entropy
+        loss = nn.functional.cross_entropy(source, target, ignore_index=ignore_index, reduction=reduction)loss = nn.functional.cross_entropy(source, target, ignore_index=ignore_index, reduction=reduction)
+
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\nn\functional.py", line 3479, in cross_entropy
+  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\nn\functional.py", line 3479, in cross_entropy
+        return torch._C._nn.cross_entropy_loss(return torch._C._nn.cross_entropy_loss(
+
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+torchtorch..OutOfMemoryErrorOutOfMemoryError: : CUDA out of memory. Tried to allocate 438.00 MiB. GPU 0 has a total capacity of 4.00 GiB of which 0 bytes is free. Of the allocated memory 10.18 GiB is allocated by PyTorch, and 340.60 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)CUDA out of memory. Tried to allocate 438.00 MiB. GPU 0 has a total capacity of 4.00 GiB of which 0 bytes is free. Of the allocated memory 10.18 GiB is allocated by PyTorch, and 340.60 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+  0%|          | 0/212 [00:27<?, ?it/s]  0%|          | 0/212 [00:27<?, ?it/s]
+
