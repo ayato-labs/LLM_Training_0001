@@ -1,21 +1,12 @@
 @echo off
 setlocal
 
-:: 現在のバッチファイルの場所をベースにパスを構築
 cd /d "%~dp0"
 
-echo ==========================================
-echo Starting Novel LLM Training Pipeline...
-echo ==========================================
+echo Starting Training Pipeline...
 
-:: 仮想環境の Python を絶対パスで確実に指定
-:: 現在のディレクトリの下に .venv がある前提
-call .venv\Scripts\activate.bat
-python tools\orchestrator.py
+.\.venv\Scripts\python.exe tools\orchestrator.py
 
-echo.
-echo ==========================================
-echo Training Pipeline Finished.
-echo ==========================================
+echo Finished.
 pause
 endlocal
