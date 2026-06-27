@@ -4,7 +4,8 @@ import sys
 import os
 from pathlib import Path
 from LLM_Hyperparameter_Optimization.src.step_law import compute_hpo_for_target
-import project_config as config  # 改名に対応
+import project_config as config
+from src.preprocessing.exporter import export_db_to_jsonl
 
 def get_optimal_target_params(n_tokens):
     """
@@ -48,7 +49,11 @@ def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers
     return metrics.get("train_loss", float("inf"))
 
 def orchestrate():
-    # 1. 動的パラメータ算出
+    # 0. 前処理の実行 (責務：学習プロジェクトの一部)
+    print("Orchestrator: Running preprocessing...")
+    export_db_to_jsonl()
+    
+    # 1. ハードウェア制約とスケーリング定義
     n_tokens = 5_000_000
     target_params = get_optimal_target_params(n_tokens)
     proxy_params = int(target_params * 0.05) # 5%サイズ

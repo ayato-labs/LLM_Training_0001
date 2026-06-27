@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 echo ==========================================
-echo Setting up environment and training...
+echo Starting Novel LLM Training Pipeline...
 echo ==========================================
 
 :: Activate virtual environment
