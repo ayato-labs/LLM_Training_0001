@@ -12,6 +12,7 @@ llm_training.egg-info/
 models/
 data/
 dataset.jsonl
+data/dataset.jsonl
 
 # Virtual environments
 .venv
