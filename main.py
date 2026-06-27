@@ -64,8 +64,11 @@ def orchestrate():
     proxy_layers = max(2, int(12 * ratio))
     proxy_heads = max(2, int(12 * ratio))
     
-    # hidden_size が heads で割り切れるように調整
-    proxy_hidden = (proxy_hidden_raw // proxy_heads) * proxy_heads
+    # hidden_size が heads で割り切れ、かつ head_dim が偶数になるように調整
+    head_dim = (proxy_hidden_raw // proxy_heads)
+    if head_dim % 2 != 0:
+        head_dim += 1
+    proxy_hidden = head_dim * proxy_heads
 
     print(f"Orchestrator: Target {target_params} params, Proxy {proxy_params} params (H:{proxy_hidden}, L:{proxy_layers})")
     

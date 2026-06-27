@@ -72,14 +72,24 @@ def train(config_path):
     
     # モデル初期化
     print("Initializing model...")
+    # config['model_params'] から hidden_size を取り除いて渡す
+    params = config['model_params'].copy()
+    params.pop('hidden_size', None)
+    
+    # hidden_size が num_attention_heads の倍数になるように保証
+    hidden_size = config['model_params']['hidden_size']
+    num_heads = config['model_params']['num_attention_heads']
+    adjusted_hidden_size = (hidden_size // num_heads) * num_heads
+    
     model_config = LlamaConfig(
-        **config['model_params'],
+        **params,
+        hidden_size=adjusted_hidden_size,
         pad_token_id=tokenizer.pad_token_id,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id
     )
     model = LlamaForCausalLM(model_config)
-    print("Model initialized.")
+    print(f"Model initialized with hidden_size={adjusted_hidden_size}")
     
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     
@@ -87,12 +97,8 @@ def train(config_path):
     max_steps = config.get('max_steps', -1)
     
     print("Initializing trainer...")
-    # num_train_epochs と max_steps の排他制御を修正
-    if max_steps == -1:
-        num_epochs = 1
-        max_steps = -1 # Trainerは -1 を無視する
-    else:
-        num_epochs = None # max_steps が設定されている場合は epochs を None にする
+    # 明示的に None ではなく 0 や -1 を設定して検証を回避
+    num_epochs = 1 if max_steps == -1 else 0
     
     training_args = TrainingArguments(
         output_dir="models/output",
@@ -101,7 +107,7 @@ def train(config_path):
         gradient_accumulation_steps=16,
         gradient_checkpointing=True,
         num_train_epochs=num_epochs,
-        max_steps=max_steps,
+        max_steps=max_steps if max_steps != -1 else -1,
         remove_unused_columns=False,
     )
     
