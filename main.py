@@ -4,7 +4,7 @@ import sys
 import os
 from pathlib import Path
 from LLM_Hyperparameter_Optimization.src.step_law import compute_hpo_for_target
-import project_config as config
+import training_config as config
 from src.preprocessing.exporter import export_db_to_jsonl
 
 def get_optimal_target_params(n_tokens):
@@ -42,7 +42,7 @@ def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=4)
         
-    subprocess.run([sys.executable, "src/training/train_model.py", str(config_path)], check=True)
+    subprocess.run([sys.executable, "src/train.py", str(config_path)], check=True)
     
     with open("last_run_result.json", "r", encoding="utf-8") as f:
         metrics = json.load(f)
@@ -54,7 +54,7 @@ def orchestrate():
     export_db_to_jsonl()
     
     # 1. ハードウェア制約とスケーリング定義
-    n_tokens = 5_000_000
+    n_tokens = config.TARGET_TOKENS
     target_params = get_optimal_target_params(n_tokens)
     proxy_params = int(target_params * 0.05) # 5%サイズ
     
@@ -73,7 +73,7 @@ def orchestrate():
     print(f"Orchestrator: Target {target_params} params, Proxy {proxy_params} params (H:{proxy_hidden}, L:{proxy_layers})")
     
     # 2. 探索フェーズ
-    base_hpo = compute_hpo_for_target(n_params=proxy_params, n_tokens=n_tokens, seq_len=512)
+    base_hpo = compute_hpo_for_target(n_params=proxy_params, n_tokens=n_tokens, seq_len=config.SEQ_LEN)
     base_lr = base_hpo['max_lr_2d']
     candidates = [base_lr * 0.5, base_lr, base_lr * 2.0]
     
@@ -83,7 +83,7 @@ def orchestrate():
     print("Orchestrator: Starting Dynamic Proxy Exploration...")
     for lr in candidates:
         print(f"Testing LR: {lr}")
-        loss = run_experiment_dynamic(proxy_params, n_tokens, lr, 50, proxy_hidden, proxy_layers, proxy_heads)
+        loss = run_experiment_dynamic(proxy_params, n_tokens, lr, config.MAX_STEPS, proxy_hidden, proxy_layers, proxy_heads)
         print(f"Loss: {loss}")
         if loss < min_loss:
             min_loss = loss
@@ -92,7 +92,7 @@ def orchestrate():
     print(f"Best LR found: {best_lr}")
     
     # 3. 本番用パラメータへ外挿
-    final_hpo = compute_hpo_for_target(n_params=target_params, n_tokens=n_tokens, seq_len=512)
+    final_hpo = compute_hpo_for_target(n_params=target_params, n_tokens=n_tokens, seq_len=config.SEQ_LEN)
     scaling_factor = best_lr / base_lr
     final_hpo['max_lr_2d'] *= scaling_factor
     final_hpo['max_lr_1d'] *= scaling_factor
@@ -113,7 +113,7 @@ def orchestrate():
         json.dump(run_config, f, indent=4)
         
     print("Orchestrator: Launching Final Training...")
-    subprocess.run([sys.executable, "src/train_model.py", "current_run_config.json"], check=True)
+    subprocess.run([sys.executable, "src/train.py", "current_run_config.json"], check=True)
 
 if __name__ == "__main__":
     orchestrate()

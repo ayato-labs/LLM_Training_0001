@@ -3,11 +3,13 @@ import json
 import hashlib
 import sys
 import shutil
+import os
 import subprocess
 import datetime
 from pathlib import Path
 from datasets import load_dataset
 from transformers import LlamaConfig, LlamaForCausalLM, Trainer, TrainingArguments, PreTrainedTokenizerFast, DataCollatorForLanguageModeling
+import training_config as prj_config
 
 # ログ設定
 log_dir = Path("logs")
@@ -32,6 +34,93 @@ sys.stdout = Logger(log_file)
 sys.stderr = Logger(log_file)
 
 print(f"CUDA available: {torch.cuda.is_available()}", flush=True)
+
+class CustomTrainer(Trainer):
+    def __init__(self, *args, additional_config=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.additional_config = additional_config
+
+    def create_optimizer(self):
+        if self.optimizer is not None:
+            return self.optimizer
+        
+        model = self.model
+        config = self.additional_config
+        
+        lr_2d = config['hpo']['max_lr_2d']
+        lr_1d = config['hpo']['max_lr_1d']
+        
+        params_2d = []
+        params_1d = []
+        for n, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            # 1D/AdamW target parameters (Embeddings, Layernorms, Biases, classifier head)
+            if len(p.shape) < 2 or "embed" in n or "norm" in n or "bias" in n or "lm_head" in n:
+                params_1d.append(p)
+            else:
+                params_2d.append(p)
+                
+        try:
+            from muon import Muon
+            print(f"Optimizer: Using Muon for 2D params (lr={lr_2d}) and AdamW for 1D params (lr={lr_1d})", flush=True)
+            self.optimizer = Muon(
+                params_2d,
+                lr=lr_2d,
+                momentum=0.95,
+                adamw_params=dict(
+                    params=params_1d,
+                    lr=lr_1d,
+                    betas=(0.9, 0.95),
+                    weight_decay=0.01
+                )
+            )
+        except ImportError:
+            print("Optimizer: Muon not found. Falling back to split AdamW optimizer.", flush=True)
+            from torch.optim import AdamW
+            self.optimizer = AdamW([
+                {'params': params_2d, 'lr': lr_2d, 'weight_decay': 0.0},
+                {'params': params_1d, 'lr': lr_1d, 'weight_decay': 0.01}
+            ], betas=(0.9, 0.95))
+            
+        return self.optimizer
+
+def generate_deepspeed_config(n_params, vram_limit_gb):
+    # 2 bytes weight (fp16) + 12 bytes optimizer states per parameter
+    est_vram_gb = (n_params * 14) / (1024**3)
+    
+    # Enable CPU offload only if estimated VRAM exceeds 80% of limit
+    offload_device = "cpu" if est_vram_gb > (vram_limit_gb * 0.8) else "none"
+    
+    ds_config = {
+        "fp16": {
+            "enabled": True
+        },
+        "zero_optimization": {
+            "stage": 2,
+            "allgather_partitions": True,
+            "allgather_bucket_size": 2e8,
+            "overlap_comm": True,
+            "reduce_scatter": True,
+            "reduce_bucket_size": 2e8
+        },
+        "gradient_accumulation_steps": "auto",
+        "train_batch_size": "auto"
+    }
+    
+    if offload_device == "cpu":
+        ds_config["zero_optimization"]["offload_optimizer"] = {
+            "device": "cpu",
+            "pin_memory": True
+        }
+        print(f"DeepSpeed: Estimated VRAM ({est_vram_gb:.2f} GB) exceeds 80% of limit ({vram_limit_gb} GB). Enabling CPU Optimizer Offload.", flush=True)
+    else:
+        print(f"DeepSpeed: Estimated VRAM ({est_vram_gb:.2f} GB) fits within VRAM limit ({vram_limit_gb} GB). Running entirely on GPU.", flush=True)
+        
+    ds_config_path = "temp_ds_config.json"
+    with open(ds_config_path, "w", encoding="utf-8") as f:
+        json.dump(ds_config, f, indent=2)
+    return ds_config_path
 
 def get_git_revision_hash():
     try:
@@ -109,31 +198,61 @@ def train(config_path):
     # 明示的に None ではなく 0 や -1 を設定して検証を回避
     num_epochs = 1 if max_steps == -1 else 0
     
+    # スケーリングに対応した動的バッチサイズ・DeepSpeed設定の生成
+    hpo_config = config['hpo']
+    target_total_batch_seqs = hpo_config.get('batch_size_seqs', 16)
+    
+    # VRAMサイズとモデル規模からDeepSpeed構成を決定
+    # パラメータ数が指定されていなければデフォルト125Mとする
+    n_params_est = config['model_params'].get('n_params', 125_000_000)
+    vram_limit = prj_config.VRAM_LIMIT_GB
+    ds_config_path = generate_deepspeed_config(n_params_est, vram_limit)
+    
+    # 適切な1デバイスあたりバッチサイズと勾配蓄積ステップの計算
+    # 32GB以上の大容量VRAMを活かすため、初期は最大8バッチから開始し、OOM時はauto_find_batch_sizeでスケールダウンする
+    per_device_batch = min(target_total_batch_seqs, 8)
+    grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
+    
+    warmup_ratio = hpo_config.get('warmup_ratio', 0.03)
+
     training_args = TrainingArguments(
         output_dir="models/output",
-        learning_rate=config['hpo']['max_lr_2d'],
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=16,
+        learning_rate=hpo_config['max_lr_2d'],
+        per_device_train_batch_size=per_device_batch,
+        auto_find_batch_size=True,
+        gradient_accumulation_steps=grad_accum_steps,
         gradient_checkpointing=True,
         num_train_epochs=num_epochs,
         max_steps=max_steps if max_steps != -1 else -1,
         remove_unused_columns=False,
+        lr_scheduler_type="cosine",
+        warmup_ratio=warmup_ratio,
+        deepspeed=ds_config_path if torch.cuda.is_available() else None,
     )
     
-    trainer = Trainer(
+    trainer = CustomTrainer(
         model=model,
         args=training_args,
         train_dataset=tokenized_datasets['train'],
         data_collator=data_collator,
+        additional_config=config,
     )
     
-    print("Trainer initialized. Starting training...", flush=True)
+    print(f"Trainer initialized with batch_size={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})", flush=True)
+    print("Starting training...", flush=True)
     train_result = trainer.train()
     
     # 学習結果の記録
     with open("last_run_result.json", "w", encoding="utf-8") as f:
         json.dump(train_result.metrics, f)
     
+    # 一時的なDeepSpeed設定ファイルをクリーンアップ
+    if os.path.exists(ds_config_path):
+        try:
+            os.remove(ds_config_path)
+        except:
+            pass
+            
     model.save_pretrained("models/output")
     tokenizer.save_pretrained("models/output")
     print("Training finished.")

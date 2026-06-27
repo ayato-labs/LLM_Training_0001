@@ -70,4 +70,5 @@ def compute_hpo_for_target(
         'batch_size_seqs'  : batch_seqs,
         'stable_lr_ratio'  : 0.55,           # IMU-1: stable LR = peak × 0.55
         'stable_lr_2d'     : round(muon_lr * 0.55, 6),
+        'warmup_ratio'     : 0.03,               # Step Law / Muon recommended warmup ratio
     }

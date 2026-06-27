@@ -1,7 +1,7 @@
 import sqlite3
 import json
 from pathlib import Path
-import project_config as config
+import training_config as config
 
 def export_db_to_jsonl():
     """
