@@ -6,22 +6,16 @@ import math
 def step_law_optimal_lr(n_params: int, n_tokens: int) -> float:
     """
     Step Law による最適 Learning Rate の計算。
-    
-    式: η*(N, D) = 1.79 * N^(-0.713) * D^(0.307)
-    
-    注意:
-      - N: embedding を除く非語彙パラメータ数
-      - D: 学習トークン数
-      - min_lr は max_lr/10 ではなく 1e-5 (固定) を使うこと
-    
-    Args:
-        n_params: モデルの（非語彙）パラメータ数
-        n_tokens: 学習に使用するトークン数
-    
-    Returns:
-        最適 max_lr の推定値
+    正規化と上限制限を追加して小規模モデルでの発散を防止。
     """
-    return 1.79 * (n_params ** -0.713) * (n_tokens ** 0.307)
+    # パラメータ数を 1M (10^6) 単位に正規化
+    n_params_m = n_params / 1e6
+    
+    # 公式: η*(N, D) = 1.79 * N^(-0.713) * D^(0.307)
+    lr = 1.79 * (n_params_m ** -0.713) * (n_tokens ** 0.307)
+    
+    # 【安全装置】学習率が発散しないよう上限(0.01)を設ける
+    return min(lr, 0.01)
 
 
 def step_law_optimal_batch(n_tokens: int) -> int:

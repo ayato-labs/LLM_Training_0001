@@ -42,7 +42,7 @@ def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(run_config, f, indent=4)
         
-    subprocess.run([sys.executable, "src/train_model.py", str(config_path)], check=True)
+    subprocess.run([sys.executable, "src/training/train_model.py", str(config_path)], check=True)
     
     with open("last_run_result.json", "r", encoding="utf-8") as f:
         metrics = json.load(f)
