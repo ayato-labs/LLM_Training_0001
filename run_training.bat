@@ -3,10 +3,22 @@ setlocal
 
 cd /d "%~dp0"
 
-echo Starting Training Pipeline...
+echo ==========================================
+echo Setting up environment and training...
+echo ==========================================
 
-.\.venv\Scripts\python.exe tools\orchestrator.py
+:: Activate virtual environment
+call .venv\Scripts\activate.bat
 
-echo Finished.
+:: Ensure the package is installed in editable mode to resolve module imports
+python -m pip install -e .
+
+echo Running Training Pipeline...
+python tools\orchestrator.py
+
+echo.
+echo ==========================================
+echo Training Pipeline Finished.
+echo ==========================================
 pause
 endlocal
