@@ -87,13 +87,20 @@ def train(config_path):
     max_steps = config.get('max_steps', -1)
     
     print("Initializing trainer...")
+    # num_train_epochs と max_steps の排他制御を修正
+    if max_steps == -1:
+        num_epochs = 1
+        max_steps = -1 # Trainerは -1 を無視する
+    else:
+        num_epochs = None # max_steps が設定されている場合は epochs を None にする
+    
     training_args = TrainingArguments(
         output_dir="models/output",
         learning_rate=config['hpo']['max_lr_2d'],
         per_device_train_batch_size=1,
         gradient_accumulation_steps=16,
         gradient_checkpointing=True,
-        num_train_epochs=1 if max_steps == -1 else None,
+        num_train_epochs=num_epochs,
         max_steps=max_steps,
         remove_unused_columns=False,
     )
