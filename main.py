@@ -60,9 +60,12 @@ def orchestrate():
     
     # ターゲットとアスペクト比を維持するための比率計算
     ratio = proxy_params / target_params
-    proxy_hidden = max(128, int(768 * (ratio ** 0.5)))
+    proxy_hidden_raw = max(128, int(768 * (ratio ** 0.5)))
     proxy_layers = max(2, int(12 * ratio))
     proxy_heads = max(2, int(12 * ratio))
+    
+    # hidden_size が heads で割り切れるように調整
+    proxy_hidden = (proxy_hidden_raw // proxy_heads) * proxy_heads
 
     print(f"Orchestrator: Target {target_params} params, Proxy {proxy_params} params (H:{proxy_hidden}, L:{proxy_layers})")
     
