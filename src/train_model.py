@@ -83,14 +83,18 @@ def train(config_path):
     
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     
+    # 設定から学習ステップ数を取得（指定がない場合は1エポック）
+    max_steps = config.get('max_steps', -1)
+    
     print("Initializing trainer...")
     training_args = TrainingArguments(
         output_dir="models/output",
         learning_rate=config['hpo']['max_lr_2d'],
-        per_device_train_batch_size=1, # バッチサイズを最小にする
-        gradient_accumulation_steps=16, # 累積を増やす
-        gradient_checkpointing=True, # Gradient Checkpointingを有効化
-        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=16,
+        gradient_checkpointing=True,
+        num_train_epochs=1 if max_steps == -1 else None,
+        max_steps=max_steps,
         remove_unused_columns=False,
     )
     
@@ -102,7 +106,11 @@ def train(config_path):
     )
     
     print("Trainer initialized. Starting training...", flush=True)
-    trainer.train()
+    train_result = trainer.train()
+    
+    # 学習結果の記録
+    with open("last_run_result.json", "w", encoding="utf-8") as f:
+        json.dump(train_result.metrics, f)
     
     model.save_pretrained("models/output")
     tokenizer.save_pretrained("models/output")
