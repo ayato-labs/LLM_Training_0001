@@ -57,7 +57,16 @@ def train(config_path):
     
     # データのロード
     print("Starting dataset load...")
-    dataset = load_dataset("json", data_files=config['data_path'])
+    data_path = Path(config['data_path'])
+    if not data_path.exists():
+        fallback_path = Path("data") / data_path.name
+        if fallback_path.exists():
+            data_path = fallback_path
+            print(f"Dataset path resolved to fallback: {data_path}")
+        else:
+            raise FileNotFoundError(f"Could not find dataset at '{config['data_path']}' or '{fallback_path.resolve()}'")
+            
+    dataset = load_dataset("json", data_files=str(data_path))
     
     # テキストのトークン化
     def tokenize_function(examples):
