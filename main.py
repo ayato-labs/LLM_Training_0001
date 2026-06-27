@@ -1,9 +1,10 @@
 import json
 import subprocess
 import sys
-import config
+import os
 from pathlib import Path
 from LLM_Hyperparameter_Optimization.src.step_law import compute_hpo_for_target
+import project_config as config  # 改名に対応
 
 def get_optimal_target_params(n_tokens):
     """
