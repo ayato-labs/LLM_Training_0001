@@ -252,7 +252,6 @@ def train(config_path):
         deepspeed=ds_config_path if (torch.cuda.is_available() and is_deepspeed_available()) else None,
         save_strategy="steps",
         save_steps=1000,
-        save_total_limit=2,
         logging_steps=10,
     )
     

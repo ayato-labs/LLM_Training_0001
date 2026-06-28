@@ -17,3 +17,10 @@ generate_result.txt
 
 # Virtual environments
 .venv
+
+# Google API Credentials
+credentials.json
+service_account.json
+token.json
+temp_ds_config.json
+client_secret_1082524187757-73gj1nh4tfl2si7gmnvbvp6u1fr5dk0h.apps.googleusercontent.com.json
