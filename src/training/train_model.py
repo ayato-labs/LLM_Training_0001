@@ -210,8 +210,7 @@ def train(config_path):
     max_steps = config.get('max_steps', -1)
     
     print("Initializing trainer...")
-    # 明示的に None ではなく 0 や -1 を設定して検証を回避
-    num_epochs = 1 if max_steps == -1 else 0
+    num_epochs = getattr(prj_config, "NUM_EPOCHS", 3) if max_steps == -1 else 0
     
     # スケーリングに対応した動的バッチサイズ・DeepSpeed設定の生成
     hpo_config = config['hpo']
@@ -251,6 +250,10 @@ def train(config_path):
         lr_scheduler_type="cosine",
         warmup_ratio=warmup_ratio,
         deepspeed=ds_config_path if (torch.cuda.is_available() and is_deepspeed_available()) else None,
+        save_strategy="steps",
+        save_steps=1000,
+        save_total_limit=2,
+        logging_steps=10,
     )
     
     trainer = CustomTrainer(

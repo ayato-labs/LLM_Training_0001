@@ -108,7 +108,7 @@ def orchestrate():
     for lr in candidates:
         print(f"Testing LR: {lr}")
         loss = run_experiment_dynamic(
-            proxy_params, n_tokens, lr, config.MAX_STEPS, 
+            proxy_params, n_tokens, lr, 50,  # 探索フェーズは50ステップに固定
             proxy_hidden, proxy_layers, proxy_heads, seq_len=config.SEQ_LEN
         )
         print(f"Loss: {loss}")
