@@ -9,7 +9,7 @@
         "n_params": 30000000,
         "n_tokens": 30000000,
         "seq_len": 1024,
-        "max_lr_2d": 0.005,
+        "max_lr_2d": 0.01,
         "max_lr_1d": 0.002979,
         "min_lr": 1e-05,
         "batch_size_tokens": 10786,
