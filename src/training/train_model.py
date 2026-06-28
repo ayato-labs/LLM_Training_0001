@@ -16,6 +16,15 @@ log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
 log_file = log_dir / f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
+def is_deepspeed_available():
+    try:
+        import deepspeed
+        import importlib.metadata
+        importlib.metadata.version("deepspeed")
+        return True
+    except Exception:
+        return False
+
 class Logger:
     def __init__(self, filename):
         self.terminal = sys.stdout
@@ -229,7 +238,7 @@ def train(config_path):
         remove_unused_columns=False,
         lr_scheduler_type="cosine",
         warmup_ratio=warmup_ratio,
-        deepspeed=ds_config_path if torch.cuda.is_available() else None,
+        deepspeed=ds_config_path if (torch.cuda.is_available() and is_deepspeed_available()) else None,
     )
     
     trainer = CustomTrainer(
