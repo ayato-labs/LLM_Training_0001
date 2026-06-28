@@ -65,9 +65,9 @@ def analyze():
     print(f"Token/Char Ratio:    {total_tokens / total_chars:.4f}")
     print("="*50)
     
-    # 350M モデルの計算
-    target_params = 350_000_000
-    print(f"\nTarget Model Size:   {target_params:,} parameters (350M)")
+    # ターゲットモデルの計算 (config から動的読み込み)
+    target_params = getattr(config, "TARGET_PARAMS", 120_000_000)
+    print(f"\nTarget Model Size:   {target_params:,} parameters ({target_params / 1_000_000:.0f}M)")
     
     # --- Chinchilla 20x Ratio ---
     req_tokens_20 = target_params * 20
@@ -91,6 +91,62 @@ def analyze():
     print(f"  Multiplier Needed: {ratio_100:.2f}x (約 {ratio_100:.1f} 倍のデータ)")
     print(f"  Estimated Chapters Needed: {diff_tokens_100 / (total_tokens / record_count):,.0f} chapters")
     print("="*50)
+
+    # --- 日本語のMarkdown結果ファイルを生成 ---
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    result_filename = f"result_{timestamp}.md"
+    result_path = Path(__file__).resolve().parent / result_filename
+    
+    avg_tokens = total_tokens / record_count
+    avg_chars = total_chars / record_count
+    token_char_ratio = total_tokens / total_chars
+    
+    markdown_content = f"""# データセット トークン分析結果 ({datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
+
+## 1. 基本統計データ
+
+| 項目 | 分析値 |
+| :--- | :--- |
+| **総チャプター数** | {record_count:,} チャプター |
+| **総文字数** | {total_chars:,} 文字 |
+| **総トークン数 (正確値)** | {total_tokens:,} トークン |
+| **1チャプターあたりの平均トークン数** | {avg_tokens:.1f} トークン |
+| **1チャプターあたりの平均文字数** | {avg_chars:.1f} 文字 |
+| **トークン / 文字 比率** | {token_char_ratio:.4f} |
+
+---
+
+## 2. {target_params / 1_000_000:.0f}M モデル（ターゲット規模）の必要トークン数シミュレーション
+
+ターゲットパラメータ数: **{target_params:,} パラメータ ({target_params / 1_000_000:.0f}M)**
+
+### 【ケース 1】 Chinchilla 最適化構成 (Ratio = 20)
+*計算量的に最も効率的なデータ対パラメータ比（20倍）を適用した場合*
+
+- **必要トークン数**: {req_tokens_20:,} トークン
+- **不足トークン数**: {diff_tokens_20:,} トークン
+- **必要データ倍率**: {ratio_20:.2f}倍 (約 {ratio_20:.1f} 倍のデータ規模が必要)
+- **不足分を補うために必要な推測チャプター数**: {diff_tokens_20 / avg_tokens:,.0f} チャプター
+
+### 【ケース 2】 現行パイプライン構成 (Ratio = 100)
+*過学習を防ぎつつ十分な汎化性能を獲得するために一般的に推奨されるデータ対パラメータ比（100倍）を適用した場合*
+
+- **必要トークン数**: {req_tokens_100:,} トークン
+- **不足トークン数**: {diff_tokens_100:,} トークン
+- **必要データ倍率**: {ratio_100:.2f}倍 (約 {ratio_100:.1f} 倍のデータ規模が必要)
+- **不足分を補うために必要な推測チャプター数**: {diff_tokens_100 / avg_tokens:,.0f} チャプター
+
+---
+*※ 本レポートは `analyze_dataset_tokens.py` の実行により自動生成されました。*
+"""
+    
+    try:
+        with open(result_path, "w", encoding="utf-8") as rf:
+            rf.write(markdown_content)
+        print(f"\n[Success] 日本語の分析レポートを以下に作成しました:\n  {result_path.resolve()}", flush=True)
+    except Exception as e:
+        print(f"\n[Error] レポートファイルの書き込みに失敗しました: {e}", file=sys.stderr, flush=True)
 
 if __name__ == "__main__":
     analyze()
