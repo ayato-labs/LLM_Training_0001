@@ -21,7 +21,7 @@ def get_optimal_target_params(n_tokens):
     # 3. 両方の制約を満たす動的最小値
     return min(n_opt, n_max)
 
-def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers, proxy_heads, seq_len=512):
+def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers, proxy_heads, seq_len=1024):
     """ 指定パラメータで短時間学習を行い、最終Lossを返す """
     hpo = compute_hpo_for_target(n_params=params, n_tokens=tokens, seq_len=seq_len)
     hpo['max_lr_2d'] = lr
@@ -83,7 +83,7 @@ def orchestrate():
     print("Orchestrator: Starting Dynamic Proxy Exploration...")
     for lr in candidates:
         print(f"Testing LR: {lr}")
-        loss = run_experiment_dynamic(proxy_params, n_tokens, lr, config.MAX_STEPS, proxy_hidden, proxy_layers, proxy_heads)
+        loss = run_experiment_dynamic(proxy_params, n_tokens, lr, config.MAX_STEPS, proxy_hidden, proxy_layers, proxy_heads, seq_len=config.SEQ_LEN)
         print(f"Loss: {loss}")
         if loss < min_loss:
             min_loss = loss
