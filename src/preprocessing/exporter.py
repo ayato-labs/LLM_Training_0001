@@ -1,3 +1,4 @@
+import re
 import sqlite3
 import json
 from pathlib import Path
@@ -12,7 +13,7 @@ LLM学習に最適なJSONL形式へ変換する前処理を担当します。
 主な機能とメタデータ生成:
 1. 構造化: 作品情報、章メタデータ、本文の結合
 2. 会話率計算: 
-   - 全体および章単位での会話密度の算出 (「で始まる行の割合)
+   - 鉤括弧「」内の文字数合計を用いた会話密度の算出
 3. 感情分析:
    - 簡易感情辞書を用いた、シーン単位の感情(Positive/Negative/Neutral)判定
 4. 文体統計:
@@ -27,10 +28,16 @@ POSITIVE_WORDS = {'素晴らしい', '楽しい', '嬉しい', '大好き', '成
 NEGATIVE_WORDS = {'悲しい', '辛い', '憎い', '失敗', '怖い', '醜い', '絶望', '憎悪', '冷たい', '死'}
 
 def calculate_conversation_rate(text):
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    if not lines: return 0.0
-    conv_lines = sum(1 for line in lines if line.startswith('「'))
-    return round(conv_lines / len(lines), 4)
+    """
+    鉤括弧「」で囲まれた文字数の合計を算出し、全体に対する割合を返す
+    (改行を含む長台詞にも対応)
+    """
+    matches = re.findall(r'「(.*?)」', text, re.DOTALL)
+    conv_chars = sum(len(match) for match in matches)
+    total_chars = len(text)
+    
+    if total_chars == 0: return 0.0
+    return round(conv_chars / total_chars, 4)
 
 def get_sentiment(text):
     pos_count = sum(text.count(word) for word in POSITIVE_WORDS)
@@ -103,7 +110,7 @@ def export_db_to_jsonl():
             novel_stats[novel_id] = {"total_conv_lines": 0, "total_lines": 0}
         
         novel_stats[novel_id]["total_lines"] += len(lines)
-        novel_stats[novel_id]["total_conv_lines"] += sum(1 for line in lines if line.startswith('「'))
+        novel_stats[novel_id]["total_conv_lines"] += sum(1 for line in lines if '「' in line)
         
     with open(output_path, "w", encoding="utf-8") as f:
         for row in all_data:
