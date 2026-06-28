@@ -3,8 +3,11 @@ import sys
 import time
 import shutil
 import re
+import glob
 from pathlib import Path
-from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
@@ -18,17 +21,37 @@ POLL_INTERVAL = 30  # ポーリング間隔（秒）
 MIN_FOLDER_AGE = 60  # ディレクトリ更新から処理開始までの最小待機時間（秒、書き込み途中の検知防止）
 
 def get_drive_service():
-    """サービスアカウントのJSONキーを使用して認証"""
-    json_path = 'service_account.json'  # プロジェクトルートに置くキーファイルのパス
+    """OAuth 2.0 ユーザー認証情報を使用して認証（client_secret_*.json を自動探索）"""
+    creds = None
+    # 既存のトークンがあればロード
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
     
-    if not os.path.exists(json_path):
-        print(f"Error: '{json_path}' がカレントディレクトリに見つかりません。", file=sys.stderr)
-        print("Google Cloud Consoleでサービスアカウントキー(JSON)を作成・ダウンロードして配置してください。", file=sys.stderr)
-        sys.exit(1)
+    # 有効な認証情報がない場合はユーザー認証を実行
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                creds = None
         
-    creds = service_account.Credentials.from_service_account_file(
-        json_path, scopes=SCOPES)
+        if not creds:
+            # カレントディレクトリから 'client_secret_*.json' または 'credentials.json' を自動探索
+            secret_files = glob.glob("client_secret_*.json") + glob.glob("credentials.json")
+            if not secret_files:
+                print("Error: 'client_secret_*.json' または 'credentials.json' がカレントディレクトリに見つかりません。", file=sys.stderr)
+                sys.exit(1)
+            
+            secret_file = secret_files[0]
+            print(f"Using client secret file: {secret_file}")
+            
+            flow = InstalledAppFlow.from_client_secrets_file(secret_file, SCOPES)
+            creds = flow.run_local_server(port=0)
         
+        # 認証情報を保存
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
     return build('drive', 'v3', credentials=creds)
 
 def get_or_create_drive_folder(service, folder_name):
