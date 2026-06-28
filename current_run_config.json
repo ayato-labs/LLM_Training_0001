@@ -8,7 +8,7 @@
     "hpo": {
         "n_params": 50000,
         "n_tokens": 5000000,
-        "seq_len": 512,
+        "seq_len": 1024,
         "max_lr_2d": 0.045503,
         "max_lr_1d": 0.013554,
         "min_lr": 1e-05,

@@ -78,6 +78,25 @@ def get_text_stats(text):
         "symbol_ratio": round(symbols / total, 4)
     }
 
+def split_text_with_overlap(text, chunk_size=2000, overlap=200):
+    """
+    文章を重なり（overlap）を持たせて分割する。
+    1024トークン(約2000〜2200文字)に収まるようにチャンクサイズを設定。
+    """
+    if len(text) <= chunk_size:
+        return [text]
+        
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        if end >= len(text):
+            break
+        # 重なり分を引いて次の開始位置を設定
+        start += (chunk_size - overlap)
+    return chunks
+
 def export_db_to_jsonl():
     db_path = Path(r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\novels.db")
     output_path = config.DATA_PATH
@@ -112,50 +131,59 @@ def export_db_to_jsonl():
         novel_stats[novel_id]["total_lines"] += len(lines)
         novel_stats[novel_id]["total_conv_lines"] += sum(1 for line in lines if '「' in line)
         
+    exported_count = 0
     with open(output_path, "w", encoding="utf-8") as f:
         for row in all_data:
             novel_id, title, synopsis, genre, tags, number, subtitle, body = row
             
-            # メトリクス計算
-            chapter_conv = calculate_conversation_rate(body)
             total_lines = novel_stats[novel_id]["total_lines"]
             novel_conv = (novel_stats[novel_id]["total_conv_lines"] / total_lines) if total_lines > 0 else 0.0
-            sentiment = get_sentiment(body)
-            stats = get_text_stats(body)
             
-            # 条件付き学習用プレフィックス
-            metadata_prefix = (
-                f"作品名: {title or '不明'}\n"
-                f"ジャンル: {genre or '未設定'}\n"
-                f"会話率(全体): {novel_conv:.2%}\n"
-                f"会話率(章): {chapter_conv:.2%}\n"
-                f"感情: {sentiment['label']}\n"
-                f"文字数: {stats['total_chars']}\n"
-                f"タグ: {tags or 'なし'}\n\n"
-            )
-            formatted_text = metadata_prefix + body
+            # 本文をオーバーラップ付きで分割
+            body_chunks = split_text_with_overlap(body, chunk_size=2000, overlap=200)
             
-            entry = {
-                "text": formatted_text,
-                "metadata": {
-                    "title": title,
-                    "synopsis": synopsis,
-                    "genre": genre,
-                    "tags": tags,
-                    "chapter": number,
-                    "subtitle": subtitle,
-                    "metrics": {
-                        "novel_conversation_rate": novel_conv,
-                        "chapter_conversation_rate": chapter_conv,
-                        "sentiment": sentiment,
-                        "text_stats": stats
+            for chunk_idx, chunk_body in enumerate(body_chunks):
+                # チャンクごとにメトリクスを再計算することでプレフィックスとの整合性を担保
+                chapter_conv = calculate_conversation_rate(chunk_body)
+                sentiment = get_sentiment(chunk_body)
+                stats = get_text_stats(chunk_body)
+                
+                # 条件付き学習用プレフィックス
+                metadata_prefix = (
+                    f"作品名: {title or '不明'}\n"
+                    f"ジャンル: {genre or '未設定'}\n"
+                    f"会話率(全体): {novel_conv:.2%}\n"
+                    f"会話率(章): {chapter_conv:.2%}\n"
+                    f"感情: {sentiment['label']}\n"
+                    f"文字数: {stats['total_chars']}\n"
+                    f"タグ: {tags or 'なし'}\n\n"
+                )
+                formatted_text = metadata_prefix + chunk_body
+                
+                entry = {
+                    "text": formatted_text,
+                    "metadata": {
+                        "title": title,
+                        "synopsis": synopsis,
+                        "genre": genre,
+                        "tags": tags,
+                        "chapter": number,
+                        "subtitle": f"{subtitle or ''} (Part {chunk_idx + 1})" if len(body_chunks) > 1 else (subtitle or ""),
+                        "metrics": {
+                            "novel_conversation_rate": novel_conv,
+                            "chapter_conversation_rate": chapter_conv,
+                            "sentiment": sentiment,
+                            "text_stats": stats,
+                            "chunk_index": chunk_idx,
+                            "total_chunks": len(body_chunks)
+                        }
                     }
                 }
-            }
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                exported_count += 1
             
     conn.close()
-    print(f"Preprocessing completed: {len(all_data)} chapters exported to {output_path}")
+    print(f"Preprocessing completed: {exported_count} chunks exported to {output_path}")
 
 if __name__ == "__main__":
     export_db_to_jsonl()

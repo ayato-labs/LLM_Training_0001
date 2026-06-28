@@ -158,8 +158,10 @@ def train(config_path):
     dataset = load_dataset("json", data_files=str(data_path))
     
     # テキストのトークン化
+    seq_len = config['hpo'].get('seq_len', 1024)
+    print(f"Tokenizing dataset with max_length={seq_len}...")
     def tokenize_function(examples):
-        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=512)
+        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=seq_len)
     
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
     # 不必要な列を削除
