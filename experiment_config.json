@@ -1,21 +1,22 @@
 {
     "model_params": {
-        "n_params": 2500,
-        "hidden_size": 172,
-        "num_hidden_layers": 2,
-        "num_attention_heads": 2
+        "n_params": 30000000,
+        "hidden_size": 640,
+        "num_hidden_layers": 6,
+        "num_attention_heads": 10
     },
     "hpo": {
-        "n_params": 2500,
-        "n_tokens": 5000000,
+        "n_params": 30000000,
+        "n_tokens": 30000000,
         "seq_len": 1024,
-        "max_lr_2d": 1.540762,
-        "max_lr_1d": 0.229475,
+        "max_lr_2d": 0.005,
+        "max_lr_1d": 0.002979,
         "min_lr": 1e-05,
-        "batch_size_tokens": 3877,
-        "batch_size_seqs": 7,
+        "batch_size_tokens": 10786,
+        "batch_size_seqs": 10,
         "stable_lr_ratio": 0.55,
-        "stable_lr_2d": 0.42371
+        "stable_lr_2d": 0.0055,
+        "warmup_ratio": 0.03
     },
     "data_path": "C:\\Users\\saiha\\My_Service\\programing\\LLM\\Novel_LLM\\LLM_Training\\data\\dataset.jsonl",
     "max_steps": 50

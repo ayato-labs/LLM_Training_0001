@@ -1,0 +1,15 @@
+{
+  "fp16": {
+    "enabled": true
+  },
+  "zero_optimization": {
+    "stage": 2,
+    "allgather_partitions": true,
+    "allgather_bucket_size": 200000000.0,
+    "overlap_comm": true,
+    "reduce_scatter": true,
+    "reduce_bucket_size": 200000000.0
+  },
+  "gradient_accumulation_steps": "auto",
+  "train_batch_size": "auto"
+}
