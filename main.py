@@ -9,13 +9,15 @@ from src.preprocessing.exporter import export_db_to_jsonl
 
 def get_optimal_target_params():
     """
-    ユーザー指定のターゲットモデルサイズを取得し、VRAM制限による理論上の限界を超えないようにキャップをかける。
+    ユーザー指定のターゲットモデルサイズを取得し、VRAM制限（GPUオンリー強制）による理論上の限界を超えないようにキャップをかける。
     """
     target_params = getattr(config, "TARGET_PARAMS", 120_000_000)
     
-    # メモリ制約による理論上の最大値
+    # GPUオンリー制約下での最大パラメータ数算出
+    # モデル重量(2B) + 勾配(2B) + オプティマイザ(8B) + その他バッファ = パラメータあたり約14バイト。
+    # 活性化メモリとPyTorch runtime用に30%のバッファを確保。
     vram_bytes = config.VRAM_LIMIT_GB * (1024**3)
-    n_max = int(vram_bytes / (config.PRECISION_BYTES * config.MEMORY_OVERHEAD))
+    n_max = int((vram_bytes * 0.7) / 14)
     
     return min(target_params, n_max)
 
@@ -131,7 +133,8 @@ def orchestrate():
             "num_attention_heads": target_heads
         },
         "hpo": final_hpo,
-        "data_path": str(config.DATA_PATH)
+        "data_path": str(config.DATA_PATH),
+        "max_steps": getattr(config, "MAX_STEPS", -1)
     }
     
     with open(Path("current_run_config.json"), "w", encoding="utf-8") as f:

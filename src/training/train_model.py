@@ -98,8 +98,8 @@ def generate_deepspeed_config(n_params, vram_limit_gb):
     # 2 bytes weight (fp16) + 12 bytes optimizer states per parameter
     est_vram_gb = (n_params * 14) / (1024**3)
     
-    # Enable CPU offload only if estimated VRAM exceeds 80% of limit
-    offload_device = "cpu" if est_vram_gb > (vram_limit_gb * 0.8) else "none"
+    # プレトレーニングにおける極端な速度低下を防ぐため、CPUオフロードは常時無効化（GPUオンリー）
+    offload_device = "none"
     
     ds_config = {
         "fp16": {
@@ -117,12 +117,8 @@ def generate_deepspeed_config(n_params, vram_limit_gb):
         "train_batch_size": "auto"
     }
     
-    if offload_device == "cpu":
-        ds_config["zero_optimization"]["offload_optimizer"] = {
-            "device": "cpu",
-            "pin_memory": True
-        }
-        print(f"DeepSpeed: Estimated VRAM ({est_vram_gb:.2f} GB) exceeds 80% of limit ({vram_limit_gb} GB). Enabling CPU Optimizer Offload.", flush=True)
+    if est_vram_gb > vram_limit_gb:
+        print(f"DeepSpeed WARNING: Estimated parameters memory ({est_vram_gb:.2f} GB) exceeds VRAM limit ({vram_limit_gb} GB). CPU Offload is disabled by design. Running entirely on GPU may trigger OOM (Out Of Memory).", flush=True)
     else:
         print(f"DeepSpeed: Estimated VRAM ({est_vram_gb:.2f} GB) fits within VRAM limit ({vram_limit_gb} GB). Running entirely on GPU.", flush=True)
         
@@ -220,8 +216,17 @@ def train(config_path):
     ds_config_path = generate_deepspeed_config(n_params_est, vram_limit)
     
     # 適切な1デバイスあたりバッチサイズと勾配蓄積ステップの計算
-    # 32GB以上の大容量VRAMを活かすため、初期は最大8バッチから開始し、OOM時はauto_find_batch_sizeでスケールダウンする
-    per_device_batch = min(target_total_batch_seqs, 8)
+    # WindowsのWDDMメモリページングによる極端な速度低下を防ぐため、物理VRAMサイズに応じて最大バッチサイズを動的に制限する。
+    if vram_limit <= 4.5:
+        max_batch = 2  # 4GB VRAM環境下では最大2バッチで安全性を確保
+    elif vram_limit <= 8.5:
+        max_batch = 4  # 8GB VRAM
+    elif vram_limit <= 16.5:
+        max_batch = 8  # 16GB VRAM
+    else:
+        max_batch = 16
+        
+    per_device_batch = min(target_total_batch_seqs, max_batch)
     grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
     
     warmup_ratio = hpo_config.get('warmup_ratio', 0.03)
@@ -230,7 +235,6 @@ def train(config_path):
         output_dir="models/output",
         learning_rate=hpo_config['max_lr_2d'],
         per_device_train_batch_size=per_device_batch,
-        auto_find_batch_size=True,
         gradient_accumulation_steps=grad_accum_steps,
         gradient_checkpointing=True,
         num_train_epochs=num_epochs,
