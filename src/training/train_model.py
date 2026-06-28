@@ -264,8 +264,9 @@ def train(config_path):
     )
     
     print(f"Trainer initialized with batch_size={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})", flush=True)
-    print("Starting training...", flush=True)
-    train_result = trainer.train()
+    # 設定ファイルからレジュームフラグを読み取り、適用する
+    resume_flag = config.get("resume", False)
+    train_result = trainer.train(resume_from_checkpoint=resume_flag)
     
     # 学習結果の記録
     with open("last_run_result.json", "w", encoding="utf-8") as f:

@@ -73,7 +73,13 @@ def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers
         metrics = json.load(f)
     return metrics.get("train_loss", float("inf"))
 
+import argparse
+
 def orchestrate():
+    parser = argparse.ArgumentParser(description="Novel LLM Training Pipeline Orchestrator")
+    parser.add_argument("--resume", action="store_true", help="Resume final training from the last checkpoint")
+    args = parser.parse_args()
+
     # 0. Google Drive 監視アップローダーをバックグラウンドで自動起動
     uploader_script = Path(__file__).resolve().parent / "src" / "utils" / "drive_uploader.py"
     if uploader_script.exists():
@@ -84,7 +90,28 @@ def orchestrate():
         # 非同期 Popen で起動し、メインプロセスと並列稼働させる
         subprocess.Popen([sys.executable, str(uploader_script)], stdout=log_file, stderr=log_file)
 
-    # 0. 前処理の実行 (責務：学習プロジェクトの一部)
+    # レジューム実行時のバイパスロジック
+    if args.resume:
+        config_path = Path("current_run_config.json")
+        if not config_path.exists():
+            print("Error: 'current_run_config.json' が存在しないため、学習を再開できません。", file=sys.stderr)
+            sys.exit(1)
+            
+        print("Orchestrator: Resuming execution mode detected.")
+        print("Loading previous run configuration...")
+        with open(config_path, "r", encoding="utf-8") as f:
+            run_config = json.load(f)
+            
+        # レジュームフラグの追加
+        run_config["resume"] = True
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(run_config, f, indent=4)
+            
+        print("Orchestrator: Bypassing HPO search. Launching Final Training in Resume mode...")
+        subprocess.run([sys.executable, "src/train.py", "current_run_config.json"], check=True)
+        return
+
+    # 0. 前処理の実行 (新規学習のみ)
     print("Orchestrator: Running preprocessing...")
     export_db_to_jsonl()
     
@@ -144,7 +171,8 @@ def orchestrate():
         },
         "hpo": final_hpo,
         "data_path": str(config.DATA_PATH),
-        "max_steps": getattr(config, "MAX_STEPS", -1)
+        "max_steps": getattr(config, "MAX_STEPS", -1),
+        "resume": False  # 新規学習はFalse
     }
     
     with open(Path("current_run_config.json"), "w", encoding="utf-8") as f:

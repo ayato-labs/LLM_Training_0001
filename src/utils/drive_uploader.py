@@ -132,6 +132,12 @@ def monitor_and_upload():
             latest_step, latest_path = checkpoints[-1]
             
             for step, path in checkpoints:
+                # すでにアップロード済みフラグファイルが存在するか確認
+                uploaded_flag = path / ".uploaded"
+                if uploaded_flag.exists():
+                    # すでに処理済みなのでスキップ
+                    continue
+
                 # trainer_state.json が存在し、フォルダの書き込み更新から一定時間経っているか確認
                 state_file = path / "trainer_state.json"
                 if not state_file.exists():
@@ -164,6 +170,12 @@ def monitor_and_upload():
                     else:
                         print(f"File '{zip_file.name}' already exists on Google Drive. Skipping upload.")
                     
+                    # アップロード完了フラグファイルの作成
+                    try:
+                        uploaded_flag.touch()
+                    except Exception as flag_err:
+                        print(f"Warning: Failed to create flag file: {flag_err}")
+
                     # 3. アップロード完了後のクリーンアップ
                     # zip ファイルの削除
                     if zip_file.exists():

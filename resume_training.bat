@@ -1,10 +1,9 @@
 @echo off
 setlocal
-
-cd /d "%~dp0"
+cd /d %~dp0
 
 echo ==========================================
-echo Starting Novel LLM Training Pipeline (NEW RUN)...
+echo Resuming Novel LLM Training Pipeline...
 echo ==========================================
 
 :: Activate virtual environment
@@ -16,8 +15,8 @@ set PYTHONPATH=%~dp0
 :: Ensure the package is installed in editable mode
 python -m pip install -e .
 
-echo Running Training Pipeline...
-python main.py
+echo Running Training Pipeline (RESUME MODE)...
+python main.py --resume
 
 echo.
 echo ==========================================
