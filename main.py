@@ -74,6 +74,16 @@ def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers
     return metrics.get("train_loss", float("inf"))
 
 def orchestrate():
+    # 0. Google Drive 監視アップローダーをバックグラウンドで自動起動
+    uploader_script = Path(__file__).resolve().parent / "src" / "utils" / "drive_uploader.py"
+    if uploader_script.exists():
+        print("Orchestrator: Starting Google Drive uploader in the background...")
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        log_file = open(log_dir / "drive_uploader.log", "a", encoding="utf-8")
+        # 非同期 Popen で起動し、メインプロセスと並列稼働させる
+        subprocess.Popen([sys.executable, str(uploader_script)], stdout=log_file, stderr=log_file)
+
     # 0. 前処理の実行 (責務：学習プロジェクトの一部)
     print("Orchestrator: Running preprocessing...")
     export_db_to_jsonl()
