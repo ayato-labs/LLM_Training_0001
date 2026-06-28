@@ -113,6 +113,14 @@ def generate_deepspeed_config(n_params, vram_limit_gb):
             "reduce_scatter": True,
             "reduce_bucket_size": 2e8
         },
+        "activation_checkpointing": {
+            "partition_activations": True,
+            "cpu_checkpointing": True,
+            "contiguous_memory_optimization": False,
+            "number_of_nodes": 1,
+            "synchronize_checkpoint_boundary": False,
+            "profile": False
+        },
         "gradient_accumulation_steps": "auto",
         "train_batch_size": "auto"
     }
@@ -218,7 +226,7 @@ def train(config_path):
     # 適切な1デバイスあたりバッチサイズと勾配蓄積ステップの計算
     # WindowsのWDDMメモリページングによる極端な速度低下を防ぐため、物理VRAMサイズに応じて最大バッチサイズを動的に制限する。
     if vram_limit <= 4.5:
-        max_batch = 2  # 4GB VRAM環境下では最大2バッチで安全性を確保
+        max_batch = 1  # 4GB VRAM環境下では最大1バッチに変更しWDDMページングを回避
     elif vram_limit <= 8.5:
         max_batch = 4  # 8GB VRAM
     elif vram_limit <= 16.5:
