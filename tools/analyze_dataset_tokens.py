@@ -4,7 +4,7 @@ from pathlib import Path
 from transformers import PreTrainedTokenizerFast
 
 # プロジェクトルートパスの設定
-sys.path.append(str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 import training_config as config
 from src.preprocessing.exporter import export_db_to_jsonl
 
