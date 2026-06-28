@@ -7,19 +7,42 @@ from LLM_Hyperparameter_Optimization.src.step_law import compute_hpo_for_target
 import training_config as config
 from src.preprocessing.exporter import export_db_to_jsonl
 
-def get_optimal_target_params(n_tokens):
+def get_optimal_target_params():
     """
-    データトークン量とVRAM制約から、理論とハードウェアの両制約を満たす最大サイズを動的に算出する
+    ユーザー指定のターゲットモデルサイズを取得し、VRAM制限による理論上の限界を超えないようにキャップをかける。
     """
-    # 1. Scaling Law による推奨値 (N = D / Ratio)
-    n_opt = n_tokens // config.CHINCHILLA_RATIO
+    target_params = getattr(config, "TARGET_PARAMS", 120_000_000)
     
-    # 2. メモリ制約による理論上の最大値
+    # メモリ制約による理論上の最大値
     vram_bytes = config.VRAM_LIMIT_GB * (1024**3)
     n_max = int(vram_bytes / (config.PRECISION_BYTES * config.MEMORY_OVERHEAD))
     
-    # 3. 両方の制約を満たす動的最小値
-    return min(n_opt, n_max)
+    return min(target_params, n_max)
+
+def estimate_llama_dimensions(n_params):
+    """
+    指定パラメータ数に最も近いLlamaモデルの次元（Hidden Size, Layers, Heads）を計算する。
+    Llamaのパラメータ数は大まかに: 12 * L * H^2 で近似できます。
+    """
+    best_L = 2
+    best_H = 128
+    min_diff = float('inf')
+    
+    for L in range(2, 26, 2):
+        H_raw = int((n_params / (12 * L)) ** 0.5)
+        # H は 64 の倍数に揃える
+        H = max(64, (H_raw // 64) * 64)
+        est = 12 * L * (H ** 2)
+        diff = abs(est - n_params)
+        if diff < min_diff:
+            min_diff = diff
+            best_L = L
+            best_H = H
+            
+    best_heads = max(2, best_H // 64)
+    # heads で割り切れるように hidden_size を調整
+    best_hidden = (best_H // best_heads) * best_heads
+    return best_hidden, best_L, best_heads
 
 def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers, proxy_heads, seq_len=1024):
     """ 指定パラメータで短時間学習を行い、最終Lossを返す """
@@ -55,22 +78,21 @@ def orchestrate():
     
     # 1. ハードウェア制約とスケーリング定義
     n_tokens = config.TARGET_TOKENS
-    target_params = get_optimal_target_params(n_tokens)
-    proxy_params = int(target_params * 0.05) # 5%サイズ
+    target_params = get_optimal_target_params()
     
-    # ターゲットとアスペクト比を維持するための比率計算
-    ratio = proxy_params / target_params
-    proxy_hidden_raw = max(128, int(768 * (ratio ** 0.5)))
-    proxy_layers = max(2, int(12 * ratio))
-    proxy_heads = max(2, int(12 * ratio))
+    # 探索性能を担保するため代理モデルのサイズに下限キャップを設ける
+    min_proxy = getattr(config, "PROXY_MIN_PARAMS", 30_000_000)
+    proxy_params = max(int(target_params * 0.05), min_proxy)
+    # 代理モデルがターゲットサイズを超えないように制限
+    proxy_params = min(proxy_params, target_params)
     
-    # hidden_size が heads で割り切れ、かつ head_dim が偶数になるように調整
-    head_dim = (proxy_hidden_raw // proxy_heads)
-    if head_dim % 2 != 0:
-        head_dim += 1
-    proxy_hidden = head_dim * proxy_heads
+    # 代理モデルの次元を動的に推定
+    proxy_hidden, proxy_layers, proxy_heads = estimate_llama_dimensions(proxy_params)
+    # 本番モデルの次元を動的に推定
+    target_hidden, target_layers, target_heads = estimate_llama_dimensions(target_params)
 
-    print(f"Orchestrator: Target {target_params} params, Proxy {proxy_params} params (H:{proxy_hidden}, L:{proxy_layers})")
+    print(f"Orchestrator: Target {target_params} params (H:{target_hidden}, L:{target_layers}, Heads:{target_heads})")
+    print(f"Orchestrator: Proxy {proxy_params} params (H:{proxy_hidden}, L:{proxy_layers}, Heads:{proxy_heads})")
     
     # 2. 探索フェーズ
     base_hpo = compute_hpo_for_target(n_params=proxy_params, n_tokens=n_tokens, seq_len=config.SEQ_LEN)
@@ -83,7 +105,10 @@ def orchestrate():
     print("Orchestrator: Starting Dynamic Proxy Exploration...")
     for lr in candidates:
         print(f"Testing LR: {lr}")
-        loss = run_experiment_dynamic(proxy_params, n_tokens, lr, config.MAX_STEPS, proxy_hidden, proxy_layers, proxy_heads, seq_len=config.SEQ_LEN)
+        loss = run_experiment_dynamic(
+            proxy_params, n_tokens, lr, config.MAX_STEPS, 
+            proxy_hidden, proxy_layers, proxy_heads, seq_len=config.SEQ_LEN
+        )
         print(f"Loss: {loss}")
         if loss < min_loss:
             min_loss = loss
@@ -101,9 +126,9 @@ def orchestrate():
     run_config = {
         "model_params": {
             "n_params": target_params, 
-            "hidden_size": 768, 
-            "num_hidden_layers": 12, 
-            "num_attention_heads": 12
+            "hidden_size": target_hidden, 
+            "num_hidden_layers": target_layers, 
+            "num_attention_heads": target_heads
         },
         "hpo": final_hpo,
         "data_path": str(config.DATA_PATH)
