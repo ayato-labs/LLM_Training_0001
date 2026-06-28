@@ -3,21 +3,78 @@ import json
 from pathlib import Path
 import training_config as config
 
+"""
+小説特化型LLM学習用データセット生成パイプライン
+--------------------------------------------------
+本モジュールは、Novel_Data_Collectionで収集されたDBデータを読み込み、
+LLM学習に最適なJSONL形式へ変換する前処理を担当します。
+
+主な機能とメタデータ生成:
+1. 構造化: 作品情報、章メタデータ、本文の結合
+2. 会話率計算: 
+   - 全体および章単位での会話密度の算出 (「で始まる行の割合)
+3. 感情分析:
+   - 簡易感情辞書を用いた、シーン単位の感情(Positive/Negative/Neutral)判定
+4. 文体統計:
+   - 文字数および文字種(漢字、ひらがな、カタカナ、英字、記号)の構成比率計算
+
+これらをメタ情報(metrics)として付与し、モデルがコンテキストの
+「密度」「トーン」「文体構成」を数値として理解できるように設計されています。
+"""
+
+# 簡易的な感情辞書
+POSITIVE_WORDS = {'素晴らしい', '楽しい', '嬉しい', '大好き', '成功', '美しい', '希望', '愛', '優しい'}
+NEGATIVE_WORDS = {'悲しい', '辛い', '憎い', '失敗', '怖い', '醜い', '絶望', '憎悪', '冷たい', '死'}
+
 def calculate_conversation_rate(text):
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     if not lines: return 0.0
-    # 「で始まる行を会話とみなす単純なヒューリスティック
     conv_lines = sum(1 for line in lines if line.startswith('「'))
     return round(conv_lines / len(lines), 4)
 
+def get_sentiment(text):
+    pos_count = sum(text.count(word) for word in POSITIVE_WORDS)
+    neg_count = sum(text.count(word) for word in NEGATIVE_WORDS)
+    
+    total = pos_count + neg_count
+    if total == 0:
+        return {"label": "neutral", "score": 1.0}
+    
+    score = (pos_count - neg_count) / total
+    if abs(score) < 0.2:
+        return {"label": "neutral", "score": abs(score)}
+    elif score > 0:
+        return {"label": "positive", "score": score}
+    else:
+        return {"label": "negative", "score": abs(score)}
+
+def get_text_stats(text):
+    total = len(text)
+    if total == 0:
+        return {
+            "total_chars": 0, "kanji_ratio": 0.0, "hiragana_ratio": 0.0,
+            "katakana_ratio": 0.0, "roman_ratio": 0.0, "symbol_ratio": 0.0
+        }
+    
+    kanji = sum(1 for c in text if '一' <= c <= '龯')
+    hiragana = sum(1 for c in text if 'ぁ' <= c <= 'ゟ')
+    katakana = sum(1 for c in text if 'ァ' <= c <= 'ヿ')
+    roman = sum(1 for c in text if 'a' <= c.lower() <= 'z')
+    symbols = sum(1 for c in text if not (c.isalnum() or c.isspace()))
+    
+    return {
+        "total_chars": total,
+        "kanji_ratio": round(kanji / total, 4),
+        "hiragana_ratio": round(hiragana / total, 4),
+        "katakana_ratio": round(katakana / total, 4),
+        "roman_ratio": round(roman / total, 4),
+        "symbol_ratio": round(symbols / total, 4)
+    }
+
 def export_db_to_jsonl():
-    """
-    DBからデータを読み込み、会話率を算出して学習用のJSONLへ変換する前処理タスク
-    """
     db_path = Path(r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\novels.db")
     output_path = config.DATA_PATH
     
-    # 出力先ディレクトリの確保
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     if not db_path.exists():
@@ -26,7 +83,6 @@ def export_db_to_jsonl():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # データを全件取得
     cursor.execute("""
         SELECT n.id, n.title, n.synopsis, n.genre, n.tags, c.chapter_number, c.subtitle, c.body_text
         FROM chapters c
@@ -36,9 +92,8 @@ def export_db_to_jsonl():
     all_data = cursor.fetchall()
     
     # 統計計算用の辞書
-    novel_stats = {} # {novel_id: {"total_conv_lines": 0, "total_lines": 0}}
+    novel_stats = {} 
     
-    # 1パス目: 小説全体の会話率計算用統計を作成
     for row in all_data:
         novel_id = row[0]
         body = row[7]
@@ -50,22 +105,25 @@ def export_db_to_jsonl():
         novel_stats[novel_id]["total_lines"] += len(lines)
         novel_stats[novel_id]["total_conv_lines"] += sum(1 for line in lines if line.startswith('「'))
         
-    # 2パス目: JSONL出力
     with open(output_path, "w", encoding="utf-8") as f:
         for row in all_data:
             novel_id, title, synopsis, genre, tags, number, subtitle, body = row
             
-            # 会話率計算
+            # メトリクス計算
             chapter_conv = calculate_conversation_rate(body)
             total_lines = novel_stats[novel_id]["total_lines"]
             novel_conv = (novel_stats[novel_id]["total_conv_lines"] / total_lines) if total_lines > 0 else 0.0
+            sentiment = get_sentiment(body)
+            stats = get_text_stats(body)
             
-            # 条件付き学習用プレフィックスの構築
+            # 条件付き学習用プレフィックス
             metadata_prefix = (
                 f"作品名: {title or '不明'}\n"
                 f"ジャンル: {genre or '未設定'}\n"
                 f"会話率(全体): {novel_conv:.2%}\n"
                 f"会話率(章): {chapter_conv:.2%}\n"
+                f"感情: {sentiment['label']}\n"
+                f"文字数: {stats['total_chars']}\n"
                 f"タグ: {tags or 'なし'}\n\n"
             )
             formatted_text = metadata_prefix + body
@@ -81,7 +139,9 @@ def export_db_to_jsonl():
                     "subtitle": subtitle,
                     "metrics": {
                         "novel_conversation_rate": novel_conv,
-                        "chapter_conversation_rate": chapter_conv
+                        "chapter_conversation_rate": chapter_conv,
+                        "sentiment": sentiment,
+                        "text_stats": stats
                     }
                 }
             }
