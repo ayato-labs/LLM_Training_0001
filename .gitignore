@@ -13,6 +13,7 @@ models/
 data/
 dataset.jsonl
 data/dataset.jsonl
+generate_result.txt
 
 # Virtual environments
 .venv
