@@ -19,5 +19,5 @@
         "warmup_ratio": 0.03
     },
     "data_path": "C:\\Users\\saiha\\My_Service\\programing\\LLM\\Novel_LLM\\LLM_Training\\data\\dataset.jsonl",
-    "max_steps": 50
+    "max_steps": -1
 }

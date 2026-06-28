@@ -8,12 +8,12 @@
     "hpo": {
         "n_params": 30000000,
         "n_tokens": 30000000,
-        "seq_len": 1024,
-        "max_lr_2d": 0.02,
+        "seq_len": 512,
+        "max_lr_2d": 0.005,
         "max_lr_1d": 0.002979,
         "min_lr": 1e-05,
         "batch_size_tokens": 10786,
-        "batch_size_seqs": 10,
+        "batch_size_seqs": 21,
         "stable_lr_ratio": 0.55,
         "stable_lr_2d": 0.0055,
         "warmup_ratio": 0.03
