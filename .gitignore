@@ -11,6 +11,7 @@ llm_training.egg-info/
 *.jsonl
 models/
 data/
+mlruns/
 dataset.jsonl
 data/dataset.jsonl
 generate_result.txt

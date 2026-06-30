@@ -6,6 +6,7 @@ import shutil
 import os
 import subprocess
 import datetime
+import mlflow
 from pathlib import Path
 from datasets import load_dataset
 from transformers import LlamaConfig, LlamaForCausalLM, Trainer, TrainingArguments, PreTrainedTokenizerFast, DataCollatorForLanguageModeling
@@ -149,6 +150,26 @@ def train(config_path):
     config = load_config(config_path)
     git_hash = get_git_revision_hash()
     
+    # MLflow init
+    os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+    try:
+        mlflow.set_tracking_uri("file:./mlruns")
+        mlflow.set_experiment("LLM_Training")
+        mlflow.start_run()
+        
+        mlflow.log_params({
+            "git_hash": git_hash,
+            "data_path": str(config.get('data_path', '')),
+            "max_steps": str(config.get('max_steps', ''))
+        })
+        for k, v in config.get('model_params', {}).items():
+            mlflow.log_param(f"model_params.{k}", v)
+        for k, v in config.get('hpo', {}).items():
+            mlflow.log_param(f"hpo.{k}", v)
+        mlflow.log_artifact(config_path)
+    except Exception as e:
+        print(f"MLflow initialization failed: {e}")
+
     # トークナイザー設定
     print("Loading tokenizer...")
     tokenizer = PreTrainedTokenizerFast(tokenizer_file="data/tokenizer.json")
@@ -253,6 +274,7 @@ def train(config_path):
         save_strategy="steps",
         save_steps=1000,
         logging_steps=10,
+        report_to=["tensorboard", "mlflow"],
     )
     
     trainer = CustomTrainer(
@@ -281,6 +303,10 @@ def train(config_path):
             
     model.save_pretrained("models/output")
     tokenizer.save_pretrained("models/output")
+    try:
+        mlflow.end_run()
+    except:
+        pass
     print("Training finished.")
 
 if __name__ == "__main__":
