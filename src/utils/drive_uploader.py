@@ -94,6 +94,50 @@ def upload_file_to_drive(service, file_path, folder_id):
     print(f"Upload complete. File ID on Google Drive: {response['id']}")
     return response['id']
 
+def upload_log_directories(service, folder_id):
+    """mlruns と TensorBoard ログを zip 圧縮して Google Drive に同期アップロードする"""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    for log_dir, label in [("mlruns", "mlruns_backup"), ("models/output/runs", "tensorboard_backup")]:
+        path = Path(log_dir)
+        if not path.exists():
+            continue
+            
+        # 空のディレクトリは無視する
+        if path.is_dir() and not any(path.iterdir()):
+            continue
+            
+        zip_base = OUTPUT_DIR / label
+        zip_path = Path(f"{zip_base}.zip")
+        
+        try:
+            print(f"Compressing {log_dir} for backup...")
+            shutil.make_archive(str(zip_base), 'zip', str(path))
+            print(f"Zip created: {zip_path.name}")
+            
+            # Google Drive 上の既存バックアップファイルを検索して削除（常に最新版に差し替える）
+            query = f"name = '{zip_path.name}' and '{folder_id}' in parents and trashed = false"
+            existing_files = service.files().list(q=query, fields="files(id)").execute().get('files', [])
+            for f in existing_files:
+                try:
+                    service.files().delete(fileId=f['id']).execute()
+                    print(f"Deleted old remote backup: {zip_path.name}")
+                except Exception as del_err:
+                    print(f"Warning: Failed to delete old remote backup {zip_path.name}: {del_err}", file=sys.stderr)
+                
+            # 新しい zip をアップロード
+            upload_file_to_drive(service, zip_path, folder_id)
+            
+        except Exception as e:
+            print(f"Error during backup of {log_dir}: {e}", file=sys.stderr)
+        finally:
+            # ローカルの zip を削除
+            if zip_path.exists():
+                try:
+                    os.remove(zip_path)
+                except Exception:
+                    pass
+
 def get_checkpoints():
     """models/output 内の有効な checkpoint-XXXX フォルダを列挙し、ステップ数の昇順でソートして返す"""
     if not OUTPUT_DIR.exists():
@@ -121,8 +165,15 @@ def monitor_and_upload():
         print(f"Failed to initialize Google Drive API: {e}", file=sys.stderr)
         return
 
+    loop_count = 0
     while True:
         try:
+            # 60秒ごと (POLL_INTERVAL=30 なので 2 ループごと) にログフォルダをバックアップ
+            if loop_count % 2 == 0:
+                print("Starting periodic backup of MLflow and TensorBoard logs...")
+                upload_log_directories(service, folder_id)
+            loop_count += 1
+            
             checkpoints = get_checkpoints()
             if not checkpoints:
                 time.sleep(POLL_INTERVAL)
