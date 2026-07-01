@@ -176,6 +176,17 @@ def train(config_path):
     tokenizer.pad_token = "[PAD]"
     tokenizer.bos_token = "[CLS]"
     tokenizer.eos_token = "[SEP]"
+    
+    # ADR-0013: メタデータ境界セパレータトークンの設定
+    special_tokens = {
+        "additional_special_tokens": [
+            "<|start_of_metadata|>",
+            "<|end_of_metadata|>",
+            "<|start_of_story|>"
+        ]
+    }
+    num_added = tokenizer.add_special_tokens(special_tokens)
+    print(f"Added {num_added} special tokens for metadata boundary enforcement.")
     print("Tokenizer loaded.")
     
     # データのロード
@@ -223,7 +234,10 @@ def train(config_path):
         eos_token_id=tokenizer.eos_token_id
     )
     model = LlamaForCausalLM(model_config)
-    print(f"Model initialized with hidden_size={adjusted_hidden_size}")
+    
+    # ADR-0013: 特殊トークン追加後の embed_tokens リサイズ
+    model.resize_token_embeddings(len(tokenizer))
+    print(f"Model initialized with hidden_size={adjusted_hidden_size}, vocab_size={len(tokenizer)}")
     
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     

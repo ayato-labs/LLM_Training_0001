@@ -15,7 +15,11 @@ def train_tokenizer():
     tokenizer.pre_tokenizer = Whitespace()
 
     # Train
-    trainer = BpeTrainer(special_tokens=["[UNK]", "[CLS]", "[SEP]", "[PAD]", "[MASK]"], vocab_size=32000)
+    special_tokens = [
+        "[UNK]", "[CLS]", "[SEP]", "[PAD]", "[MASK]",
+        "<|start_of_metadata|>", "<|end_of_metadata|>", "<|start_of_story|>"
+    ]
+    trainer = BpeTrainer(special_tokens=special_tokens, vocab_size=32000)
     
     files = [str(CORPUS_PATH)]
     tokenizer.train(files, trainer)

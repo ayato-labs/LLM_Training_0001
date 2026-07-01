@@ -148,15 +148,18 @@ def export_db_to_jsonl():
                 sentiment = get_sentiment(chunk_body)
                 stats = get_text_stats(chunk_body)
                 
-                # 条件付き学習用プレフィックス
+                # 条件付き学習用プレフィックス（ADR-0013: 特殊トークンによる境界強化）
                 metadata_prefix = (
+                    f"<|start_of_metadata|>\n"
                     f"作品名: {title or '不明'}\n"
                     f"ジャンル: {genre or '未設定'}\n"
                     f"会話率(全体): {novel_conv:.2%}\n"
                     f"会話率(章): {chapter_conv:.2%}\n"
                     f"感情: {sentiment['label']}\n"
                     f"文字数: {stats['total_chars']}\n"
-                    f"タグ: {tags or 'なし'}\n\n"
+                    f"タグ: {tags or 'なし'}\n"
+                    f"<|end_of_metadata|>\n"
+                    f"<|start_of_story|>"
                 )
                 formatted_text = metadata_prefix + chunk_body
                 

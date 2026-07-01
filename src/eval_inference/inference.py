@@ -13,8 +13,19 @@ def load_model():
     tokenizer.bos_token = "[CLS]"
     tokenizer.eos_token = "[SEP]"
     
+    # ADR-0013: 特殊トークンの設定
+    special_tokens = {
+        "additional_special_tokens": [
+            "<|start_of_metadata|>",
+            "<|end_of_metadata|>",
+            "<|start_of_story|>"
+        ]
+    }
+    tokenizer.add_special_tokens(special_tokens)
+    
     # Load model
     model = LlamaForCausalLM.from_pretrained(str(MODEL_PATH))
+    model.resize_token_embeddings(len(tokenizer))
     model.eval()
     return model, tokenizer
 
