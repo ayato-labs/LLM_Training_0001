@@ -10,9 +10,10 @@ import mlflow
 from pathlib import Path
 from datasets import load_dataset
 from transformers import LlamaConfig, LlamaForCausalLM, Trainer, TrainingArguments, PreTrainedTokenizerFast, DataCollatorForLanguageModeling
-import training_config as prj_config
 
-# ログ設定
+# ============================================================
+# Logging setup
+# ============================================================
 log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
 log_file = log_dir / f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -45,6 +46,165 @@ sys.stderr = Logger(log_file)
 
 print(f"CUDA available: {torch.cuda.is_available()}", flush=True)
 
+
+# ============================================================
+# Dataset fingerprinting (traceability)
+# ============================================================
+def compute_file_hash(file_path: str, algorithm: str = "sha256") -> str:
+    """Compute hash of a file for traceability."""
+    h = hashlib.new(algorithm)
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def compute_dataset_fingerprint(dataset_path: str) -> dict:
+    """
+    Compute a comprehensive fingerprint of the training dataset.
+    Returns dict with hash, row count, file size, and modification time.
+    """
+    path = Path(dataset_path)
+    if not path.exists():
+        return {"error": f"File not found: {dataset_path}"}
+
+    stat = path.stat()
+    # Line count for JSONL
+    line_count = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for _ in f:
+            line_count += 1
+
+    return {
+        "path": str(path.resolve()),
+        "sha256": compute_file_hash(str(path)),
+        "size_bytes": stat.st_size,
+        "line_count": line_count,
+        "mtime": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+    }
+
+
+def compute_db_fingerprint(db_path: str) -> dict:
+    """Compute fingerprint of the source SQLite database."""
+    path = Path(db_path)
+    if not path.exists():
+        return {"error": f"Database not found: {db_path}"}
+
+    import sqlite3
+    stat = path.stat()
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM chapters")
+        chapter_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM novels")
+        novel_count = cursor.fetchone()[0]
+        conn.close()
+    except Exception as e:
+        chapter_count = -1
+        novel_count = -1
+
+    return {
+        "path": str(path.resolve()),
+        "sha256": compute_file_hash(str(path)),
+        "size_bytes": stat.st_size,
+        "chapter_count": chapter_count,
+        "novel_count": novel_count,
+        "mtime": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+    }
+
+
+# ============================================================
+# Config normalization: Hydra DictConfig ↔ legacy JSON
+# ============================================================
+def normalize_config(raw) -> dict:
+    """
+    Accept either a Hydra DictConfig or a legacy JSON dict and return
+    a flat dictionary with standardized keys.
+    """
+    # Convert DictConfig to plain dict
+    from omegaconf import OmegaConf
+    if OmegaConf.is_config(raw):
+        cfg = OmegaConf.to_container(raw, resolve=True)
+    elif isinstance(raw, dict):
+        cfg = raw
+    else:
+        raise TypeError(f"Unsupported config type: {type(raw)}")
+
+    # --- Legacy JSON format passthrough ---
+    if "hpo" in cfg and "model_params" in cfg:
+        return cfg
+
+    # --- Hydra config.yaml format → legacy dict ---
+    hpo = {}
+    t = cfg.get("training", {})
+    hpo["seq_len"] = t.get("seq_len", 512)
+    hpo["warmup_ratio"] = t.get("hpo", {}).get("warmup_ratio", 0.03)
+    # LR/batch will be injected by main.py after HPO
+
+    model_params = cfg.get("model", {})
+
+    return {
+        "model_params": model_params,
+        "hpo": hpo,
+        "data_path": cfg.get("data", {}).get("dataset_path", "data/dataset.jsonl"),
+        "tokenizer_path": cfg.get("data", {}).get("tokenizer_path", "data/tokenizer.json"),
+        "max_steps": t.get("max_steps", -1),
+        "num_epochs": t.get("num_epochs", 3),
+        "seed": cfg.get("seed", 42),
+        "_hydra_cfg": cfg,  # preserve full Hydra config for logging
+    }
+
+
+# ============================================================
+# DeepSpeed config generation
+# ============================================================
+def generate_deepspeed_config(n_params, vram_limit_gb):
+    est_vram_gb = (n_params * 14) / (1024**3)
+
+    ds_config = {
+        "fp16": {"enabled": True},
+        "zero_optimization": {
+            "stage": 2,
+            "allgather_partitions": True,
+            "allgather_bucket_size": 2e8,
+            "overlap_comm": True,
+            "reduce_scatter": True,
+            "reduce_bucket_size": 2e8,
+        },
+        "activation_checkpointing": {
+            "partition_activations": True,
+            "cpu_checkpointing": True,
+            "contiguous_memory_optimization": False,
+            "number_of_nodes": 1,
+            "synchronize_checkpoint_boundary": False,
+            "profile": False,
+        },
+        "gradient_accumulation_steps": "auto",
+        "train_batch_size": "auto",
+    }
+
+    if est_vram_gb > vram_limit_gb:
+        print(f"DeepSpeed WARNING: Est. param memory ({est_vram_gb:.2f} GB) > VRAM ({vram_limit_gb} GB). GPU-only may OOM.", flush=True)
+    else:
+        print(f"DeepSpeed: Est. VRAM ({est_vram_gb:.2f} GB) fits within limit ({vram_limit_gb} GB).", flush=True)
+
+    ds_config_path = "temp_ds_config.json"
+    with open(ds_config_path, "w", encoding="utf-8") as f:
+        json.dump(ds_config, f, indent=2)
+    return ds_config_path
+
+
+def get_git_revision_hash():
+    try:
+        return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+    except Exception:
+        return "unknown"
+
+
+# ============================================================
+# CustomTrainer with Muon/AdamW split
+# ============================================================
 class CustomTrainer(Trainer):
     def __init__(self, *args, additional_config=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -53,27 +213,26 @@ class CustomTrainer(Trainer):
     def create_optimizer(self):
         if self.optimizer is not None:
             return self.optimizer
-        
+
         model = self.model
         config = self.additional_config
-        
+
         lr_2d = config['hpo']['max_lr_2d']
         lr_1d = config['hpo']['max_lr_1d']
-        
+
         params_2d = []
         params_1d = []
         for n, p in model.named_parameters():
             if not p.requires_grad:
                 continue
-            # 1D/AdamW target parameters (Embeddings, Layernorms, Biases, classifier head)
             if len(p.shape) < 2 or "embed" in n or "norm" in n or "bias" in n or "lm_head" in n:
                 params_1d.append(p)
             else:
                 params_2d.append(p)
-                
+
         try:
             from muon import Muon
-            print(f"Optimizer: Using Muon for 2D params (lr={lr_2d}) and AdamW for 1D params (lr={lr_1d})", flush=True)
+            print(f"Optimizer: Muon for 2D (lr={lr_2d}), AdamW for 1D (lr={lr_1d})", flush=True)
             self.optimizer = Muon(
                 params_2d,
                 lr=lr_2d,
@@ -82,195 +241,209 @@ class CustomTrainer(Trainer):
                     params=params_1d,
                     lr=lr_1d,
                     betas=(0.9, 0.95),
-                    weight_decay=0.01
-                )
+                    weight_decay=0.01,
+                ),
             )
         except ImportError:
-            print("Optimizer: Muon not found. Falling back to split AdamW optimizer.", flush=True)
+            print("Optimizer: Muon not found. Falling back to split AdamW.", flush=True)
             from torch.optim import AdamW
             self.optimizer = AdamW([
                 {'params': params_2d, 'lr': lr_2d, 'weight_decay': 0.0},
-                {'params': params_1d, 'lr': lr_1d, 'weight_decay': 0.01}
+                {'params': params_1d, 'lr': lr_1d, 'weight_decay': 0.01},
             ], betas=(0.9, 0.95))
-            
+
         return self.optimizer
 
-def generate_deepspeed_config(n_params, vram_limit_gb):
-    # 2 bytes weight (fp16) + 12 bytes optimizer states per parameter
-    est_vram_gb = (n_params * 14) / (1024**3)
-    
-    # プレトレーニングにおける極端な速度低下を防ぐため、CPUオフロードは常時無効化（GPUオンリー）
-    offload_device = "none"
-    
-    ds_config = {
-        "fp16": {
-            "enabled": True
-        },
-        "zero_optimization": {
-            "stage": 2,
-            "allgather_partitions": True,
-            "allgather_bucket_size": 2e8,
-            "overlap_comm": True,
-            "reduce_scatter": True,
-            "reduce_bucket_size": 2e8
-        },
-        "activation_checkpointing": {
-            "partition_activations": True,
-            "cpu_checkpointing": True,
-            "contiguous_memory_optimization": False,
-            "number_of_nodes": 1,
-            "synchronize_checkpoint_boundary": False,
-            "profile": False
-        },
-        "gradient_accumulation_steps": "auto",
-        "train_batch_size": "auto"
-    }
-    
-    if est_vram_gb > vram_limit_gb:
-        print(f"DeepSpeed WARNING: Estimated parameters memory ({est_vram_gb:.2f} GB) exceeds VRAM limit ({vram_limit_gb} GB). CPU Offload is disabled by design. Running entirely on GPU may trigger OOM (Out Of Memory).", flush=True)
+
+# ============================================================
+# Main training function
+# ============================================================
+def train(config_path_or_cfg):
+    """
+    Args:
+        config_path_or_cfg: str (path to JSON) or Hydra DictConfig
+    """
+    # --- Config loading ---
+    if isinstance(config_path_or_cfg, (str, Path)):
+        with open(config_path_or_cfg, "r", encoding="utf-8") as f:
+            raw_config = json.load(f)
     else:
-        print(f"DeepSpeed: Estimated VRAM ({est_vram_gb:.2f} GB) fits within VRAM limit ({vram_limit_gb} GB). Running entirely on GPU.", flush=True)
-        
-    ds_config_path = "temp_ds_config.json"
-    with open(ds_config_path, "w", encoding="utf-8") as f:
-        json.dump(ds_config, f, indent=2)
-    return ds_config_path
+        raw_config = config_path_or_cfg
 
-def get_git_revision_hash():
-    try:
-        return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
-    except:
-        return "unknown"
-
-def load_config(config_path):
-    with open(config_path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def train(config_path):
-    config = load_config(config_path)
+    config = normalize_config(raw_config)
     git_hash = get_git_revision_hash()
-    
-    # MLflow init
+    seed = config.get("seed", 42)
+
+    # --- Seed fixing (ADR-017) ---
+    from src.utils.set_seed import set_seed
+    set_seed(seed, deterministic=True)
+
+    # --- Dataset fingerprinting (traceability) ---
+    data_path_str = config.get("data_path", "data/dataset.jsonl")
+    data_fingerprint = compute_dataset_fingerprint(data_path_str)
+    db_path_str = config.get("_hydra_cfg", {}).get("data", {}).get("db_path", "../Novel_Data_Collection/novels.db")
+    db_fingerprint = compute_db_fingerprint(db_path_str)
+
+    # --- Environment snapshot (traceability) ---
+    from src.utils.env_snapshot import capture_env_snapshot
+    env_snapshot = capture_env_snapshot()
+
+    # --- MLflow init with full traceability ---
     os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+    mlflow_run = None
     try:
         mlflow.set_tracking_uri("file:./mlruns")
         mlflow.set_experiment("LLM_Training")
-        mlflow.start_run()
-        
+        mlflow_run = mlflow.start_run()
+
+        # Core params
         mlflow.log_params({
             "git_hash": git_hash,
-            "data_path": str(config.get('data_path', '')),
-            "max_steps": str(config.get('max_steps', ''))
+            "seed": seed,
+            "data_path": data_path_str,
+            "max_steps": str(config.get('max_steps', -1)),
         })
+
+        # Model params
         for k, v in config.get('model_params', {}).items():
-            mlflow.log_param(f"model_params.{k}", v)
+            if v is not None:
+                mlflow.log_param(f"model.{k}", v)
+
+        # HPO params
         for k, v in config.get('hpo', {}).items():
-            mlflow.log_param(f"hpo.{k}", v)
-        mlflow.log_artifact(config_path)
+            if v is not None:
+                mlflow.log_param(f"hpo.{k}", v)
+
+        # Dataset fingerprint (traceability)
+        if "error" not in data_fingerprint:
+            mlflow.log_params({
+                "dataset.sha256": data_fingerprint["sha256"],
+                "dataset.rows": data_fingerprint["line_count"],
+                "dataset.size_bytes": data_fingerprint["size_bytes"],
+            })
+
+        # DB fingerprint (traceability)
+        if "error" not in db_fingerprint:
+            mlflow.log_params({
+                "db.sha256": db_fingerprint["sha256"],
+                "db.chapters": db_fingerprint["chapter_count"],
+                "db.novels": db_fingerprint["novel_count"],
+            })
+
+        # Environment snapshot (traceability)
+        mlflow.log_dict(env_snapshot, "environment.json")
+
+        # Config artifact
+        config_path_obj = Path(config_path_or_cfg) if isinstance(config_path_or_cfg, (str, Path)) else Path("hydra_config.yaml")
+        if config_path_obj.exists():
+            mlflow.log_artifact(str(config_path_obj))
+
     except Exception as e:
         print(f"MLflow initialization failed: {e}")
 
-    # トークナイザー設定
-    print("Loading tokenizer...")
-    tokenizer = PreTrainedTokenizerFast(tokenizer_file="data/tokenizer.json")
+    # --- Tokenizer ---
+    tokenizer_path = config.get("tokenizer_path", "data/tokenizer.json")
+    print(f"Loading tokenizer from {tokenizer_path}...")
+    tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
     tokenizer.pad_token = "[PAD]"
     tokenizer.bos_token = "[CLS]"
     tokenizer.eos_token = "[SEP]"
-    
-    # ADR-0013: メタデータ境界セパレータトークンの設定
+
+    # ADR-0013: Metadata boundary special tokens
     special_tokens = {
         "additional_special_tokens": [
             "<|start_of_metadata|>",
             "<|end_of_metadata|>",
-            "<|start_of_story|>"
+            "<|start_of_story|>",
         ]
     }
     num_added = tokenizer.add_special_tokens(special_tokens)
     print(f"Added {num_added} special tokens for metadata boundary enforcement.")
-    print("Tokenizer loaded.")
-    
-    # データのロード
+
+    # --- Dataset loading ---
     print("Starting dataset load...")
-    data_path = Path(config['data_path'])
+    data_path = Path(data_path_str)
     if not data_path.exists():
         fallback_path = Path("data") / data_path.name
         if fallback_path.exists():
             data_path = fallback_path
             print(f"Dataset path resolved to fallback: {data_path}")
         else:
-            raise FileNotFoundError(f"Could not find dataset at '{config['data_path']}' or '{fallback_path.resolve()}'")
-            
+            raise FileNotFoundError(
+                f"Could not find dataset at '{data_path_str}' or '{fallback_path.resolve()}'"
+            )
+
     dataset = load_dataset("json", data_files=str(data_path))
-    
-    # テキストのトークン化
-    seq_len = config['hpo'].get('seq_len', 1024)
+
+    seq_len = config.get('hpo', {}).get('seq_len', 512)
     print(f"Tokenizing dataset with max_length={seq_len}...")
+
     def tokenize_function(examples):
         return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=seq_len)
-    
+
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
-    # 不必要な列を削除
     tokenized_datasets = tokenized_datasets.remove_columns(["text", "metadata"])
-    # 形式を整える
     tokenized_datasets.set_format("torch")
     print(f"Dataset loaded. Size: {len(tokenized_datasets['train'])}")
-    
-    # モデル初期化
+
+    # --- Model initialization ---
     print("Initializing model...")
-    # config['model_params'] から hidden_size を取り除いて渡す
-    params = config['model_params'].copy()
-    params.pop('hidden_size', None)
-    
-    # hidden_size が num_attention_heads の倍数になるように保証
+    model_params = config['model_params'].copy()
+    model_params.pop('hidden_size', None)
+    model_params.pop('_hydra_cfg', None)
+
     hidden_size = config['model_params']['hidden_size']
     num_heads = config['model_params']['num_attention_heads']
     adjusted_hidden_size = (hidden_size // num_heads) * num_heads
-    
+
     model_config = LlamaConfig(
-        **params,
+        **{k: v for k, v in model_params.items() if v is not None},
         hidden_size=adjusted_hidden_size,
         pad_token_id=tokenizer.pad_token_id,
         bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id
+        eos_token_id=tokenizer.eos_token_id,
     )
     model = LlamaForCausalLM(model_config)
-    
-    # ADR-0013: 特殊トークン追加後の embed_tokens リサイズ
     model.resize_token_embeddings(len(tokenizer))
-    print(f"Model initialized with hidden_size={adjusted_hidden_size}, vocab_size={len(tokenizer)}")
-    
+    print(f"Model initialized: hidden_size={adjusted_hidden_size}, vocab_size={len(tokenizer)}")
+
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-    
-    # 設定から学習ステップ数を取得（指定がない場合は1エポック）
+
+    # --- TrainingArguments ---
     max_steps = config.get('max_steps', -1)
-    
-    print("Initializing trainer...")
-    num_epochs = getattr(prj_config, "NUM_EPOCHS", 3) if max_steps == -1 else 0
-    
-    # スケーリングに対応した動的バッチサイズ・DeepSpeed設定の生成
+    num_epochs = config.get('num_epochs', 3) if max_steps == -1 else 0
+
     hpo_config = config['hpo']
     target_total_batch_seqs = hpo_config.get('batch_size_seqs', 16)
-    
-    # VRAMサイズとモデル規模からDeepSpeed構成を決定
-    # パラメータ数が指定されていなければデフォルト125Mとする
+
     n_params_est = config['model_params'].get('n_params', 125_000_000)
-    vram_limit = prj_config.VRAM_LIMIT_GB
+    # Try to get VRAM limit from config, fallback to training_config
+    try:
+        vram_limit = config.get('_hydra_cfg', {}).get('hardware', {}).get('vram_limit_gb', 32.0)
+        if vram_limit is None:
+            vram_limit = 32.0
+        vram_limit = float(vram_limit)
+    except Exception:
+        try:
+            import training_config as prj_config
+            vram_limit = prj_config.VRAM_LIMIT_GB
+        except Exception:
+            vram_limit = 32.0
+
     ds_config_path = generate_deepspeed_config(n_params_est, vram_limit)
-    
-    # 適切な1デバイスあたりバッチサイズと勾配蓄積ステップの計算
-    # WindowsのWDDMメモリページングによる極端な速度低下を防ぐため、物理VRAMサイズに応じて最大バッチサイズを動的に制限する。
+
+    # Batch size calculation
     if vram_limit <= 4.5:
-        max_batch = 1  # 4GB VRAM環境下では最大1バッチに変更しWDDMページングを回避
+        max_batch = 1
     elif vram_limit <= 8.5:
-        max_batch = 4  # 8GB VRAM
+        max_batch = 4
     elif vram_limit <= 16.5:
-        max_batch = 8  # 16GB VRAM
+        max_batch = 8
     else:
         max_batch = 16
-        
+
     per_device_batch = min(target_total_batch_seqs, max_batch)
     grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
-    
     warmup_ratio = hpo_config.get('warmup_ratio', 0.03)
 
     training_args = TrainingArguments(
@@ -284,13 +457,15 @@ def train(config_path):
         remove_unused_columns=False,
         lr_scheduler_type="cosine",
         warmup_ratio=warmup_ratio,
+        seed=seed,
+        deterministic=True,
         deepspeed=ds_config_path if (torch.cuda.is_available() and is_deepspeed_available()) else None,
         save_strategy="steps",
         save_steps=1000,
         logging_steps=10,
         report_to=["tensorboard", "mlflow"],
     )
-    
+
     trainer = CustomTrainer(
         model=model,
         args=training_args,
@@ -298,30 +473,47 @@ def train(config_path):
         data_collator=data_collator,
         additional_config=config,
     )
-    
-    print(f"Trainer initialized with batch_size={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})", flush=True)
-    # 設定ファイルからレジュームフラグを読み取り、適用する
+
+    print(f"Trainer: batch={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})", flush=True)
+
+    # --- Resume ---
     resume_flag = config.get("resume", False)
     train_result = trainer.train(resume_from_checkpoint=resume_flag)
-    
-    # 学習結果の記録
+
+    # --- Post-training traceability ---
     with open("last_run_result.json", "w", encoding="utf-8") as f:
         json.dump(train_result.metrics, f)
-    
-    # 一時的なDeepSpeed設定ファイルをクリーンアップ
+
+    # Log final metrics to MLflow
+    try:
+        if mlflow_run is not None:
+            mlflow.log_metrics({
+                "final_train_loss": train_result.metrics.get("train_loss", -1),
+                "final_train_runtime": train_result.metrics.get("train_runtime", -1),
+                "final_train_samples_per_second": train_result.metrics.get("train_samples_per_second", -1),
+                "final_train_steps_per_second": train_result.metrics.get("train_steps_per_second", -1),
+            })
+    except Exception as e:
+        print(f"MLflow metrics logging failed: {e}")
+
+    # --- Cleanup ---
     if os.path.exists(ds_config_path):
         try:
             os.remove(ds_config_path)
-        except:
+        except Exception:
             pass
-            
+
     model.save_pretrained("models/output")
     tokenizer.save_pretrained("models/output")
+
     try:
-        mlflow.end_run()
-    except:
+        if mlflow_run is not None:
+            mlflow.end_run()
+    except Exception:
         pass
+
     print("Training finished.")
+
 
 if __name__ == "__main__":
     config_path = sys.argv[1]

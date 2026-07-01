@@ -2,7 +2,6 @@ import re
 import sqlite3
 import json
 from pathlib import Path
-import training_config as config
 
 """
 小説特化型LLM学習用データセット生成パイプライン
@@ -22,6 +21,10 @@ LLM学習に最適なJSONL形式へ変換する前処理を担当します。
 これらをメタ情報(metrics)として付与し、モデルがコンテキストの
 「密度」「トーン」「文体構成」を数値として理解できるように設計されています。
 """
+# Config-aware defaults (can be overridden via YAML config)
+_DEFAULT_DB_PATH = r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\novels.db"
+_DEFAULT_CHUNK_SIZE = 2000
+_DEFAULT_OVERLAP = 200
 
 # 簡易的な感情辞書
 POSITIVE_WORDS = {'素晴らしい', '楽しい', '嬉しい', '大好き', '成功', '美しい', '希望', '愛', '優しい'}
@@ -97,9 +100,34 @@ def split_text_with_overlap(text, chunk_size=2000, overlap=200):
         start += (chunk_size - overlap)
     return chunks
 
-def export_db_to_jsonl():
-    db_path = Path(r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\novels.db")
-    output_path = config.DATA_PATH
+def export_db_to_jsonl(db_path=None, output_path=None, chunk_size=None, overlap=None):
+    """
+    Export SQLite database to JSONL for LLM training.
+    
+    Args:
+        db_path: Path to SQLite database. Defaults to _DEFAULT_DB_PATH.
+        output_path: Output JSONL path. Defaults to training_config.DATA_PATH.
+        chunk_size: Text chunk size in characters. Default 2000 (~1024 tokens).
+        overlap: Overlap between chunks. Default 200.
+    """
+    if db_path is None:
+        db_path = Path(_DEFAULT_DB_PATH)
+    else:
+        db_path = Path(db_path)
+        
+    if output_path is None:
+        try:
+            import training_config as cfg
+            output_path = Path(cfg.DATA_PATH)
+        except ImportError:
+            output_path = Path("data/dataset.jsonl")
+    else:
+        output_path = Path(output_path)
+        
+    if chunk_size is None:
+        chunk_size = _DEFAULT_CHUNK_SIZE
+    if overlap is None:
+        overlap = _DEFAULT_OVERLAP
     
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -140,7 +168,7 @@ def export_db_to_jsonl():
             novel_conv = (novel_stats[novel_id]["total_conv_lines"] / total_lines) if total_lines > 0 else 0.0
             
             # 本文をオーバーラップ付きで分割
-            body_chunks = split_text_with_overlap(body, chunk_size=2000, overlap=200)
+            body_chunks = split_text_with_overlap(body, chunk_size=chunk_size, overlap=overlap)
             
             for chunk_idx, chunk_body in enumerate(body_chunks):
                 # チャンクごとにメトリクスを再計算することでプレフィックスとの整合性を担保

@@ -10,11 +10,18 @@ llm_training.egg-info/
 *.log
 *.jsonl
 models/
-data/
 mlruns/
-dataset.jsonl
-data/dataset.jsonl
 generate_result.txt
+
+# Data files (tracked by DVC, not Git)
+data/*.jsonl
+data/corpus.jsonl
+data/tokenizer.json
+data/tokenizer.model
+!data/*.dvc
+
+# Hydra output directories
+outputs/
 
 # Virtual environments
 .venv
@@ -25,3 +32,6 @@ service_account.json
 token.json
 temp_ds_config.json
 client_secret_1082524187757-73gj1nh4tfl2si7gmnvbvp6u1fr5dk0h.apps.googleusercontent.com.json
+
+# DVC cache (large files)
+.dvc/cache/
