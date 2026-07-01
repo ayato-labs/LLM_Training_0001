@@ -1,0 +1,60 @@
+# Novel LLM - 7B Model Configuration (RTX 5090 x2 / 48GB VRAM)
+# Usage: python main.py --config-name=scaling_7b
+#
+# Target: ~7B parameters, seq_len=4096, DDP/FSDP multi-GPU
+# VRAM estimate: ~35-40GB total (FP16 + ZeRO Stage 2)
+
+defaults:
+  - config  # inherit base config
+
+# ============================================================
+# Hardware
+# ============================================================
+hardware:
+  vram_limit_gb: 48.0  # RTX 5090 x2
+
+# ============================================================
+# Model: ~7B Llama
+# ============================================================
+model:
+  target_params: 7000000000  # 7B
+  proxy_min_params: 700000000  # 700M proxy for HPO
+
+  llama:
+    hidden_size: null     # auto-calculated
+    num_hidden_layers: null
+    num_attention_heads: null
+
+# ============================================================
+# Training
+# ============================================================
+training:
+  seq_len: 4096          # 7Bなら4096まで可能
+  max_steps: -1
+  num_epochs: 3
+  target_tokens: 200000000  # 200M tokens
+
+  hpo:
+    min_lr: 1e-6
+    warmup_ratio: 0.03
+
+# ============================================================
+# Data
+# ============================================================
+data:
+  preprocessing:
+    chunk_size: 8000     # ~4096 tokens
+    overlap: 800
+
+# ============================================================
+# Reproducibility
+# ============================================================
+seed: 42
+
+# ============================================================
+# Checkpoint
+# ============================================================
+checkpoint:
+  save_strategy: "steps"
+  save_steps: 250
+  save_total_limit: 10  # keep last 10 locally
