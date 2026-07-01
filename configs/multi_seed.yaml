@@ -1,0 +1,23 @@
+# Hydra multirun config for multi-seed evaluation
+# Usage:
+#   python main.py --config-name=multi_seed -m
+#   python main.py --config-name=multi_seed -m seed=42,123,456,789,1024
+#
+# ADR-020: Evaluation protocol standardization
+
+defaults:
+  - config  # inherit base config
+
+# Override seeds for multirun
+seed: 42
+
+# Multirun launcher settings
+# Hydra will run each seed as a separate job
+hydra:
+  launcher:
+    _target_: hydra.plugins.internal._internal_launcher.StandardLauncher
+  sweeper:
+    _target_: hydra._internal.core_plugins._internal Sweeper
+    max_batches: -1
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
