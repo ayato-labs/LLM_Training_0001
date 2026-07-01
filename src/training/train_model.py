@@ -458,7 +458,6 @@ def train(config_path_or_cfg):
         lr_scheduler_type="cosine",
         warmup_ratio=warmup_ratio,
         seed=seed,
-        deterministic=True,
         deepspeed=ds_config_path if (torch.cuda.is_available() and is_deepspeed_available()) else None,
         save_strategy="steps",
         save_steps=1000,

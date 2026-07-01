@@ -1,0 +1,22 @@
+{
+    "model_params": {
+        "n_params": 15000000,
+        "hidden_size": 512,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 8
+    },
+    "hpo": {
+        "seq_len": 512,
+        "max_lr_2d": 0.005,
+        "max_lr_1d": 0.0015,
+        "min_lr": 1e-5,
+        "warmup_ratio": 0.03,
+        "batch_size_seqs": 4
+    },
+    "data_path": "data/dataset.jsonl",
+    "tokenizer_path": "data/tokenizer.json",
+    "max_steps": 100,
+    "num_epochs": 0,
+    "seed": 42,
+    "resume": false
+}

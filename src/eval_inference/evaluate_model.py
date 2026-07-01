@@ -223,7 +223,7 @@ def run_evaluation(model_path="models/output", max_new_tokens=200, log_mlflow=Tr
     structured_results = []
     report_content = []
     report_content.append(f"# Model Inference Evaluation Report")
-    report_content.append(f"* **Execution Date**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report_content.append(f"* **Execution Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     report_content.append(f"* **Model Path**: `{model_path}`")
     report_content.append(f"* **Device**: `{model.device}`")
     report_content.append(f"* **Max New Tokens**: {max_new_tokens}")
