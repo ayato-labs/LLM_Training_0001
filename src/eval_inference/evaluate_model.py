@@ -1,7 +1,15 @@
+"""
+Inference evaluation suite for trained Novel LLM.
+Generates structured test outputs, logs to MLflow, and saves locally.
+
+ADR-022: Inference output traceability.
+"""
 import os
 import sys
 import json
+import re
 import torch
+import mlflow
 from datetime import datetime
 from pathlib import Path
 from transformers import LlamaForCausalLM, AutoTokenizer
@@ -104,50 +112,128 @@ TEST_CASES = [
     }
 ]
 
+
 def clean_sentencepiece_spaces(text):
     """SentencePieceのデコード時に生じる不自然な文字間スペースをトリミングする"""
-    # 連続するスペースや日本語文字の間の半角スペースを結合
-    # ただし英単語同士のスペースは維持する
-    import re
-    # 日本語文字に挟まれた半角スペースを除去
     text = re.sub(r'([ぁ-んァ-ヶー一-龠々])\s+([ぁ-んァ-ヶー一-龠々])', r'\1\2', text)
-    # 記号と日本語の間のスペースを除去
     text = re.sub(r'([ぁ-んァ-ヶー一-龠々])\s+([「」『』、。！？])', r'\1\2', text)
     text = re.sub(r'([「」『』、。！？])\s+([ぁ-んァ-ヶー一-龠々])', r'\1\2', text)
-    # コロンやカンマの間のスペース除去
     text = re.sub(r'\s*([:\n])\s*', r'\1', text)
     return text
 
-def run_evaluation(model_path="models/output", max_new_tokens=200):
+
+def _log_to_mlflow(results: list[dict], report_md: str, model_path: str):
+    """Log inference results to MLflow as artifacts and metrics."""
+    try:
+        mlflow.set_tracking_uri("file:./mlruns")
+
+        # Check if there's an active run; if not, log under the latest run
+        active_run = mlflow.active_run()
+        if active_run is None:
+            # Try to find and log to the most recent run
+            experiment = mlflow.get_experiment_by_name("LLM_Training")
+            if experiment is None:
+                print("[MLflow] No active experiment found. Skipping MLflow logging.")
+                return
+
+            runs = mlflow.search_runs(
+                experiment_ids=[experiment.experiment_id],
+                max_results=1,
+                order_by=["start_time DESC"],
+            )
+            if runs.empty:
+                print("[MLflow] No runs found. Skipping MLflow logging.")
+                return
+            run_id = runs.iloc[0]["run_id"]
+            with mlflow.start_run(run_id=run_id):
+                _do_mlflow_logging(results, report_md, model_path)
+        else:
+            _do_mlflow_logging(results, report_md, model_path)
+
+    except Exception as e:
+        print(f"[MLflow] Inference logging failed: {e}")
+
+
+def _do_mlflow_logging(results: list[dict], report_md: str, model_path: str):
+    """Actual MLflow logging logic (must be inside an active run)."""
+    # Log each test case output as a separate artifact
+    for r in results:
+        tc_id = r["test_case_id"]
+        output_data = {
+            "test_case_id": tc_id,
+            "test_case_name": r["test_case_name"],
+            "target": r["target"],
+            "prompt": r["prompt"],
+            "generated_output": r["generated_output"],
+            "output_length_chars": len(r["generated_output"]),
+        }
+        # Save as JSON artifact
+        tmp_path = Path(f"logs/_tmp_{tc_id}.json")
+        tmp_path.parent.mkdir(exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
+        mlflow.log_artifact(str(tmp_path), artifact_path="inference_results")
+        tmp_path.unlink(missing_ok=True)
+
+    # Log the full Markdown report
+    mlflow.log_artifact(report_md, artifact_path="inference_reports")
+
+    # Log summary metrics
+    total_chars = sum(len(r["generated_output"]) for r in results)
+    mlflow.log_metrics({
+        "inference_total_output_chars": total_chars,
+        "inference_test_cases": len(results),
+    })
+
+    # Log model path reference
+    mlflow.log_param("inference_model_path", model_path)
+
+    print(f"[MLflow] Inference results logged ({len(results)} test cases).")
+
+
+def run_evaluation(model_path="models/output", max_new_tokens=200, log_mlflow=True):
+    """
+    Run the full inference evaluation suite.
+
+    Args:
+        model_path: Path to the trained model.
+        max_new_tokens: Maximum tokens to generate.
+        log_mlflow: Whether to log results to MLflow.
+
+    Returns:
+        Tuple of (report_path, structured_results)
+    """
     print(f"Initializing Evaluator using model from: {model_path}")
-    
+
     if not os.path.exists(model_path):
         print(f"Error: Model directory not found at {model_path}", file=sys.stderr)
         sys.exit(1)
-        
+
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = LlamaForCausalLM.from_pretrained(model_path)
     model.eval()
     model.to("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_dir = BASE_DIR / "logs"
     report_dir.mkdir(exist_ok=True)
     report_file = report_dir / f"eval_report_{timestamp}.md"
-    
+    json_file = report_dir / f"eval_results_{timestamp}.json"
+
+    structured_results = []
     report_content = []
     report_content.append(f"# Model Inference Evaluation Report")
-    report_content.append(f"* **Execution Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report_content.append(f"* **Execution Date**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     report_content.append(f"* **Model Path**: `{model_path}`")
     report_content.append(f"* **Device**: `{model.device}`")
+    report_content.append(f"* **Max New Tokens**: {max_new_tokens}")
     report_content.append(f"\n---\n")
-    report_content.append(f"## 1. Evaluation Results Summary")
-    report_content.append(f"Here are the outputs for the structured test cases designed to measure style-steering and domain knowledge preservation.\n")
-    
+    report_content.append(f"## 1. Evaluation Results Summary\n")
+
     for case in TEST_CASES:
         print(f"Running Test: {case['id']} - {case['name']}...")
         prompt = case["prompt"]
-        
+
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
         with torch.no_grad():
             outputs = model.generate(
@@ -155,12 +241,29 @@ def run_evaluation(model_path="models/output", max_new_tokens=200):
                 max_new_tokens=max_new_tokens,
                 do_sample=True,
                 temperature=0.7,
-                top_p=0.9
+                top_p=0.9,
             )
-        
+
         raw_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
         cleaned_output = clean_sentencepiece_spaces(raw_output)
-        
+
+        structured_results.append({
+            "test_case_id": case["id"],
+            "test_case_name": case["name"],
+            "target": case["target"],
+            "prompt": prompt,
+            "raw_output": raw_output,
+            "generated_output": cleaned_output,
+            "generation_params": {
+                "max_new_tokens": max_new_tokens,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "do_sample": True,
+            },
+            "model_path": model_path,
+            "timestamp": datetime.now().isoformat(),
+        })
+
         report_content.append(f"### [{case['id']}] {case['name']}")
         report_content.append(f"* **Target Ability**: {case['target']}")
         report_content.append(f"#### Prompt Prefix:")
@@ -168,12 +271,23 @@ def run_evaluation(model_path="models/output", max_new_tokens=200):
         report_content.append(f"#### Model Generated Output:")
         report_content.append(f"```text\n{cleaned_output}\n```")
         report_content.append(f"\n")
-        
+
+    # Save Markdown report
     with open(report_file, "w", encoding="utf-8") as f:
         f.write("\n".join(report_content))
-        
-    print(f"Evaluation report written successfully to: {report_file}")
-    return report_file
+    print(f"Evaluation report written to: {report_file}")
+
+    # Save structured JSON (machine-readable)
+    with open(json_file, "w", encoding="utf-8") as f:
+        json.dump(structured_results, f, indent=2, ensure_ascii=False)
+    print(f"Structured results written to: {json_file}")
+
+    # Log to MLflow
+    if log_mlflow:
+        _log_to_mlflow(structured_results, str(report_file), model_path)
+
+    return str(report_file), structured_results
+
 
 if __name__ == "__main__":
     run_evaluation()

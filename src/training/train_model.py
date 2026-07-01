@@ -506,6 +506,38 @@ def train(config_path_or_cfg):
     model.save_pretrained("models/output")
     tokenizer.save_pretrained("models/output")
 
+    # --- Log model as MLflow artifact (traceability) ---
+    try:
+        if mlflow_run is not None:
+            # Log model config as artifact
+            model_config_path = Path("models/output/config.json")
+            if model_config_path.exists():
+                mlflow.log_artifact(str(model_config_path), artifact_path="model")
+
+            # Log tokenizer as artifact
+            tokenizer_files = [
+                "models/output/tokenizer.json",
+                "models/output/special_tokens_map.json",
+                "models/output/tokenizer_config.json",
+            ]
+            for tf in tokenizer_files:
+                if Path(tf).exists():
+                    mlflow.log_artifact(tf, artifact_path="model")
+
+            # Log the full model directory as a zip artifact
+            import zipfile
+            model_zip_path = Path("logs/model_snapshot.zip")
+            with zipfile.ZipFile(model_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for file_path in Path("models/output").rglob("*"):
+                    if file_path.is_file():
+                        arcname = file_path.relative_to("models/output")
+                        zf.write(file_path, arcname)
+            mlflow.log_artifact(str(model_zip_path), artifact_path="model")
+            model_zip_path.unlink(missing_ok=True)
+            print("[MLflow] Model artifacts logged.")
+    except Exception as e:
+        print(f"[MLflow] Model artifact logging failed: {e}")
+
     try:
         if mlflow_run is not None:
             mlflow.end_run()

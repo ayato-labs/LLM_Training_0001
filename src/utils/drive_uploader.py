@@ -15,6 +15,7 @@ import time
 import shutil
 import re
 import glob
+import datetime
 from pathlib import Path
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -46,6 +47,10 @@ ARTIFACT_DIRS = [
 
 # DVC cache: only backup .dvc/cache if it exists and has content
 DVC_CACHE_DIR = Path(".dvc/cache")
+
+# Final model output directory
+FINAL_MODEL_DIR = Path("models/output")
+FINAL_MODEL_DRIVE_FOLDER = "Novel_LLM_Models"
 
 # Local cleanup: keep only N latest checkpoints locally
 LOCAL_CHECKPOINT_KEEP = 2
@@ -236,6 +241,97 @@ def cleanup_old_logs(max_log_files=10):
         old_log.unlink(missing_ok=True)
 
 
+def backup_final_model(service, root_folder_id):
+    """
+    Backup the final trained model to a dedicated Google Drive folder.
+    The model is saved as a zip archive under 'Novel_LLM_Models/'.
+    Only uploads if the model has changed (based on .uploaded flag).
+    """
+    if not FINAL_MODEL_DIR.exists():
+        return
+
+    # Check if model files exist (model.safetensors or config.json)
+    has_model = any(FINAL_MODEL_DIR.glob("*.safetensors")) or (FINAL_MODEL_DIR / "config.json").exists()
+    if not has_model:
+        return
+
+    # Create dedicated model folder on Drive
+    model_folder_id = get_or_create_drive_folder(service, FINAL_MODEL_DRIVE_FOLDER, root_folder_id)
+
+    # Check for .uploaded flag in model dir
+    uploaded_flag = FINAL_MODEL_DIR / ".model_uploaded"
+    if uploaded_flag.exists():
+        return
+
+    # Check if model is still being written (look for recent modifications)
+    latest_mtime = 0
+    for f in FINAL_MODEL_DIR.iterdir():
+        if f.is_file() and f.name != ".model_uploaded":
+            mtime = os.path.getmtime(f)
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+
+    if (time.time() - latest_mtime) < MIN_FOLDER_AGE:
+        return  # Still writing
+
+    # Compress the model directory
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_name = f"novel_llm_model_{timestamp}"
+    zip_base = FINAL_MODEL_DIR.parent / zip_name
+    zip_path = Path(f"{zip_base}.zip")
+
+    try:
+        print(f"Backing up final model to Google Drive...")
+        shutil.make_archive(str(zip_base), 'zip', str(FINAL_MODEL_DIR))
+
+        upload_file_to_drive(service, zip_path, model_folder_id)
+        uploaded_flag.touch()
+        print(f"Final model backup complete: {zip_path.name}")
+
+    except Exception as e:
+        print(f"Error backing up final model: {e}", file=sys.stderr)
+    finally:
+        if zip_path.exists():
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+
+
+def backup_inference_reports(service, root_folder_id):
+    """Backup inference evaluation reports (eval_report_*.md, eval_results_*.json)."""
+    log_dir = Path("logs")
+    if not log_dir.exists():
+        return
+
+    report_files = list(log_dir.glob("eval_report_*.md")) + list(log_dir.glob("eval_results_*.json"))
+    if not report_files:
+        return
+
+    # Create inference reports folder
+    reports_folder_id = get_or_create_drive_folder(service, "Novel_LLM_Inference_Reports", root_folder_id)
+
+    # Only upload files newer than the last backup
+    backup_flag = log_dir / ".inference_backup_timestamp"
+    last_backup = 0
+    if backup_flag.exists():
+        last_backup = backup_flag.stat().st_mtime
+
+    new_reports = [f for f in report_files if f.stat().st_mtime > last_backup]
+    if not new_reports:
+        return
+
+    print(f"Backing up {len(new_reports)} new inference report(s)...")
+    for report in new_reports:
+        try:
+            if not file_exists_on_drive(service, report.name, reports_folder_id):
+                upload_file_to_drive(service, report, reports_folder_id)
+        except Exception as e:
+            print(f"Error backing up {report.name}: {e}", file=sys.stderr)
+
+    backup_flag.touch()
+
+
 def monitor_and_upload():
     """Main daemon loop: monitor directories, backup, and cleanup."""
     print("=" * 60)
@@ -267,6 +363,12 @@ def monitor_and_upload():
 
                 # DVC cache (if small enough)
                 backup_dvc_cache(service, root_folder_id)
+
+                # Final model backup
+                backup_final_model(service, root_folder_id)
+
+                # Inference evaluation reports
+                backup_inference_reports(service, root_folder_id)
 
             loop_count += 1
 
