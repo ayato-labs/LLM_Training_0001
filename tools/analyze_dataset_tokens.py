@@ -13,33 +13,39 @@ DATAPREPROCESSING_DIR = Path(__file__).resolve().parent.parent.parent / "DataPre
 DATAPREPROCESSING_VENV_PYTHON = DATAPREPROCESSING_DIR / ".venv" / "Scripts" / "python.exe"
 DATASET_PATH = DATAPREPROCESSING_DIR / "data" / "dataset.jsonl"
 
-def analyze():
-    # 1. DataPreprocessing パイプラインを実行
-    print("Step 1: Running DataPreprocessing pipeline...")
-    if not DATAPREPROCESSING_VENV_PYTHON.exists():
-        print(f"ERROR: DataPreprocessing venv python not found at {DATAPREPROCESSING_VENV_PYTHON}")
-        return
+SKIP_PIPELINE = "--skip-pipeline" in sys.argv
 
-    try:
-        result = subprocess.run(
-            [
-                str(DATAPREPROCESSING_VENV_PYTHON),
-                "-m", "src.cli", "pipeline",
-                "--db", str(Path(r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\novels.db")),
-                "--output", str(DATASET_PATH),
-            ],
-            cwd=str(DATAPREPROCESSING_DIR),
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        print(result.stdout)
-        if result.returncode != 0:
-            print(f"ERROR: DataPreprocessing pipeline failed:\n{result.stderr}", file=sys.stderr)
+def analyze():
+    # 1. DataPreprocessing パイプラインを実行（スキップ可能）
+    if SKIP_PIPELINE and DATASET_PATH.exists():
+        print("Step 1: Skipping pipeline (--skip-pipeline)...")
+        print(f"  Using existing dataset: {DATASET_PATH}")
+    else:
+        print("Step 1: Running DataPreprocessing pipeline...")
+        if not DATAPREPROCESSING_VENV_PYTHON.exists():
+            print(f"ERROR: DataPreprocessing venv python not found at {DATAPREPROCESSING_VENV_PYTHON}")
             return
-    except subprocess.TimeoutExpired:
-        print("ERROR: DataPreprocessing pipeline timed out (10 minutes)", file=sys.stderr)
-        return
+
+        try:
+            result = subprocess.run(
+                [
+                    str(DATAPREPROCESSING_VENV_PYTHON),
+                    "-m", "src.cli", "pipeline",
+                    "--db", str(Path(r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\novels.db")),
+                    "--output", str(DATASET_PATH),
+                ],
+                cwd=str(DATAPREPROCESSING_DIR),
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            print(result.stdout)
+            if result.returncode != 0:
+                print(f"ERROR: DataPreprocessing pipeline failed:\n{result.stderr}", file=sys.stderr)
+                return
+        except subprocess.TimeoutExpired:
+            print("ERROR: DataPreprocessing pipeline timed out (10 minutes)", file=sys.stderr)
+            return
     
     # 2. 生成された JSONL ファイルの確認
     if not DATASET_PATH.exists():
@@ -48,7 +54,7 @@ def analyze():
         
     # 3. トークナイザーのロード
     print("\nStep 2: Loading tokenizer...")
-    tokenizer_path = Path("data/tokenizer.json")
+    tokenizer_path = Path(__file__).resolve().parent.parent / "data" / "tokenizer.json"
     if not tokenizer_path.exists():
         print(f"ERROR: Tokenizer not found at {tokenizer_path}")
         return
