@@ -14,16 +14,17 @@ hardware:
   vram_limit_gb: 48.0  # RTX 5090 x2
 
 # ============================================================
-# Model: ~7B Llama
+# Model: ~7B Llama (LLaMA 3.1 7B style: 32L x 4096d x 32h)
 # ============================================================
 model:
   target_params: 7000000000  # 7B
   proxy_min_params: 700000000  # 700M proxy for HPO
 
   llama:
-    hidden_size: null     # auto-calculated
-    num_hidden_layers: null
-    num_attention_heads: null
+    hidden_size: 4096
+    num_hidden_layers: 32
+    num_attention_heads: 32
+    intermediate_size: 11008  # LLaMA 7B standard (not 4*hidden)
 
 # ============================================================
 # Training

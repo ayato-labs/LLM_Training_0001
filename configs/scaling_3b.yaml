@@ -14,16 +14,17 @@ hardware:
   vram_limit_gb: 24.0  # RTX 5090
 
 # ============================================================
-# Model: ~3B Llama
+# Model: ~3B Llama (LLaMA 3.1 3B style: 28L x 2560d x 20h)
 # ============================================================
 model:
   target_params: 3000000000  # 3B
   proxy_min_params: 300000000  # 300M proxy for HPO
 
   llama:
-    hidden_size: null     # auto-calculated
-    num_hidden_layers: null
-    num_attention_heads: null
+    hidden_size: 2560
+    num_hidden_layers: 28
+    num_attention_heads: 20
+    intermediate_size: 10240  # 4 * hidden_size
 
 # ============================================================
 # Training

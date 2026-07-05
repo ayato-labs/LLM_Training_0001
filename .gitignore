@@ -20,6 +20,7 @@ data/corpus.jsonl
 data/tokenizer.json
 data/tokenizer.model
 !data/*.dvc
+docs/
 
 # Hydra output directories
 outputs/

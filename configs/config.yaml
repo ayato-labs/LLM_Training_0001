@@ -26,16 +26,16 @@ data:
 # 3. Model Architecture
 # ============================================================
 model:
-  arch: "llama"          # llama | modern_gpt
+  arch: "llama"
   target_params: 150000000
   proxy_min_params: 30000000
 
-  # Llama config (used when arch=llama)
+  # Llama config - Deep & Narrow: 12 layers × 768d (~150M)
   llama:
-    hidden_size: null     # auto-calculated
-    num_hidden_layers: null
-    num_attention_heads: null
-    intermediate_size: null
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 12
+    intermediate_size: 3072  # 4 * hidden_size (LLaMA style)
 
 # ============================================================
 # 4. Tokenizer

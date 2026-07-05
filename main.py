@@ -22,7 +22,34 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from LLM_Hyperparameter_Optimization.src.step_law import compute_hpo_for_target
-from src.preprocessing.exporter import export_db_to_jsonl
+
+# DataPreprocessing のパス
+DATAPREPROCESSING_DIR = PROJECT_ROOT.parent / "DataPreprocessing"
+DATAPREPROCESSING_VENV_PYTHON = DATAPREPROCESSING_DIR / ".venv" / "Scripts" / "python.exe"
+DEFAULT_DB_PATH = r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\novels.db"
+
+
+def run_preprocessing_pipeline(db_path=None, output_path=None):
+    """DataPreprocessing パイプラインを subprocess で実行"""
+    if db_path is None:
+        db_path = DEFAULT_DB_PATH
+    if output_path is None:
+        output_path = DATAPREPROCESSING_DIR / "data" / "dataset.jsonl"
+
+    if not DATAPREPROCESSING_VENV_PYTHON.exists():
+        raise FileNotFoundError(f"DataPreprocessing venv python not found: {DATAPREPROCESSING_VENV_PYTHON}")
+
+    cmd = [
+        str(DATAPREPROCESSING_VENV_PYTHON),
+        "-m", "src.cli", "pipeline",
+        "--db", str(db_path),
+        "--output", str(output_path),
+    ]
+    result = subprocess.run(cmd, cwd=str(DATAPREPROCESSING_DIR), capture_output=True, text=True, timeout=600)
+    print(result.stdout)
+    if result.returncode != 0:
+        raise RuntimeError(f"DataPreprocessing pipeline failed:\n{result.stderr}")
+    return output_path
 
 
 # ============================================================
@@ -143,7 +170,7 @@ def orchestrate_legacy(args):
 
     # Preprocessing
     print("Orchestrator: Running preprocessing...")
-    export_db_to_jsonl()
+    run_preprocessing_pipeline()
 
     # Hardware constraints
     n_tokens = config.TARGET_TOKENS
@@ -240,7 +267,7 @@ def run_hydra(cfg):
     # Preprocessing
     if cfg.get("run_preprocessing", True):
         print("Orchestrator: Running preprocessing...")
-        export_db_to_jsonl()
+        run_preprocessing_pipeline()
 
     # Model dimension estimation
     target_params = cfg.model.target_params

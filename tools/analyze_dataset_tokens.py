@@ -1,22 +1,49 @@
 import json
 import sys
+import subprocess
 from pathlib import Path
 from transformers import PreTrainedTokenizerFast
 
 # プロジェクトルートパスの設定
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import training_config as config
-from src.preprocessing.exporter import export_db_to_jsonl
+
+# DataPreprocessing のパス
+DATAPREPROCESSING_DIR = Path(__file__).resolve().parent.parent.parent / "DataPreprocessing"
+DATAPREPROCESSING_VENV_PYTHON = DATAPREPROCESSING_DIR / ".venv" / "Scripts" / "python.exe"
+DATASET_PATH = DATAPREPROCESSING_DIR / "data" / "dataset.jsonl"
 
 def analyze():
-    # 1. データベースから JSONL ファイルを生成 (前処理の実行)
-    print("Step 1: Running database preprocessing (exporting db to JSONL)...")
-    export_db_to_jsonl()
+    # 1. DataPreprocessing パイプラインを実行
+    print("Step 1: Running DataPreprocessing pipeline...")
+    if not DATAPREPROCESSING_VENV_PYTHON.exists():
+        print(f"ERROR: DataPreprocessing venv python not found at {DATAPREPROCESSING_VENV_PYTHON}")
+        return
+
+    try:
+        result = subprocess.run(
+            [
+                str(DATAPREPROCESSING_VENV_PYTHON),
+                "-m", "src.cli", "pipeline",
+                "--db", str(Path(r"C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\Novel_Data_Collection\novels.db")),
+                "--output", str(DATASET_PATH),
+            ],
+            cwd=str(DATAPREPROCESSING_DIR),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        print(result.stdout)
+        if result.returncode != 0:
+            print(f"ERROR: DataPreprocessing pipeline failed:\n{result.stderr}", file=sys.stderr)
+            return
+    except subprocess.TimeoutExpired:
+        print("ERROR: DataPreprocessing pipeline timed out (10 minutes)", file=sys.stderr)
+        return
     
     # 2. 生成された JSONL ファイルの確認
-    dataset_path = Path("data/dataset.jsonl")
-    if not dataset_path.exists():
-        print(f"ERROR: Preprocessed dataset not found at {dataset_path}")
+    if not DATASET_PATH.exists():
+        print(f"ERROR: Preprocessed dataset not found at {DATASET_PATH}")
         return
         
     # 3. トークナイザーのロード
@@ -33,7 +60,7 @@ def analyze():
     total_tokens = 0
     record_count = 0
     
-    with open(dataset_path, "r", encoding="utf-8") as f:
+    with open(DATASET_PATH, "r", encoding="utf-8") as f:
         for line in f:
             try:
                 data = json.loads(line)
