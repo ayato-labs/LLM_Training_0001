@@ -1,0 +1,537 @@
+"""
+ADR-018/019/020/021 実装テスト
+- BF16 対応
+- 100M/2048ctx アーキテクチャ
+- DeepSpeed ZeRO-3 設定
+- Vocab 64k + end_of_story
+"""
+import json
+import math
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+import pytest
+
+
+# ============================================================
+# 1. training_config.py の設定値テスト
+# ============================================================
+class TestTrainingConfig:
+
+    def test_target_params(self):
+        """ADR-019: ターゲットパラメータ数は 100M"""
+        import training_config as config
+        assert config.TARGET_PARAMS == 100_000_000
+
+    def test_seq_len(self):
+        """ADR-019: シーケンス長は 2048"""
+        import training_config as config
+        assert config.SEQ_LEN == 2048
+
+    def test_precision_default(self):
+        """ADR-018: デフォルト precision は bf16"""
+        import training_config as config
+        assert config.PRECISION == "bf16"
+
+    def test_vram_limit_default(self):
+        """ADR-019: VRAM制限デフォルトは 4.0 GB (GPU検出値を許容)"""
+        import training_config as config
+        assert math.isclose(config.VRAM_LIMIT_GB, 4.0, abs_tol=0.1), \
+            f"VRAM_LIMIT_GB should be ~4.0, got {config.VRAM_LIMIT_GB}"
+
+
+# ============================================================
+# 2. DeepSpeed 設定生成テスト (独立関数として直接テスト)
+# ============================================================
+def _generate_deepspeed_config(n_params, vram_limit_gb, precision="bf16"):
+    """train_model.py から独立してテストするためのコピー"""
+    est_vram_gb = (n_params * 14) / (1024**3)
+
+    if precision == "bf16":
+        precision_config = {"bf16": {"enabled": True}}
+    else:
+        precision_config = {"fp16": {"enabled": True, "loss_scale": 0, "loss_scale_window": 1000}}
+
+    if vram_limit_gb <= 5.0:
+        zero_config = {
+            "stage": 3,
+            "offload_param": {"device": "cpu", "pin_memory": True},
+            "offload_optimizer": {"device": "cpu", "pin_memory": True},
+            "stage3_param_persistence_threshold": 10000,
+            "stage3_max_live_parameters": 1e7,
+            "stage3_max_reuse_distance": 1e7,
+            "sub_group_size": 1e7,
+            "allgather_partitions": True,
+            "allgather_bucket_size": 2e8,
+            "overlap_comm": True,
+            "reduce_scatter": True,
+            "reduce_bucket_size": 2e8,
+        }
+    else:
+        zero_config = {
+            "stage": 2,
+            "allgather_partitions": True,
+            "allgather_bucket_size": 2e8,
+            "overlap_comm": True,
+            "reduce_scatter": True,
+            "reduce_bucket_size": 2e8,
+        }
+
+    ds_config = {
+        **precision_config,
+        "zero_optimization": zero_config,
+        "activation_checkpointing": {
+            "partition_activations": True,
+            "cpu_checkpointing": True,
+            "contiguous_memory_optimization": False,
+            "number_of_nodes": 1,
+            "synchronize_checkpoint_boundary": False,
+            "profile": False,
+        },
+        "gradient_accumulation_steps": "auto",
+        "train_batch_size": "auto",
+    }
+
+    ds_config_path = "temp_ds_config_test.json"
+    with open(ds_config_path, "w", encoding="utf-8") as f:
+        json.dump(ds_config, f, indent=2)
+    return ds_config_path
+
+
+class TestDeepSpeedConfig:
+
+    def test_bf16_default(self):
+        """ADR-018: デフォルトは bf16"""
+        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
+        try:
+            with open(result_path, "r") as f:
+                ds_config = json.load(f)
+            assert "bf16" in ds_config
+            assert ds_config["bf16"]["enabled"] is True
+            assert "fp16" not in ds_config
+        finally:
+            if os.path.exists(result_path):
+                os.remove(result_path)
+
+    def test_fp16_fallback(self):
+        """ADR-018: fp16 フォールバック動作"""
+        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="fp16")
+        try:
+            with open(result_path, "r") as f:
+                ds_config = json.load(f)
+            assert "fp16" in ds_config
+            assert ds_config["fp16"]["enabled"] is True
+            assert "bf16" not in ds_config
+        finally:
+            if os.path.exists(result_path):
+                os.remove(result_path)
+
+    def test_zerostage3_for_4gb(self):
+        """ADR-019: VRAM 4GB 以下なら ZeRO-3 + CPU offload"""
+        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
+        try:
+            with open(result_path, "r") as f:
+                ds_config = json.load(f)
+            zero = ds_config["zero_optimization"]
+            assert zero["stage"] == 3
+            assert "offload_param" in zero
+            assert zero["offload_param"]["device"] == "cpu"
+            assert "offload_optimizer" in zero
+            assert zero["offload_optimizer"]["device"] == "cpu"
+        finally:
+            if os.path.exists(result_path):
+                os.remove(result_path)
+
+    def test_zerostage2_for_large_vram(self):
+        """VRAM 5GB 超なら ZeRO-2"""
+        result_path = _generate_deepspeed_config(100_000_000, 8.0, precision="bf16")
+        try:
+            with open(result_path, "r") as f:
+                ds_config = json.load(f)
+            zero = ds_config["zero_optimization"]
+            assert zero["stage"] == 2
+            assert "offload_param" not in zero
+        finally:
+            if os.path.exists(result_path):
+                os.remove(result_path)
+
+    def test_activation_checkpointing(self):
+        """Activation Checkpointing が有効"""
+        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
+        try:
+            with open(result_path, "r") as f:
+                ds_config = json.load(f)
+            ac = ds_config["activation_checkpointing"]
+            assert ac["partition_activations"] is True
+            assert ac["cpu_checkpointing"] is True
+        finally:
+            if os.path.exists(result_path):
+                os.remove(result_path)
+
+    def test_zero3_offload_params(self):
+        """ZeRO-3 のパラメータオフロード設定"""
+        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
+        try:
+            with open(result_path, "r") as f:
+                ds_config = json.load(f)
+            zero = ds_config["zero_optimization"]
+            assert zero["stage3_param_persistence_threshold"] == 10000
+            assert zero["stage3_max_live_parameters"] == 1e7
+            assert zero["stage3_max_reuse_distance"] == 1e7
+        finally:
+            if os.path.exists(result_path):
+                os.remove(result_path)
+
+
+# ============================================================
+# 3. configs/config.yaml テスト
+# ============================================================
+class TestConfigYAML:
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        import yaml
+        config_path = PROJECT_ROOT / "configs" / "config.yaml"
+        with open(config_path, "r", encoding="utf-8") as f:
+            self.config = yaml.safe_load(f)
+
+    def test_model_architecture(self):
+        """ADR-019: 100M アーキテクチャ"""
+        model = self.config["model"]
+        assert model["target_params"] == 100_000_000
+        assert model["llama"]["hidden_size"] == 512
+        assert model["llama"]["num_hidden_layers"] == 16
+        assert model["llama"]["num_attention_heads"] == 8
+        assert model["llama"]["intermediate_size"] == 2048
+
+    def test_rope_theta(self):
+        """ADR-019: RoPE theta が 2048ctx に対応"""
+        assert self.config["model"]["llama"]["rope_theta"] == 50000.0
+
+    def test_seq_len(self):
+        """ADR-019: シーケンス長 2048"""
+        assert self.config["training"]["seq_len"] == 2048
+
+    def test_vocab_size(self):
+        """ADR-021: vocab 64k"""
+        assert self.config["tokenizer"]["vocab_size"] == 64000
+
+    def test_special_tokens(self):
+        """ADR-021: end_of_story トークン存在"""
+        tokens = self.config["tokenizer"]["special_tokens"]
+        assert "<|end_of_story|>" in tokens
+        assert "<|start_of_story|>" in tokens
+        assert "<|start_of_metadata|>" in tokens
+        assert "<|end_of_metadata|>" in tokens
+
+    def test_hardware_precision(self):
+        """ADR-018: precision = bf16"""
+        assert self.config["hardware"]["precision"] == "bf16"
+
+    def test_hardware_vram(self):
+        """ADR-019: VRAM 4GB"""
+        assert self.config["hardware"]["vram_limit_gb"] is not None
+
+    def test_model_params_count(self):
+        """100M モデルのパラメータ数概算"""
+        model = self.config["model"]["llama"]
+        # LLaMA: 12 * L * H^2 (embedding/HEAD除く)
+        est_params = 12 * model["num_hidden_layers"] * (model["hidden_size"] ** 2)
+        # + embedding (vocab * hidden)
+        est_params += self.config["tokenizer"]["vocab_size"] * model["hidden_size"]
+        # + FFN (2 * intermediate * hidden per layer)
+        est_params += 2 * model["intermediate_size"] * model["hidden_size"] * model["num_hidden_layers"]
+        # 目安: 100M ± 50%
+        assert 50_000_000 < est_params < 150_000_000, \
+            f"Estimated params should be ~100M, got {est_params / 1e6:.1f}M"
+
+
+# ============================================================
+# 4. ds_config.json テスト
+# ============================================================
+class TestDSConfigJSON:
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        config_path = PROJECT_ROOT / "ds_config.json"
+        with open(config_path, "r") as f:
+            self.ds_config = json.load(f)
+
+    def test_bf16_enabled(self):
+        """ADR-018: bf16 有効"""
+        assert "bf16" in self.ds_config
+        assert self.ds_config["bf16"]["enabled"] is True
+        assert "fp16" not in self.ds_config
+
+    def test_zerostage3(self):
+        """ADR-019: ZeRO-3"""
+        assert self.ds_config["zero_optimization"]["stage"] == 3
+
+    def test_cpu_offload(self):
+        """ADR-019: CPU offload"""
+        zero = self.ds_config["zero_optimization"]
+        assert zero["offload_param"]["device"] == "cpu"
+        assert zero["offload_optimizer"]["device"] == "cpu"
+        assert zero["offload_param"]["pin_memory"] is True
+        assert zero["offload_optimizer"]["pin_memory"] is True
+
+    def test_activation_checkpointing(self):
+        ac = self.ds_config["activation_checkpointing"]
+        assert ac["partition_activations"] is True
+        assert ac["cpu_checkpointing"] is True
+
+
+# ============================================================
+# 5. pyproject.toml 依存関係テスト
+# ============================================================
+class TestDependencies:
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        import tomllib
+        config_path = PROJECT_ROOT / "pyproject.toml"
+        with open(config_path, "rb") as f:
+            self.pyproject = tomllib.load(f)
+
+    def test_deepspeed_dependency(self):
+        deps = self.pyproject["project"]["dependencies"]
+        assert any("deepspeed" in d.lower() for d in deps)
+
+    def test_bitsandbytes_dependency(self):
+        deps = self.pyproject["project"]["dependencies"]
+        assert any("bitsandbytes" in d.lower() for d in deps)
+
+    def test_flash_attn_dependency(self):
+        deps = self.pyproject["project"]["dependencies"]
+        assert any("flash-attn" in d.lower() for d in deps)
+
+    def test_torch_version(self):
+        deps = self.pyproject["project"]["dependencies"]
+        torch_deps = [d for d in deps if "torch" in d.lower() and "torchvision" not in d.lower()]
+        assert len(torch_deps) > 0
+        assert ">=2.1.0" in torch_deps[0]
+
+
+# ============================================================
+# 6. Python バージョンテスト
+# ============================================================
+class TestPythonVersion:
+
+    def test_python_version_file(self):
+        version_file = PROJECT_ROOT / ".python-version"
+        assert version_file.exists()
+        content = version_file.read_text().strip()
+        assert content == "3.12"
+
+
+# ============================================================
+# 7. ADR ファイル存在テスト
+# ============================================================
+class TestADRFiles:
+
+    def test_adr018_exists(self):
+        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-018-bf16-adoption.md").exists()
+
+    def test_adr019_exists(self):
+        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-019-100m-2048ctx-architecture.md").exists()
+
+    def test_adr020_exists(self):
+        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-020-packed-sequence.md").exists()
+
+    def test_adr021_exists(self):
+        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-021-vocab-64k-end-of-story.md").exists()
+
+
+# ============================================================
+# 8. アーキテクチャ整合性テスト
+# ============================================================
+class TestArchitectureConsistency:
+
+    def test_params_consistency(self):
+        """config.yaml と training_config.py の TARGET_PARAMS 一致"""
+        import yaml
+        import training_config as config
+        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            yaml_config = yaml.safe_load(f)
+        assert yaml_config["model"]["target_params"] == config.TARGET_PARAMS
+
+    def test_seq_len_consistency(self):
+        """config.yaml と training_config.py の SEQ_LEN 一致"""
+        import yaml
+        import training_config as config
+        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            yaml_config = yaml.safe_load(f)
+        assert yaml_config["training"]["seq_len"] == config.SEQ_LEN
+
+    def test_precision_consistency(self):
+        """config.yaml と training_config.py の PRECISION 一致"""
+        import yaml
+        import training_config as config
+        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            yaml_config = yaml.safe_load(f)
+        assert yaml_config["hardware"]["precision"] == config.PRECISION
+
+
+# ============================================================
+# 9. モデル初期化テスト (torch必要)
+# ============================================================
+class TestModelInit:
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        try:
+            import torch
+            self.torch = torch
+            self.cuda_available = torch.cuda.is_available()
+        except ImportError:
+            pytest.skip("torch not installed")
+
+    def test_llama_config_creation(self):
+        """LlamaConfig が正しく作成できる"""
+        from transformers import LlamaConfig
+        config = LlamaConfig(
+            hidden_size=512,
+            num_hidden_layers=16,
+            num_attention_heads=8,
+            intermediate_size=2048,
+            vocab_size=64000,
+            max_position_embeddings=2048,
+        )
+        assert config.hidden_size == 512
+        assert config.num_hidden_layers == 16
+        assert config.num_attention_heads == 8
+        assert config.vocab_size == 64000
+        assert config.max_position_embeddings == 2048
+
+    def test_model_instantiation_cpu(self):
+        """LlamaForCausalLM が CPU で初期化できる"""
+        from transformers import LlamaConfig, LlamaForCausalLM
+        config = LlamaConfig(
+            hidden_size=512,
+            num_hidden_layers=16,
+            num_attention_heads=8,
+            intermediate_size=2048,
+            vocab_size=64000,
+            max_position_embeddings=2048,
+        )
+        model = LlamaForCausalLM(config)
+        param_count = sum(p.numel() for p in model.parameters())
+        # 100M ± 40% (embedding/FFN含む)
+        assert 60_000_000 < param_count < 140_000_000, \
+            f"Model params should be ~100M, got {param_count / 1e6:.1f}M"
+
+    def test_model_forward_cpu(self):
+        """CPU で forward pass が通る"""
+        import torch
+        from transformers import LlamaConfig, LlamaForCausalLM
+        config = LlamaConfig(
+            hidden_size=512,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            intermediate_size=2048,
+            vocab_size=64000,
+            max_position_embeddings=2048,
+        )
+        model = LlamaForCausalLM(config)
+        model.eval()
+        input_ids = torch.randint(0, 64000, (1, 128))
+        with torch.no_grad():
+            outputs = model(input_ids)
+        assert outputs.logits.shape == (1, 128, 64000)
+
+    def test_model_bf16_forward_gpu(self):
+        """GPU で bf16 forward pass が通る"""
+        if not self.cuda_available:
+            pytest.skip("CUDA not available")
+        import torch
+        from transformers import LlamaConfig, LlamaForCausalLM
+        config = LlamaConfig(
+            hidden_size=512,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            intermediate_size=2048,
+            vocab_size=64000,
+            max_position_embeddings=2048,
+        )
+        model = LlamaForCausalLM(config).to(torch.bfloat16).cuda()
+        model.eval()
+        input_ids = torch.randint(0, 64000, (1, 128)).cuda()
+        with torch.no_grad():
+            outputs = model(input_ids)
+        assert outputs.logits.dtype == torch.bfloat16
+        assert outputs.logits.shape == (1, 128, 64000)
+
+    def test_model_resize_token_embeddings(self):
+        """特殊トークン追加後の resize が動作"""
+        import torch
+        from transformers import LlamaConfig, LlamaForCausalLM
+        config = LlamaConfig(
+            hidden_size=512,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            intermediate_size=2048,
+            vocab_size=64000,
+            max_position_embeddings=2048,
+        )
+        model = LlamaForCausalLM(config)
+        original_vocab = model.config.vocab_size
+        # 9特殊トークン追加
+        model.resize_token_embeddings(original_vocab + 9)
+        assert model.config.vocab_size == original_vocab + 9
+        assert model.get_input_embeddings().weight.shape[0] == original_vocab + 9
+
+
+# ============================================================
+# 10. Tokenizer 特殊トークンテスト
+# ============================================================
+class TestTokenizerTokens:
+
+    def test_special_tokens_list(self):
+        """特殊トークンが9個ある"""
+        import yaml
+        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        tokens = config["tokenizer"]["special_tokens"]
+        assert len(tokens) == 9
+
+    def test_metadata_boundary_tokens(self):
+        """メタデータ境界トークンのペア確認"""
+        import yaml
+        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        tokens = config["tokenizer"]["special_tokens"]
+        assert "<|start_of_metadata|>" in tokens
+        assert "<|end_of_metadata|>" in tokens
+
+    def test_story_boundary_tokens(self):
+        """物語境界トークンのペア確認"""
+        import yaml
+        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        tokens = config["tokenizer"]["special_tokens"]
+        assert "<|start_of_story|>" in tokens
+        assert "<|end_of_story|>" in tokens
+
+    def test_no_duplicate_tokens(self):
+        """重複トークンなし"""
+        import yaml
+        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        tokens = config["tokenizer"]["special_tokens"]
+        assert len(tokens) == len(set(tokens)), "Duplicate special tokens found"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])

@@ -1,0 +1,72 @@
+# Novel LLM - 150M Model Configuration (RTX 3050 Laptop / 4GB VRAM)
+# Usage: python main.py --config-name=scaling_150m
+#
+# Target: 150M parameters, seq_len=1024, GQA (12 heads / 3 KV heads)
+# VRAM estimate: ~2.1 GB (BF16 + ZeRO-1)
+
+defaults:
+  - config  # inherit base config
+
+# ============================================================
+# Hardware
+# ============================================================
+hardware:
+  vram_limit_gb: 4.0  # RTX 3050 Laptop (4GB)
+
+# ============================================================
+# Model: 150M Llama with GQA
+# GQA: num_attention_heads=12, num_key_value_heads=3
+# ============================================================
+model:
+  target_params: 150000000  # 150M
+  proxy_min_params: 30000000  # 30M proxy for HPO
+
+  llama:
+    hidden_size: 768      # 調整
+    num_hidden_layers: 12  # 調整
+    num_attention_heads: 12  # 12は3で割り切れる
+    num_key_value_heads: 3   # GQA: 12/4 = 3
+    intermediate_size: 3072  # 4 * hidden_size
+    rope_theta: 10000.0
+
+# ============================================================
+# Data (seq_len=1024)
+# ============================================================
+data:
+  preprocessing:
+    chunk_size: 1024     # ~512 tokens
+    overlap: 100
+
+# ============================================================
+# Training
+# ============================================================
+training:
+  seq_len: 512
+  max_steps: -1
+  num_epochs: 3
+  target_tokens: 30000000
+
+# ============================================================
+# Skip preprocessing (dataset already prepared)
+# ============================================================
+run_preprocessing: false
+
+# ============================================================
+# Reproducibility
+# ============================================================
+seed: 42
+
+# ============================================================
+# Checkpoint
+# ============================================================
+checkpoint:
+  save_strategy: "steps"
+  save_steps: 1000
+  save_total_limit: 3
+
+# ============================================================
+# Logging
+# ============================================================
+logging:
+  report_to: ["tensorboard"]
+  logging_steps: 10

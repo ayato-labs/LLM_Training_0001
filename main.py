@@ -77,9 +77,10 @@ def load_legacy_config():
 # ============================================================
 # Llama dimension estimation
 # ============================================================
-def estimate_llama_dimensions(n_params):
+def estimate_llama_dimensions(n_params, kv_ratio=4):
     """
     Chinchilla scaling law: N ≈ 12 * L * H^2, H = r * L (r ≈ 64)
+    GQA: kv_heads = num_heads // kv_ratio (default: 4 = GQA-8)
     """
     r = 64
     L_opt_raw = (n_params / (12 * (r ** 2))) ** (1/3)
@@ -102,14 +103,17 @@ def estimate_llama_dimensions(n_params):
             best_H = H
 
     best_heads = max(2, best_H // 64)
+    # Ensure heads is divisible by kv_ratio (GQA)
+    best_heads = (best_heads // kv_ratio) * kv_ratio
     best_hidden = (best_H // best_heads) * best_heads
-    return best_hidden, best_L, best_heads
+    best_kv_heads = max(1, best_heads // kv_ratio)
+    return best_hidden, best_L, best_heads, best_kv_heads
 
 
 # ============================================================
 # Experiment runner (proxy model exploration)
 # ============================================================
-def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers, proxy_heads, seq_len=1024):
+def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers, proxy_heads, proxy_kv_heads, seq_len=1024):
     """Run short training with specified params, return final loss."""
     hpo = compute_hpo_for_target(n_params=params, n_tokens=tokens, seq_len=seq_len)
     hpo['max_lr_2d'] = lr
@@ -120,6 +124,7 @@ def run_experiment_dynamic(params, tokens, lr, steps, proxy_hidden, proxy_layers
             "hidden_size": proxy_hidden,
             "num_hidden_layers": proxy_layers,
             "num_attention_heads": proxy_heads,
+            "num_key_value_heads": proxy_kv_heads,
         },
         "hpo": hpo,
         "data_path": str(config.DATA_PATH),
@@ -174,13 +179,13 @@ def orchestrate_legacy(args):
 
     # Hardware constraints
     n_tokens = config.TARGET_TOKENS
-    target_hidden, target_layers, target_heads = estimate_llama_dimensions(config.TARGET_PARAMS)
+    target_hidden, target_layers, target_heads, target_kv_heads = estimate_llama_dimensions(config.TARGET_PARAMS)
     proxy_params = max(int(config.TARGET_PARAMS * 0.05), getattr(config, "PROXY_MIN_PARAMS", 30_000_000))
     proxy_params = min(proxy_params, config.TARGET_PARAMS)
-    proxy_hidden, proxy_layers, proxy_heads = estimate_llama_dimensions(proxy_params)
+    proxy_hidden, proxy_layers, proxy_heads, proxy_kv_heads = estimate_llama_dimensions(proxy_params)
 
-    print(f"Orchestrator: Target {config.TARGET_PARAMS} params (H:{target_hidden}, L:{target_layers}, Heads:{target_heads})")
-    print(f"Orchestrator: Proxy {proxy_params} params (H:{proxy_hidden}, L:{proxy_layers}, Heads:{proxy_heads})")
+    print(f"Orchestrator: Target {config.TARGET_PARAMS} params (H:{target_hidden}, L:{target_layers}, Heads:{target_heads}, KV:{target_kv_heads})")
+    print(f"Orchestrator: Proxy {proxy_params} params (H:{proxy_hidden}, L:{proxy_layers}, Heads:{proxy_heads}, KV:{proxy_kv_heads})")
 
     # Proxy exploration
     base_hpo = compute_hpo_for_target(n_params=proxy_params, n_tokens=n_tokens, seq_len=config.SEQ_LEN)
@@ -195,7 +200,7 @@ def orchestrate_legacy(args):
         print(f"Testing LR: {lr}")
         loss = run_experiment_dynamic(
             proxy_params, n_tokens, lr, 50,
-            proxy_hidden, proxy_layers, proxy_heads, seq_len=config.SEQ_LEN
+            proxy_hidden, proxy_layers, proxy_heads, proxy_kv_heads, seq_len=config.SEQ_LEN
         )
         print(f"Loss: {loss}")
         if loss < min_loss:
@@ -217,6 +222,7 @@ def orchestrate_legacy(args):
             "hidden_size": target_hidden,
             "num_hidden_layers": target_layers,
             "num_attention_heads": target_heads,
+            "num_key_value_heads": target_kv_heads,
         },
         "hpo": final_hpo,
         "data_path": str(config.DATA_PATH),
@@ -271,8 +277,8 @@ def run_hydra(cfg):
 
     # Model dimension estimation
     target_params = cfg.model.target_params
-    target_hidden, target_layers, target_heads = estimate_llama_dimensions(target_params)
-    print(f"Orchestrator: Target {target_params} params (H:{target_hidden}, L:{target_layers}, Heads:{target_heads})")
+    target_hidden, target_layers, target_heads, target_kv_heads = estimate_llama_dimensions(target_params)
+    print(f"Orchestrator: Target {target_params} params (H:{target_hidden}, L:{target_layers}, Heads:{target_heads}, KV:{target_kv_heads})")
 
     # HPO via Step Law
     n_tokens = cfg.training.target_tokens
@@ -285,8 +291,9 @@ def run_hydra(cfg):
             "hidden_size": target_hidden,
             "num_hidden_layers": target_layers,
             "num_attention_heads": target_heads,
+            "num_key_value_heads": target_kv_heads,
         },
-        "hpo": OmegaConf.to_container(final_hpo),
+        "hpo": final_hpo,
         "data_path": cfg.data.dataset_path,
         "tokenizer_path": cfg.data.tokenizer_path,
         "max_steps": cfg.training.max_steps,

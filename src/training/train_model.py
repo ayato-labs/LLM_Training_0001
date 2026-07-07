@@ -157,21 +157,70 @@ def normalize_config(raw) -> dict:
 
 
 # ============================================================
-# DeepSpeed config generation
+# DeepSpeed config generation (ADR-018: BF16, ADR-019: ZeRO-3)
 # ============================================================
-def generate_deepspeed_config(n_params, vram_limit_gb):
+def generate_deepspeed_config(n_params, vram_limit_gb, precision="bf16"):
     est_vram_gb = (n_params * 14) / (1024**3)
 
-    ds_config = {
-        "fp16": {"enabled": True},
-        "zero_optimization": {
+    # BF16 (推奨) or FP16 (フォールバック)
+    if precision == "bf16":
+        precision_config = {"bf16": {"enabled": True}}
+        precision_name = "bf16"
+    else:
+        precision_config = {"fp16": {"enabled": True, "loss_scale": 0, "loss_scale_window": 1000}}
+        precision_name = "fp16"
+
+    # モデルサイズに基づいてDeepSpeedステージを決定
+    # CPUオフロードは極力避ける（学習速度が大幅に低下するため）
+    if est_vram_gb > vram_limit_gb * 0.9:
+        # VRAMに収まらない場合はZeRO-3 + CPU offload
+        zero_config = {
+            "stage": 3,
+            "offload_param": {
+                "device": "cpu",
+                "pin_memory": True,
+            },
+            "offload_optimizer": {
+                "device": "cpu",
+                "pin_memory": True,
+            },
+            "stage3_param_persistence_threshold": 10000,
+            "stage3_max_live_parameters": 1e7,
+            "stage3_max_reuse_distance": 1e7,
+            "sub_group_size": 1e7,
+            "allgather_partitions": True,
+            "allgather_bucket_size": 2e8,
+            "overlap_comm": True,
+            "reduce_scatter": True,
+            "reduce_bucket_size": 2e8,
+        }
+        zero_name = "ZeRO-3 (CPU offload)"
+    elif vram_limit_gb <= 5.0:
+        # VRAM制限が小さいがモデルが収まる場合はZeRO-1（軽量）
+        zero_config = {
+            "stage": 1,
+            "allgather_partitions": True,
+            "allgather_bucket_size": 2e8,
+            "overlap_comm": True,
+            "reduce_scatter": True,
+            "reduce_bucket_size": 2e8,
+        }
+        zero_name = "ZeRO-1"
+    else:
+        # VRAMに余裕がある場合はZeRO-2
+        zero_config = {
             "stage": 2,
             "allgather_partitions": True,
             "allgather_bucket_size": 2e8,
             "overlap_comm": True,
             "reduce_scatter": True,
             "reduce_bucket_size": 2e8,
-        },
+        }
+        zero_name = "ZeRO-2"
+
+    ds_config = {
+        **precision_config,
+        "zero_optimization": zero_config,
         "activation_checkpointing": {
             "partition_activations": True,
             "cpu_checkpointing": True,
@@ -188,6 +237,8 @@ def generate_deepspeed_config(n_params, vram_limit_gb):
         print(f"DeepSpeed WARNING: Est. param memory ({est_vram_gb:.2f} GB) > VRAM ({vram_limit_gb} GB). GPU-only may OOM.", flush=True)
     else:
         print(f"DeepSpeed: Est. VRAM ({est_vram_gb:.2f} GB) fits within limit ({vram_limit_gb} GB).", flush=True)
+
+    print(f"DeepSpeed: {precision_name} + {zero_name} (VRAM limit: {vram_limit_gb} GB)", flush=True)
 
     ds_config_path = "temp_ds_config.json"
     with open(ds_config_path, "w", encoding="utf-8") as f:
@@ -345,20 +396,13 @@ def train(config_path_or_cfg):
     tokenizer_path = config.get("tokenizer_path", "data/tokenizer.json")
     print(f"Loading tokenizer from {tokenizer_path}...")
     tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
-    tokenizer.pad_token = "[PAD]"
-    tokenizer.bos_token = "[CLS]"
-    tokenizer.eos_token = "[SEP]"
-
-    # ADR-0013: Metadata boundary special tokens
-    special_tokens = {
-        "additional_special_tokens": [
-            "<|start_of_metadata|>",
-            "<|end_of_metadata|>",
-            "<|start_of_story|>",
-        ]
-    }
-    num_added = tokenizer.add_special_tokens(special_tokens)
-    print(f"Added {num_added} special tokens for metadata boundary enforcement.")
+    # ADR-021: Use SP-native token names (IDs 0-3 in vocab)
+    tokenizer.unk_token = "<unk>"
+    tokenizer.bos_token = "<s>"
+    tokenizer.eos_token = "</s>"
+    tokenizer.pad_token = "<pad>"
+    print(f"Special token IDs: unk={tokenizer.unk_token_id}, bos={tokenizer.bos_token_id}, "
+          f"eos={tokenizer.eos_token_id}, pad={tokenizer.pad_token_id}")
 
     # --- Dataset loading ---
     print("Starting dataset load...")
@@ -404,6 +448,9 @@ def train(config_path_or_cfg):
         eos_token_id=tokenizer.eos_token_id,
     )
     model = LlamaForCausalLM(model_config)
+    
+    # 高速化: torch.compileはエラーになるため削除
+        
     model.resize_token_embeddings(len(tokenizer))
     print(f"Model initialized: hidden_size={adjusted_hidden_size}, vocab_size={len(tokenizer)}")
 
@@ -419,28 +466,37 @@ def train(config_path_or_cfg):
     n_params_est = config['model_params'].get('n_params', 125_000_000)
     # Try to get VRAM limit from config, fallback to training_config
     try:
-        vram_limit = config.get('_hydra_cfg', {}).get('hardware', {}).get('vram_limit_gb', 32.0)
+        vram_limit = config.get('_hydra_cfg', {}).get('hardware', {}).get('vram_limit_gb', 4.0)
         if vram_limit is None:
-            vram_limit = 32.0
+            vram_limit = 4.0
         vram_limit = float(vram_limit)
     except Exception:
         try:
             import training_config as prj_config
             vram_limit = prj_config.VRAM_LIMIT_GB
         except Exception:
-            vram_limit = 32.0
+            vram_limit = 4.0
 
-    ds_config_path = generate_deepspeed_config(n_params_est, vram_limit)
+    # ADR-018: precision (bf16/fp16) を config から取得
+    try:
+        precision = config.get('_hydra_cfg', {}).get('hardware', {}).get('precision', 'bf16')
+        if precision is None:
+            precision = 'bf16'
+    except Exception:
+        precision = 'bf16'
 
-    # Batch size calculation
+    ds_config_path = generate_deepspeed_config(n_params_est, vram_limit, precision=precision)
+
+    # Batch size calculation - モデルサイズとVRAMに基づく
+    est_vram = (n_params_est * 14) / (1024**3)  # 推定VRAM使用量 (GB)
+    # バッチサイズ計算: 4GB VRAMではseq_len=2048でbatch=1が限界
+    # CPUオフロードを使わず、batch小さく + grad_accumで調整
     if vram_limit <= 4.5:
-        max_batch = 1
+        max_batch = 1  # seq_len=2048ではbatch=1が安全
     elif vram_limit <= 8.5:
         max_batch = 4
-    elif vram_limit <= 16.5:
-        max_batch = 8
     else:
-        max_batch = 16
+        max_batch = 8
 
     per_device_batch = min(target_total_batch_seqs, max_batch)
     grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)

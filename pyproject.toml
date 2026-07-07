@@ -16,6 +16,10 @@ dependencies = [
     "mlflow>=2.10.0",
     "scipy>=1.11.0",
     "dvc>=3.0.0",
+    "deepspeed>=0.14.0",
+    "bitsandbytes>=0.43.0",
+    "flash-attn>=2.5.0; platform_system == 'Linux'",
+    "sentencepiece>=0.2.0",
 ]
 
 [project.optional-dependencies]

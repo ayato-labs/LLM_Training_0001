@@ -1,125 +1,0 @@
-CUDA available: True
-Loading tokenizer...
-Tokenizer loaded.
-Starting dataset load...
-Map:   0%|          | 0/1482 [00:00<?, ? examples/s]Map:   0%|          | 0/1482 [00:00<?, ? examples/s]Map:  33%|###3      | 493/1482 [00:00<00:00, 4873.80 examples/s]Map:  33%|###3      | 493/1482 [00:00<00:00, 4873.80 examples/s]Map:  67%|######7   | 1000/1482 [00:00<00:00, 3308.69 examples/s]Map:  67%|######7   | 1000/1482 [00:00<00:00, 3308.69 examples/s]Map: 100%|##########| 1482/1482 [00:00<00:00, 3450.94 examples/s]Map: 100%|##########| 1482/1482 [00:00<00:00, 3450.94 examples/s]Map: 100%|##########| 1482/1482 [00:00<00:00, 3397.94 examples/s]Map: 100%|##########| 1482/1482 [00:00<00:00, 3397.94 examples/s]
-
-Dataset loaded. Size: 1482
-Initializing model...
-Model initialized.
-Initializing trainer...
-Trainer initialized. Starting training...
-  0%|          | 0/212 [00:00<?, ?it/s]  0%|          | 0/212 [00:00<?, ?it/s]Traceback (most recent call last):
-Traceback (most recent call last):
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 743, in convert_to_tensors
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 743, in convert_to_tensors
-        tensor = as_tensor(value)tensor = as_tensor(value)
-
-                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 702, in as_tensor
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 702, in as_tensor
-        return torch.tensor(value, dtype=dtype)return torch.tensor(value, dtype=dtype)
-
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-ValueErrorValueError: : too many dimensions 'str'too many dimensions 'str'
-
-
-
-The above exception was the direct cause of the following exception:
-The above exception was the direct cause of the following exception:
-
-
-Traceback (most recent call last):
-Traceback (most recent call last):
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\src\train_model.py", line 109, in <module>
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\src\train_model.py", line 109, in <module>
-        train(config_path)train(config_path)
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\src\train_model.py", line 101, in train
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\src\train_model.py", line 101, in train
-        trainer.train()trainer.train()
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1433, in train
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1433, in train
-        return inner_training_loop(return inner_training_loop(
-
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1515, in _inner_training_loop
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1515, in _inner_training_loop
-        self._run_epoch(self._run_epoch(
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1710, in _run_epoch
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 1710, in _run_epoch
-        batch_samples, num_items_in_batch = self.get_batch_samples(epoch_iterator, num_batches, self.args.device)batch_samples, num_items_in_batch = self.get_batch_samples(epoch_iterator, num_batches, self.args.device)
-
-                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 2116, in get_batch_samples
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\trainer.py", line 2116, in get_batch_samples
-        batch_samples.append(next(epoch_iterator))batch_samples.append(next(epoch_iterator))
-
-                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\accelerate\data_loader.py", line 585, in __iter__
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\accelerate\data_loader.py", line 585, in __iter__
-        current_batch = next(dataloader_iter)current_batch = next(dataloader_iter)
-
-                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\utils\data\dataloader.py", line 701, in __next__
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\utils\data\dataloader.py", line 701, in __next__
-        data = self._next_data()data = self._next_data()
-
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\utils\data\dataloader.py", line 757, in _next_data
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\utils\data\dataloader.py", line 757, in _next_data
-        data = self._dataset_fetcher.fetch(index)  # may raise StopIterationdata = self._dataset_fetcher.fetch(index)  # may raise StopIteration
-
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 55, in fetch
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 55, in fetch
-        return self.collate_fn(data)return self.collate_fn(data)
-
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\data\data_collator.py", line 42, in __call__
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\data\data_collator.py", line 42, in __call__
-        return self.torch_call(features)return self.torch_call(features)
-
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\data\data_collator.py", line 774, in torch_call
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\data\data_collator.py", line 774, in torch_call
-        batch = pad_without_fast_tokenizer_warning(batch = pad_without_fast_tokenizer_warning(
-
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\data\data_collator.py", line 63, in pad_without_fast_tokenizer_warning
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\data\data_collator.py", line 63, in pad_without_fast_tokenizer_warning
-        padded = tokenizer.pad(*pad_args, **pad_kwargs)padded = tokenizer.pad(*pad_args, **pad_kwargs)
-
-                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 2758, in pad
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 2758, in pad
-        return BatchEncoding(batch_outputs, tensor_type=return_tensors)return BatchEncoding(batch_outputs, tensor_type=return_tensors)
-
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 243, in __init__
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 243, in __init__
-        self.convert_to_tensors(tensor_type=tensor_type, prepend_batch_axis=prepend_batch_axis)self.convert_to_tensors(tensor_type=tensor_type, prepend_batch_axis=prepend_batch_axis)
-
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 759, in convert_to_tensors
-  File "C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\LLM_Training\.venv\Lib\site-packages\transformers\tokenization_utils_base.py", line 759, in convert_to_tensors
-        raise ValueError(raise ValueError(
-
-ValueErrorValueError: : Unable to create tensor, you should probably activate truncation and/or padding with 'padding=True' 'truncation=True' to have batched tensors with the same length. Perhaps your features (`text` in this case) have excessive nesting (inputs type `list` where type `int` is expected).Unable to create tensor, you should probably activate truncation and/or padding with 'padding=True' 'truncation=True' to have batched tensors with the same length. Perhaps your features (`text` in this case) have excessive nesting (inputs type `list` where type `int` is expected).
-
-  0%|          | 0/212 [00:00<?, ?it/s]  0%|          | 0/212 [00:00<?, ?it/s]
-

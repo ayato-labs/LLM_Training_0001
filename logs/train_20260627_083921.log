@@ -1,10 +1,0 @@
-CUDA available: True
-Loading tokenizer...
-Tokenizer loaded.
-Starting dataset load...
-Dataset loaded. Size: 1482
-Initializing model...
-Model initialized.
-Initializing trainer...
-Trainer initialized. Starting training...
-  0%|          | 0/93 [00:00<?, ?it/s]  0%|          | 0/93 [00:00<?, ?it/s]  1%|1         | 1/93 [00:13<21:01, 13.71s/it]  1%|1         | 1/93 [00:13<21:01, 13.71s/it]  2%|2         | 2/93 [00:37<29:26, 19.41s/it]  2%|2         | 2/93 [00:37<29:26, 19.41s/it]  3%|3         | 3/93 [01:01<32:36, 21.74s/it]  3%|3         | 3/93 [01:01<32:36, 21.74s/it]  4%|4         | 4/93 [01:26<33:59, 22.91s/it]  4%|4         | 4/93 [01:26<33:59, 22.91s/it]
