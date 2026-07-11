@@ -39,6 +39,7 @@ Usage:
 import argparse
 import math
 import sys
+import traceback
 from pathlib import Path
 
 import torch
@@ -48,7 +49,7 @@ import mlflow
 
 import optuna
 from src.config import load_config, resolve_config_path
-from src.logger import log_exceptions, logger
+from src.logger import log_exceptions, logger, get_logger, LogContext
 from src.step_law import compute_hpo_for_target
 from src.hpo_manager import objective
 from src.train_model import compute_dataset_fingerprint, train
@@ -58,52 +59,56 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 def run_pilot_check(config: dict) -> bool:
     """Run a short pilot training to verify hyperparameters before full training."""
-    logger.info("=== Pilot Check Started ===")
-    
-    pilot_config = config.copy()
-    # Override for pilot: very short run, small data fraction
-    pilot_config["max_steps"] = 50
-    pilot_config["pilot_mode"] = True
-    # Use only a tiny fraction of data for speed
-    pilot_config["data_fraction"] = 0.005  # 0.5%
-    
-    try:
-        final_loss = train(pilot_config)
-        
-        if math.isnan(final_loss) or math.isinf(final_loss):
-            logger.error(f"Pilot FAILED: Loss is NaN/Inf ({final_loss})")
+    with LogContext(stage="pilot_check"):
+        logger.info("=== Pilot Check Started ===")
+
+        pilot_config = config.copy()
+        # Override for pilot: very short run, small data fraction
+        pilot_config["max_steps"] = 50
+        pilot_config["pilot_mode"] = True
+        # Use only a tiny fraction of data for speed
+        pilot_config["data_fraction"] = 0.005  # 0.5%
+
+        try:
+            logger.info(f"Starting pilot training: max_steps=50, data_fraction=0.005")
+            final_loss = train(pilot_config)
+
+            if math.isnan(final_loss) or math.isinf(final_loss):
+                logger.error(f"Pilot FAILED: Loss is NaN/Inf ({final_loss})")
+                return False
+
+            # Heuristic: loss should be reasonable (not exploding)
+            if final_loss > 50.0:
+                logger.warning(f"Pilot WARNING: High loss ({final_loss:.4f}), but continuing...")
+
+            logger.info(f"Pilot PASSED: Final loss = {final_loss:.4f}")
+            return True
+
+        except Exception as e:
+            logger.exception(f"Pilot CRASHED: {e}")
             return False
-        
-        # Heuristic: loss should be reasonable (not exploding)
-        if final_loss > 50.0:
-            logger.warning(f"Pilot WARNING: High loss ({final_loss:.4f}), but continuing...")
-        
-        logger.info(f"Pilot PASSED: Final loss = {final_loss:.4f}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Pilot CRASHED: {e}")
-        return False
 
 
 def apply_step_law(config: dict) -> dict:
     """Apply Step Law to compute optimal hyperparameters from dataset size."""
-    n_params = config["model_params"]["n_params"]
-    train_path = PROJECT_ROOT / config["data_path"]
+    with LogContext(stage="step_law"):
+        n_params = config["model_params"]["n_params"]
+        train_path = PROJECT_ROOT / config["data_path"]
 
-    stats = compute_dataset_fingerprint(str(train_path))
-    if "error" in stats:
-        logger.warning(f"Could not compute fingerprint: {stats['error']}")
+        stats = compute_dataset_fingerprint(str(train_path))
+        if "error" in stats:
+            logger.warning(f"Could not compute fingerprint: {stats['error']}")
+            return config
+
+        n_tokens = stats["line_count"] * 1024
+        seq_len = config["hpo"]["seq_len"]
+
+        logger.info(f"Applying Step Law for {n_params} params and {n_tokens} tokens...")
+        hpo = compute_hpo_for_target(n_params=n_params, n_tokens=n_tokens, seq_len=seq_len)
+
+        config["hpo"].update(hpo)
+        logger.info(f"Step Law applied: {hpo}")
         return config
-
-    n_tokens = stats["line_count"] * 1024
-    seq_len = config["hpo"]["seq_len"]
-
-    logger.info(f"Applying Step Law for {n_params} params and {n_tokens} tokens...")
-    hpo = compute_hpo_for_target(n_params=n_params, n_tokens=n_tokens, seq_len=seq_len)
-
-    config["hpo"].update(hpo)
-    return config
 
 
 @log_exceptions
@@ -121,14 +126,22 @@ def main():
     args = parser.parse_args()
 
     # Load config
-    config_path = resolve_config_path(args.config)
-    logger.info(f"Loading config from: {config_path}")
-    config = load_config(config_path)
+    try:
+        config_path = resolve_config_path(args.config)
+        logger.info(f"Loading config from: {config_path}")
+        config = load_config(config_path)
+        logger.info(f"Config loaded: target_params={config['model_params'].get('n_params')}")
+    except Exception as e:
+        logger.exception(f"Failed to load config: {e}")
+        sys.exit(1)
 
     # HPO
     logger.info("Starting HPO study with proxy models...")
     study = optuna.create_study(direction="minimize")
-    study.optimize(lambda trial: objective(trial, config), n_trials=config.get("hpo_trials", 10))
+    study.optimize(
+        lambda trial: objective(trial, config),
+        n_trials=config.get("hpo_trials", 10)
+    )
 
     best_params = study.best_params
     logger.info(f"Best params found: {best_params}")
@@ -148,10 +161,19 @@ def main():
     if not run_pilot_check(config):
         logger.error("Pilot check failed. Aborting full training.")
         sys.exit(1)
-    
+
     train(config)
 
 
-
 if __name__ == "__main__":
-    main()
+    # Ensure unhandled exceptions are logged
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted by user (Ctrl+C)")
+        sys.exit(130)
+    except SystemExit as e:
+        sys.exit(e.code)
+    except Exception as e:
+        logger.exception(f"Fatal error in main: {e}")
+        sys.exit(1)
