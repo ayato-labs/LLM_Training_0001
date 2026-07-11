@@ -1,10 +1,23 @@
 import optuna
 import math
+import time
+import torch
+import gc
+from typing import Dict, Any
 
-from src.logger import logger
+from src.logger import logger, get_logger
 from src.step_law import compute_hpo_for_target
 from src.trainer import train_model
 from src.model_utils import estimate_config_from_params
+
+
+def _cleanup_vram():
+    """GPUメモリを確実に解放"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        torch.cuda.synchronize()
 
 
 def compute_scaling_priors(target_params: int, n_tokens: int) -> dict:
@@ -83,7 +96,22 @@ def compute_scaling_priors(target_params: int, n_tokens: int) -> dict:
     }
 
 
+def _cleanup_vram():
+    """VRAMを確実に解放"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        torch.cuda.synchronize()
+
+
 def objective(trial, config):
+    trial_start_time = time.time()
+    trial_logger = get_logger(f"hpo.trial_{trial.number}")
+    
+    # VRAMクリーンアップ: 前のTrialのメモリを確実に解放
+    _cleanup_vram()
+    
     try:
         target_params = config["model_params"].get("n_params", 150_000_000)
         n_tokens = 1_400_000_000
@@ -136,23 +164,29 @@ def objective(trial, config):
             priors["grad_clip_range"][1],
         )
         
-        # 4. Batch Size (離散) - GPUメモリ制約で上限あり
+        # 5. Batch Size (離散) - GPUメモリ制約で上限あり
         batch_size = trial.suggest_categorical(
             "batch_size", 
             [b for b in priors["batch_size_candidates"] if b <= 16]  # VRAM 4GB制約
         )
         
-        logger.debug(
-            f"Trial {trial.number}: lr_2d={lr_2d:.2e}, lr_1d={lr_1d:.2e}, "
+        trial_logger = get_logger(f"hpo.trial_{trial.number}")
+        
+        # 推定プロキシモデルのパラメータ数
+        proxy_params = config_model.n_layer * config_model.n_embd * config_model.n_embd * 12 / 1e6
+        
+        trial_logger.info(
+            f"Trial {trial.number} STARTED | "
+            f"lr_2d={lr_2d:.2e}, lr_1d={lr_1d:.2e}, "
             f"wd={weight_decay:.4f}, beta2={beta2}, warmup={warmup_ratio:.3f}, "
-            f"grad_clip={grad_clip:.1f}, bs={batch_size}"
+            f"grad_clip={grad_clip:.1f}, bs={batch_size}, proxy_params={proxy_params:.1f}M"
         )
         
         hpo_config = {
             "model_name": "modern_gpt",
             "model_config": config_model.__dict__,
-            "lr": lr_2d,  # 2D params (attention, ffn weights)
-            "lr_1d": lr_1d,  # 1D params (bias, norm, embeddings)
+            "lr": lr_2d,
+            "lr_1d": lr_1d,
             "weight_decay": weight_decay,
             "beta2": beta2,
             "warmup_ratio": warmup_ratio,
@@ -161,13 +195,62 @@ def objective(trial, config):
             "batch_size_seqs": batch_size,
         }
         
-        loss = train_model(hpo_config, trial=trial)
-        logger.info(f"Trial {trial.number}: loss={loss:.6f}")
-        return loss
+        trial_start = time.time()
+        trial_logger.info(f"Trial {trial.number} TRAINING STARTED (max_steps=50, pilot_mode)")
         
+        try:
+            loss = train_model(hpo_config, trial=trial)
+            
+            trial_duration = time.time() - trial_start
+            total_duration = time.time() - trial_start_time
+            
+            trial_logger.info(
+                f"Trial {trial.number} COMPLETED | "
+                f"loss={loss:.6f} | "
+                f"trial_time={trial_duration:.1f}s | "
+                f"total_time={time.time() - trial_start_time:.1f}s"
+            )
+            
+            # Optuna callback for pruning info
+            if trial.should_prune():
+                logger.warning(f"Trial {trial.number} PRUNED by MedianPruner")
+            
+            return loss
+            
+        except Exception as e:
+            trial_duration = time.time() - trial_start_time
+            logger.error(
+                f"Trial {trial.number} FAILED after {trial_duration:.1f}s: {e}", 
+                exc_info=True
+            )
+            raise
+    
     except Exception as e:
-        logger.error(f"Trial {trial.number} failed: {e}", exc_info=True)
+        trial_duration = time.time() - trial_start_time
+        logger.error(
+            f"Trial {trial.number} FAILED after {trial_duration:.1f}s: {e}", 
+            exc_info=True
+        )
         raise
+
+
+def _trial_callback(study, trial):
+    """Optuna callback for trial completion/pruning logging."""
+    if trial.state == optuna.trial.TrialState.PRUNED:
+        logger.warning(
+            f"Trial {trial.number} PRUNED by MedianPruner | "
+            f"params={trial.params} | value={trial.value}"
+        )
+    elif trial.state == optuna.trial.TrialState.COMPLETE:
+        logger.info(
+            f"Trial {trial.number} COMPLETE | "
+            f"loss={trial.value:.6f} | params={trial.params}"
+        )
+    elif trial.state == optuna.trial.TrialState.FAIL:
+        logger.error(
+            f"Trial {trial.number} FAILED | "
+            f"error={trial.user_attrs.get('error', 'unknown')}"
+        )
 
 
 if __name__ == "__main__":
@@ -203,6 +286,7 @@ if __name__ == "__main__":
         n_trials=30,
         timeout=7200,  # 2時間で打ち切り
         n_jobs=1,
+        callbacks=[_trial_callback],
     )
     
     logger.info(f"Best params: {study.best_params}")

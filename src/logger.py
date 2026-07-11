@@ -15,12 +15,12 @@ log_dir.mkdir(exist_ok=True)
 # Configure logger
 logger.remove()
 
-# Console output (human readable)
+# Console output (human readable) - synchronous for real-time output
 logger.add(
     sys.stderr,
     format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
     level="INFO",
-    enqueue=True,
+    enqueue=False,  # synchronous for real-time console output
     backtrace=True,
     diagnose=True,
 )
@@ -55,8 +55,7 @@ def json_serializer(record: Dict[str, Any]) -> str:
 # Structured JSON file output (for machine parsing / traceability)
 logger.add(
     "logs/app.json",
-    serialize=False,  # Use custom serializer
-    format=json_serializer,
+    serialize=json_serializer,
     level="DEBUG",
     rotation="10 MB",
     retention="30 days",
