@@ -14,6 +14,7 @@ from transformers import (
     TrainerCallback, TrainerState, TrainerControl
 )
 import mlflow
+from src.logger import logger
 
 # ============================================================
 # Google Drive Upload Callback
@@ -32,12 +33,12 @@ class DriveUploadCallback(TrainerCallback):
     def _init_drive(self):
         """Initialize Google Drive service."""
         try:
-            from src.utils.drive_uploader import get_drive_service, get_or_create_drive_folder
+            from src.drive_uploader import get_drive_service, get_or_create_drive_folder
             self.drive_service = get_drive_service()
             self.root_folder_id = get_or_create_drive_folder(self.drive_service, "Novel_LLM_Checkpoints")
-            print(f"[DriveUploadCallback] Google Drive initialized: folder_id={self.root_folder_id}")
+            logger.info(f"Google Drive initialized: folder_id={self.root_folder_id}")
         except Exception as e:
-            print(f"[DriveUploadCallback] Failed to initialize Drive: {e}")
+            logger.warning(f"Failed to initialize Drive: {e}")
             self.drive_service = None
             self.root_folder_id = None
 
@@ -64,21 +65,21 @@ class DriveUploadCallback(TrainerCallback):
         time.sleep(2)
 
         try:
-            from src.utils.drive_uploader import upload_file_to_drive, file_exists_on_drive
+            from src.drive_uploader import upload_file_to_drive, file_exists_on_drive
 
             # Compress checkpoint
             zip_path = self.output_dir / f"{latest.name}.zip"
-            print(f"[DriveUploadCallback] Compressing checkpoint {latest.name}...")
+            logger.info(f"Compressing checkpoint {latest.name}...")
             import shutil
             shutil.make_archive(str(self.output_dir / latest.name), 'zip', str(latest))
 
             # Upload
             if not file_exists_on_drive(self.drive_service, zip_path.name, self.root_folder_id):
-                print(f"[DriveUploadCallback] Uploading checkpoint {latest.name} to Google Drive...")
+                logger.info(f"Uploading checkpoint {latest.name} to Google Drive...")
                 upload_file_to_drive(self.drive_service, zip_path, self.root_folder_id)
-                print(f"[DriveUploadCallback] Uploaded: {zip_path.name}")
+                logger.info(f"Uploaded: {zip_path.name}")
             else:
-                print(f"[DriveUploadCallback] Checkpoint {latest.name} already on Drive, skipping.")
+                logger.info(f"Checkpoint {latest.name} already on Drive, skipping.")
 
             # Mark as uploaded
             uploaded_flag.touch()
@@ -88,16 +89,12 @@ class DriveUploadCallback(TrainerCallback):
                 zip_path.unlink()
 
         except Exception as e:
-            print(f"[DriveUploadCallback] Error uploading checkpoint: {e}")
+            logger.error(f"Error uploading checkpoint: {e}", exc_info=True)
 
 
 # ============================================================
 # Logging setup
 # ============================================================
-log_dir = Path("logs")
-log_dir.mkdir(exist_ok=True)
-log_file = log_dir / f"train_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
 def is_deepspeed_available():
     try:
         import deepspeed
@@ -107,24 +104,7 @@ def is_deepspeed_available():
     except Exception:
         return False
 
-class Logger:
-    def __init__(self, filename):
-        self.terminal = sys.stdout
-        self.log = open(filename, "a", encoding="utf-8")
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-        self.log.flush()
-
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
-
-sys.stdout = Logger(log_file)
-sys.stderr = Logger(log_file)
-
-print(f"CUDA available: {torch.cuda.is_available()}", flush=True)
+logger.info(f"CUDA available: {torch.cuda.is_available()}")
 
 
 # ============================================================
@@ -317,11 +297,11 @@ def generate_deepspeed_config(n_params, vram_limit_gb, precision="bf16"):
     }
 
     if est_vram_gb > vram_limit_gb:
-        print(f"DeepSpeed WARNING: Est. param memory ({est_vram_gb:.2f} GB) > VRAM ({vram_limit_gb} GB). GPU-only may OOM.", flush=True)
+        logger.warning(f"DeepSpeed: Est. param memory ({est_vram_gb:.2f} GB) > VRAM ({vram_limit_gb} GB). GPU-only may OOM.")
     else:
-        print(f"DeepSpeed: Est. VRAM ({est_vram_gb:.2f} GB) fits within limit ({vram_limit_gb} GB).", flush=True)
+        logger.info(f"DeepSpeed: Est. VRAM ({est_vram_gb:.2f} GB) fits within limit ({vram_limit_gb} GB).")
 
-    print(f"DeepSpeed: {precision_name} + {zero_name} (VRAM limit: {vram_limit_gb} GB)", flush=True)
+    logger.info(f"DeepSpeed: {precision_name} + {zero_name} (VRAM limit: {vram_limit_gb} GB)")
 
     ds_config_path = "temp_ds_config.json"
     with open(ds_config_path, "w", encoding="utf-8") as f:
@@ -356,7 +336,7 @@ class DriveUploadCallback(TrainerCallback):
         if self._initialized:
             return
         try:
-            from src.utils.drive_uploader import (
+            from src.drive_uploader import (
                 get_drive_service, get_or_create_drive_folder, upload_file_to_drive
             )
             self.drive_service = get_drive_service()
@@ -364,9 +344,9 @@ class DriveUploadCallback(TrainerCallback):
                 self.drive_service, "Novel_LLM_Checkpoints"
             )
             self._initialized = True
-            print("[DriveUploadCallback] Google Drive service initialized")
+            logger.info("Google Drive service initialized")
         except Exception as e:
-            print(f"[DriveUploadCallback] Failed to init Drive: {e}")
+            logger.warning(f"Failed to init Drive: {e}")
             self._initialized = False
 
     def _compress_and_upload(self, checkpoint_path: Path, step: int):
@@ -380,13 +360,13 @@ class DriveUploadCallback(TrainerCallback):
         zip_path = Path("models/output") / zip_name
 
         try:
-            print(f"[DriveUploadCallback] Compressing checkpoint-{step}...")
+            logger.info(f"Compressing checkpoint-{step}...")
             shutil.make_archive(
                 str(Path("models/output") / f"checkpoint-{step}"),
                 'zip', str(checkpoint_path)
             )
 
-            from src.utils.drive_uploader import upload_file_to_drive
+            from src.drive_uploader import upload_file_to_drive
             upload_file_to_drive(self.drive_service, zip_path, self.root_folder_id)
 
             # Mark as uploaded
@@ -396,10 +376,10 @@ class DriveUploadCallback(TrainerCallback):
             if zip_path.exists():
                 os.remove(zip_path)
 
-            print(f"[DriveUploadCallback] Uploaded checkpoint-{step} to Google Drive")
+            logger.info(f"Uploaded checkpoint-{step} to Google Drive")
 
         except Exception as e:
-            print(f"[DriveUploadCallback] Error uploading checkpoint-{step}: {e}")
+            logger.error(f"Error uploading checkpoint-{step}: {e}", exc_info=True)
 
     def on_save(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
         """Called after checkpoint save."""
@@ -421,7 +401,7 @@ class DriveUploadCallback(TrainerCallback):
         latest_checkpoint = checkpoint_dirs[-1]
         step = int(latest_checkpoint.name.split("-")[1])
 
-        print(f"[DriveUploadCallback] Uploading checkpoint at step {step}...")
+        logger.info(f"Uploading checkpoint at step {step}...")
         self._compress_and_upload(latest_checkpoint, step)
         self.last_uploaded_step = step
 
@@ -438,7 +418,7 @@ class DriveUploadCallback(TrainerCallback):
         step = int(latest_checkpoint.name.split("-")[1])
 
         if step > self.last_uploaded_step:
-            print(f"[DriveUploadCallback] Final upload of checkpoint-{step}...")
+            logger.info(f"Final upload of checkpoint-{step}...")
             self._compress_and_upload(latest_checkpoint, step)
 
 
@@ -472,7 +452,7 @@ class CustomTrainer(Trainer):
 
         try:
             from muon import Muon
-            print(f"Optimizer: Muon for 2D (lr={lr_2d}), AdamW for 1D (lr={lr_1d})", flush=True)
+            logger.info(f"Optimizer: Muon for 2D (lr={lr_2d}), AdamW for 1D (lr={lr_1d})")
             self.optimizer = Muon(
                 params_2d,
                 lr=lr_2d,
@@ -485,7 +465,7 @@ class CustomTrainer(Trainer):
                 ),
             )
         except ImportError:
-            print("Optimizer: Muon not found. Falling back to split AdamW.", flush=True)
+            logger.info("Optimizer: Muon not found. Falling back to split AdamW.")
             from torch.optim import AdamW
             self.optimizer = AdamW([
                 {'params': params_2d, 'lr': lr_2d, 'weight_decay': 0.0},
@@ -515,7 +495,7 @@ def train(config_path_or_cfg):
     seed = config.get("seed", 42)
 
     # --- Seed fixing (ADR-017) ---
-    from src.utils.set_seed import set_seed
+    from src.set_seed import set_seed
     set_seed(seed, deterministic=True)
 
     # --- Dataset fingerprinting (traceability) ---
@@ -525,7 +505,7 @@ def train(config_path_or_cfg):
     db_fingerprint = compute_db_fingerprint(db_path_str)
 
     # --- Environment snapshot (traceability) ---
-    from src.utils.env_snapshot import capture_env_snapshot
+    from src.env_snapshot import capture_env_snapshot
     env_snapshot = capture_env_snapshot()
 
     # --- MLflow init with full traceability ---
@@ -579,28 +559,28 @@ def train(config_path_or_cfg):
             mlflow.log_artifact(str(config_path_obj))
 
     except Exception as e:
-        print(f"MLflow initialization failed: {e}")
+        logger.warning(f"MLflow initialization failed: {e}", exc_info=True)
 
     # --- Tokenizer ---
     tokenizer_path = config.get("tokenizer_path", "data/tokenizer.json")
-    print(f"Loading tokenizer from {tokenizer_path}...")
+    logger.info(f"Loading tokenizer from {tokenizer_path}...")
     tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
     # ADR-021: Use SP-native token names (IDs 0-3 in vocab)
     tokenizer.unk_token = "<unk>"
     tokenizer.bos_token = "<s>"
     tokenizer.eos_token = "</s>"
     tokenizer.pad_token = "<pad>"
-    print(f"Special token IDs: unk={tokenizer.unk_token_id}, bos={tokenizer.bos_token_id}, "
+    logger.info(f"Special token IDs: unk={tokenizer.unk_token_id}, bos={tokenizer.bos_token_id}, "
           f"eos={tokenizer.eos_token_id}, pad={tokenizer.pad_token_id}")
 
     # --- Dataset loading ---
-    print("Starting dataset load...")
+    logger.info("Starting dataset load...")
     data_path = Path(data_path_str)
     if not data_path.exists():
         fallback_path = Path("data") / data_path.name
         if fallback_path.exists():
             data_path = fallback_path
-            print(f"Dataset path resolved to fallback: {data_path}")
+            logger.info(f"Dataset path resolved to fallback: {data_path}")
         else:
             raise FileNotFoundError(
                 f"Could not find dataset at '{data_path_str}' or '{fallback_path.resolve()}'"
@@ -619,8 +599,8 @@ def train(config_path_or_cfg):
         if not val_data_path.is_absolute():
             val_data_path = Path(data_path.parent) / val_path
 
-        print(f"Loading train from: {train_data_path}")
-        print(f"Loading val from: {val_data_path}")
+        logger.info(f"Loading train from: {train_data_path}")
+        logger.info(f"Loading val from: {val_data_path}")
 
         dataset = load_dataset("json", data_files={
             "train": str(train_data_path),
@@ -628,11 +608,11 @@ def train(config_path_or_cfg):
         })
     else:
         # Single file - use as train only, no validation
-        print(f"Loading single dataset from: {data_path}")
+        logger.info(f"Loading single dataset from: {data_path}")
         dataset = load_dataset("json", data_files=str(data_path))
 
     seq_len = config.get('hpo', {}).get('seq_len', 512)
-    print(f"Tokenizing dataset with max_length={seq_len}...")
+    logger.info(f"Tokenizing dataset with max_length={seq_len}...")
 
     def tokenize_function(examples):
         return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=seq_len)
@@ -643,12 +623,12 @@ def train(config_path_or_cfg):
 
     # Print dataset sizes
     if "train" in tokenized_datasets:
-        print(f"Train dataset size: {len(tokenized_datasets['train'])}")
+        logger.info(f"Train dataset size: {len(tokenized_datasets['train'])}")
     if "validation" in tokenized_datasets:
-        print(f"Validation dataset size: {len(tokenized_datasets['validation'])}")
+        logger.info(f"Validation dataset size: {len(tokenized_datasets['validation'])}")
 
     # --- Model initialization ---
-    print("Initializing model...")
+    logger.info("Initializing model...")
     model_params = config['model_params'].copy()
     model_params.pop('hidden_size', None)
     model_params.pop('_hydra_cfg', None)
@@ -669,7 +649,7 @@ def train(config_path_or_cfg):
     # 高速化: torch.compileはエラーになるため削除
         
     model.resize_token_embeddings(len(tokenizer))
-    print(f"Model initialized: hidden_size={adjusted_hidden_size}, vocab_size={len(tokenizer)}")
+    logger.info(f"Model initialized: hidden_size={adjusted_hidden_size}, vocab_size={len(tokenizer)}")
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
@@ -756,7 +736,7 @@ def train(config_path_or_cfg):
         callbacks=callbacks,
     )
 
-    print(f"Trainer: batch={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})", flush=True)
+    logger.info(f"Trainer: batch={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})")
 
     # --- Resume ---
     resume_flag = config.get("resume", False)
@@ -776,7 +756,7 @@ def train(config_path_or_cfg):
                 "final_train_steps_per_second": train_result.metrics.get("train_steps_per_second", -1),
             })
     except Exception as e:
-        print(f"MLflow metrics logging failed: {e}")
+        logger.warning(f"MLflow metrics logging failed: {e}", exc_info=True)
 
     # --- Cleanup ---
     if os.path.exists(ds_config_path):
@@ -816,9 +796,9 @@ def train(config_path_or_cfg):
                         zf.write(file_path, arcname)
             mlflow.log_artifact(str(model_zip_path), artifact_path="model")
             model_zip_path.unlink(missing_ok=True)
-            print("[MLflow] Model artifacts logged.")
+            logger.info("[MLflow] Model artifacts logged.")
     except Exception as e:
-        print(f"[MLflow] Model artifact logging failed: {e}")
+        logger.warning(f"[MLflow] Model artifact logging failed: {e}", exc_info=True)
 
     try:
         if mlflow_run is not None:
@@ -826,7 +806,7 @@ def train(config_path_or_cfg):
     except Exception:
         pass
 
-    print("Training finished.")
+    logger.info("Training finished.")
 
 
 if __name__ == "__main__":

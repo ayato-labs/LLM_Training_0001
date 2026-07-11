@@ -3,7 +3,7 @@ Environment snapshot recorder for experiment traceability.
 Captures GPU, CUDA, PyTorch, and system info.
 
 Usage:
-    from src.utils.env_snapshot import capture_env_snapshot
+    from src.env_snapshot import capture_env_snapshot
     env_info = capture_env_snapshot()
     mlflow.log_dict(env_info, "environment.json")
 """
@@ -13,6 +13,7 @@ import platform
 import subprocess
 import datetime
 import json
+from src.logger import logger
 
 
 def _get_gpu_info() -> dict:
@@ -97,8 +98,12 @@ def capture_env_snapshot() -> dict:
 
 def save_snapshot(path: str = "environment.json") -> str:
     """Capture and save environment snapshot to a JSON file."""
-    snapshot = capture_env_snapshot()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(snapshot, f, indent=2, ensure_ascii=False)
-    print(f"[Env] Environment snapshot saved to {path}")
-    return path
+    try:
+        snapshot = capture_env_snapshot()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, indent=2, ensure_ascii=False)
+        logger.info(f"Environment snapshot saved to {path}")
+        return path
+    except Exception as e:
+        logger.error(f"Failed to save environment snapshot: {e}", exc_info=True)
+        raise

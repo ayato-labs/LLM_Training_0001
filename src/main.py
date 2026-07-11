@@ -47,14 +47,12 @@ def apply_step_law(config: dict) -> dict:
         logger.warning(f"Could not compute fingerprint: {stats['error']}")
         return config
     
-    # 1チャンク=1024トークンと仮定してトークン数を推定
     n_tokens = stats["line_count"] * 1024
     seq_len = config["training"]["seq_len"]
     
     logger.info(f"Applying Step Law for {n_params} params and {n_tokens} tokens...")
     hpo = compute_hpo_for_target(n_params=n_params, n_tokens=n_tokens, seq_len=seq_len)
     
-    # Configを更新
     config["hpo"] = hpo
     return config
 
@@ -85,33 +83,27 @@ def main():
     )
     args = parser.parse_args()
     
-    # Load config
-    print(f"Loading config from: {args.config}")
+    logger.info(f"Loading config from: {args.config}")
     config = load_config(args.config)
     
-    # Apply HPO Optimization (Default)
-    print("Starting HPO study with proxy models...")
+    logger.info("Starting HPO study with proxy models...")
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=config.get("hpo_trials", 10))
     
-    # Update config with HPO results
     best_params = study.best_params
-    print(f"Best params found: {best_params}")
+    logger.info(f"Best params found: {best_params}")
     if "hpo" not in config:
         config["hpo"] = {}
     config["hpo"].update(best_params)
     
-    # Apply Step Law (as fallback/prior)
     config = apply_step_law(config)
     
-    # Apply CLI overrides
     if args.resume:
         config["resume"] = True
     if args.max_steps is not None:
         config["training"]["max_steps"] = args.max_steps
 
-    # Run training
-    print("Starting training...")
+    logger.info("Starting training...")
     train(config)
 
 

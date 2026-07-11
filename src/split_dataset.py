@@ -13,6 +13,7 @@ import random
 import argparse
 from pathlib import Path
 from collections import defaultdict
+from src.logger import logger
 
 
 def split_dataset(
@@ -23,68 +24,64 @@ def split_dataset(
     seed: int = 42,
 ) -> dict:
     """Split dataset by novel title."""
+    try:
+        title_to_lines = defaultdict(list)
 
-    # Read all data and group by title
-    title_to_lines = defaultdict(list)
+        logger.info(f"Reading dataset from {input_path}...")
+        with open(input_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    title = data.get("metadata", {}).get("title", "unknown")
+                    title_to_lines[title].append(line)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Skipping malformed JSON line: {e}")
+                    continue
 
-    print(f"Reading dataset from {input_path}...")
-    with open(input_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                title = data.get("metadata", {}).get("title", "unknown")
-                title_to_lines[title].append(line)
-            except json.JSONDecodeError:
-                continue
+        titles = list(title_to_lines.keys())
+        total_chunks = sum(len(v) for v in title_to_lines.values())
+        logger.info(f"Found {len(titles)} unique novels, {total_chunks} total chunks")
 
-    titles = list(title_to_lines.keys())
-    print(f"Found {len(titles)} unique novels")
-    print(f"Total chunks: {sum(len(v) for v in title_to_lines.values())}")
+        random.seed(seed)
+        random.shuffle(titles)
 
-    # Shuffle titles deterministically
-    random.seed(seed)
-    random.shuffle(titles)
+        val_count = max(1, int(len(titles) * val_ratio))
+        val_titles = set(titles[:val_count])
+        train_titles = set(titles[val_count:])
 
-    # Split
-    val_count = max(1, int(len(titles) * val_ratio))
-    val_titles = set(titles[:val_count])
-    train_titles = set(titles[val_count:])
+        logger.info(f"Split: {len(train_titles)} train novels, {len(val_titles)} val novels")
 
-    print(f"Train novels: {len(train_titles)}")
-    print(f"Val novels: {len(val_titles)}")
+        train_chunks = 0
+        val_chunks = 0
 
-    # Write split files
-    train_chunks = 0
-    val_chunks = 0
+        with open(train_output, "w", encoding="utf-8") as f_train, \
+             open(val_output, "w", encoding="utf-8") as f_val:
 
-    with open(train_output, "w", encoding="utf-8") as f_train, \
-         open(val_output, "w", encoding="utf-8") as f_val:
+            for title in titles:
+                lines = title_to_lines[title]
+                if title in val_titles:
+                    f_val.writelines(lines)
+                    val_chunks += len(lines)
+                else:
+                    f_train.writelines(lines)
+                    train_chunks += len(lines)
 
-        for title in titles:
-            lines = title_to_lines[title]
-            if title in val_titles:
-                f_val.writelines(lines)
-                val_chunks += len(lines)
-            else:
-                f_train.writelines(lines)
-                train_chunks += len(lines)
+        stats = {
+            "train_novels": len(train_titles),
+            "val_novels": len(val_titles),
+            "train_chunks": train_chunks,
+            "val_chunks": val_chunks,
+            "total_chunks": train_chunks + val_chunks,
+        }
 
-    # Verify
-    stats = {
-        "train_novels": len(train_titles),
-        "val_novels": len(val_titles),
-        "train_chunks": train_chunks,
-        "val_chunks": val_chunks,
-        "total_chunks": train_chunks + val_chunks,
-    }
+        logger.info(f"Split complete: train={train_chunks} chunks, val={val_chunks} chunks")
+        return stats
 
-    print(f"\nSplit complete:")
-    print(f"  Train: {train_chunks} chunks ({len(train_titles)} novels)")
-    print(f"  Val:   {val_chunks} chunks ({len(val_titles)} novels)")
-
-    return stats
+    except Exception as e:
+        logger.error(f"Dataset split failed: {e}", exc_info=True)
+        raise
 
 
 def main():
@@ -110,11 +107,10 @@ def main():
 
     stats = split_dataset(input_path, train_output, val_output, args.val_ratio, args.seed)
 
-    # Save stats
     stats_path = train_output.parent / "split_stats.json"
     with open(stats_path, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
-    print(f"Stats saved to {stats_path}")
+    logger.info(f"Stats saved to {stats_path}")
 
 
 if __name__ == "__main__":
