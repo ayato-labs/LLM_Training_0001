@@ -1,15 +1,50 @@
-# 3B - RTX 5090 (24GB)
+# ============================================================
+# 3B スケーリング設定
+# ============================================================
+# 対象GPU: RTX 5090 (24GB VRAM)
+# 用途:    中規模モデル。150Mからの飛躍的な性能向上を目指す。
+# 目安:    BF16 + ZeRO-1 で約5.6GB使用
+#
+# Chinchilla則の計算:
+#   N=3B, L=28, H=2560 → 12 × 28 × 2560^2 ≈ 2.2B
+#   FFN(10240)と埋め込み(64k×2560)を含めると約3B
+#
+# スケーリングの注目点:
+#   - 150M → 3B は20倍のパラメータ増加
+#   - hidden_size: 768 → 2560 (3.3倍)
+#   - num_layers: 12 → 28 (2.3倍)
+#   - GQAは廃止し、全ヘッドを使用
+#
+# 参照: scaling_laws.py で損失を自動計算
+
 defaults:
-  - config
+  - config  # config.yaml を継承
 
 model:
+  # ターゲットパラメータ数 (3B)
   target_params: 3_000_000_000
+
   llama:
+    # 3B向けのレイヤー構成
+    # 28層 × 2560次元 → Chinchilla則で約3B
     hidden_size: 2560
     num_hidden_layers: 28
-    num_attention_heads: 20
+    num_attention_heads: 20  # 2560 / 20 = 128次元/ヘッド
+    # GQA省略: ヘッド数が多いため、MHAで十分な表現力
+    num_key_value_heads: 20
+    # 10240 = 2560 × 4 (FFN倍率4)
     intermediate_size: 10240
 
+    # デフォルトのrope_theta=10000.0を継承 (1024ctx相当)
+    # 3Bモデルでは2048ctxが推奨されるが、RTX 5090 (24GB) でも
+    # 2048ctxはやや厳しい。まずは1024ctxで学習し、必要に応じて拡張。
+    # rope_theta: 10000.0  # デフォルトを継承
+
 training:
+  # 2048ctx: 長めのシーケンスで長期依存関係を学習
+  # 3Bモデルでは2048ctxが妥当な範囲
   seq_len: 2048
+
+  # エポックベースで学習
+  max_steps: -1
   num_epochs: 3

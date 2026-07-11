@@ -1,16 +1,46 @@
-# 150M - RTX 3050 (4GB)
+# ============================================================
+# 150M スケーリング設定
+# ============================================================
+# 対象GPU: RTX 3050 (4GB VRAM) - 1024ctxで収まるギリギリ
+# 用途:    本番学習の最初のターゲット。実質的な学習能力を持つ最小サイズ。
+# 目安:    BF16 + ZeRO-1 で約2.1GB使用
+#
+# 設計意図:
+#   - 1024ctxで学習可能 (seq_len=1024)
+#   - GQAによりKVキャッシュを削減 (12頭/3头=4倍GQA)
+#   - 日本語小説の学習に十分な表現力
+#
+# 参照: ADR-019 (150Mアーキテクチャ), ADR-020 (GQA採用)
+
 defaults:
-  - config
+  - config  # config.yaml を継承
 
 model:
+  # ターゲットパラメータ数 (ベース設定と同一)
   target_params: 150_000_000
+
   llama:
+    # 150M向けの標準的なレイヤー構成
+    # 12層 × 768次元 → Chinchilla則で約150M
     hidden_size: 768
     num_hidden_layers: 12
-    num_attention_heads: 12
+    num_attention_heads: 12  # 768 / 12 = 64次元/ヘッド
+    # GQA: KVヘッドを3に減らし、4倍のGQA効果
+    # ADR-020: 推論時のメモリ削減と高速化
     num_key_value_heads: 3
+    # 3072 = 768 × 4 (FFN倍率4)
     intermediate_size: 3072
 
+    # 1024ctx相当。theta=10000.0 は1024のコンテキスト長に最適化。
+    # 長コンテキストが必要な場合は scaling_2048ctx.yaml を作成。
+    rope_theta: 10000.0
+
 training:
+  # 1024ctx: RTX 3050 (4GB) で収まるギリギリのシーケンス長
+  # ADR-019: 1024ctxの採用
   seq_len: 1024
+
+  # max_steps=-1: エポックベースで学習
+  # 3エポックで収束を確認。過学習リスクを監視。
+  max_steps: -1
   num_epochs: 3

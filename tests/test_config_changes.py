@@ -344,7 +344,7 @@ class TestADRFiles:
         assert (PROJECT_ROOT / "docs" / "adr" / "ADR-018-bf16-adoption.md").exists()
 
     def test_adr019_exists(self):
-        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-019-100m-2048ctx-architecture.md").exists()
+        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-019-150m-1024ctx-architecture.md").exists()
 
     def test_adr020_exists(self):
         assert (PROJECT_ROOT / "docs" / "adr" / "ADR-020-packed-sequence.md").exists()
