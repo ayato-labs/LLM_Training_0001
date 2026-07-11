@@ -40,6 +40,6 @@ FP16 から BF16 に切り替える。
 - Pascal以前のGPUでは使用不可 (現環境は Ampere なので影響なし)
 
 ### 影響範囲
-- `train_model.py`: `generate_deepspeed_config()` の bf16 デフォルト化
+- `train_model.py`: `generate_deepspeed_config()` の bf16 デフォルト化 (Windows環境では DeepSpeed 未利用時のフォールバックとして機能)
 - `ds_config.json`: bf16 版への更新
 - `configs/config.yaml`: `hardware.precision: "bf16"` 追加

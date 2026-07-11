@@ -20,6 +20,7 @@ dependencies = [
 
     "sentencepiece>=0.2.0",
     "loguru>=0.7.0",
+    "tensorboard",
 ]
 
 [project.optional-dependencies]

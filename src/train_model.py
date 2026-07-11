@@ -1,11 +1,19 @@
 import datetime
+print("DEBUG: train_model - import datetime", flush=True)
 import hashlib
+print("DEBUG: train_model - import hashlib", flush=True)
 import json
+print("DEBUG: train_model - import json", flush=True)
 import os
+print("DEBUG: train_model - import os", flush=True)
 import shutil
+print("DEBUG: train_model - import shutil", flush=True)
 import subprocess
+print("DEBUG: train_model - import subprocess", flush=True)
 import sys
+print("DEBUG: train_model - import sys", flush=True)
 from pathlib import Path
+print("DEBUG: train_model - import Path", flush=True)
 
 import mlflow
 import torch
@@ -534,6 +542,12 @@ def train(config):
         dataset = load_dataset("json", data_files=str(data_path))
 
     seq_len = config.get("hpo", {}).get("seq_len", 512)
+    
+    # Support data_fraction for pilot runs (e.g., 0.01 = 1% of data)
+    data_fraction = config.get("data_fraction", 1.0)
+    if data_fraction < 1.0:
+        logger.info(f"Using data_fraction={data_fraction} for pilot run")
+    
     logger.info(f"Tokenizing dataset with max_length={seq_len}...")
 
     def tokenize_function(examples):
@@ -543,6 +557,16 @@ def train(config):
 
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
     tokenized_datasets = tokenized_datasets.remove_columns(["text", "metadata"])
+    
+    # Apply data_fraction for pilot runs
+    data_fraction = config.get("data_fraction", 1.0)
+    if data_fraction < 1.0:
+        for split in tokenized_datasets:
+            n_samples = int(len(tokenized_datasets[split]) * data_fraction)
+            if n_samples < len(tokenized_datasets[split]):
+                tokenized_datasets[split] = tokenized_datasets[split].select(range(n_samples))
+                logger.info(f"Split '{split}' sampled to {n_samples} samples (fraction={data_fraction})")
+    
     tokenized_datasets.set_format("torch")
 
     # Print dataset sizes
@@ -614,6 +638,30 @@ def train(config):
     grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
     warmup_ratio = hpo_config.get("warmup_ratio", 0.03)
 
+    # --- Pilot Mode handling ---
+    pilot_mode = config.get("pilot_mode", False)
+    if pilot_mode:
+        logger.info("PILOT MODE: Disabling checkpoints, eval, callbacks, and uploads")
+        save_strategy = "no"
+        save_steps = None
+        eval_strategy = "no"
+        eval_steps = None
+        logging_steps = 5
+        report_to = "none"
+        callbacks = []
+        load_best_model_at_end = False
+        metric_for_best_model = None
+    else:
+        save_strategy = "steps"
+        save_steps = 1000
+        eval_strategy = "steps" if "validation" in tokenized_datasets else "no"
+        eval_steps = 1000 if "validation" in tokenized_datasets else None
+        logging_steps = 10
+        report_to = ["tensorboard", "mlflow"]
+        callbacks = [DriveUploadCallback(upload_interval_steps=1000)]
+        load_best_model_at_end = "validation" in tokenized_datasets
+        metric_for_best_model = "eval_loss" if "validation" in tokenized_datasets else None
+
     training_args = TrainingArguments(
         output_dir="models/output",
         learning_rate=hpo_config["max_lr_2d"],
@@ -629,19 +677,19 @@ def train(config):
         deepspeed=ds_config_path
         if (torch.cuda.is_available() and is_deepspeed_available())
         else None,
-        save_strategy="steps",
-        save_steps=1000,
-        eval_strategy="steps" if "validation" in tokenized_datasets else "no",
-        eval_steps=1000 if "validation" in tokenized_datasets else None,
-        logging_steps=10,
-        report_to=["tensorboard", "mlflow"],
-        load_best_model_at_end="validation" in tokenized_datasets,
-        metric_for_best_model="eval_loss" if "validation" in tokenized_datasets else None,
+        save_strategy=save_strategy,
+        save_steps=save_steps if not pilot_mode else None,
+        eval_strategy=eval_strategy,
+        eval_steps=eval_steps if not pilot_mode else None,
+        logging_steps=logging_steps,
+        report_to=report_to,
+        load_best_model_at_end=load_best_model_at_end,
+        metric_for_best_model=metric_for_best_model,
         greater_is_better=False,
     )
 
     # Prepare callbacks
-    callbacks = [DriveUploadCallback(upload_interval_steps=1000)]
+    callbacks = callbacks if not pilot_mode else []
 
     trainer = CustomTrainer(
         model=model,
