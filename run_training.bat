@@ -29,11 +29,21 @@ cd /d %PROJECT_ROOT%
 REM ------------------------------------------------------------
 REM Environment Setup
 REM ------------------------------------------------------------
+set VENV_PYTHON=%PROJECT_ROOT%.venv\Scripts\python.exe
+
+if not exist "%VENV_PYTHON%" (
+    echo ERROR: Virtual environment not found.
+    echo Please run: python -m venv .venv
+    pause
+    exit /b 1
+)
+
 echo ============================================================
 echo Novel LLM Scratch Training
 echo Project: %PROJECT_ROOT%
 echo Config:  %CONFIG_FILE%
 echo Resume:  %RESUME_FLAG%
+echo Python:  %VENV_PYTHON%
 echo ============================================================
 
 REM ------------------------------------------------------------
@@ -42,7 +52,7 @@ REM ------------------------------------------------------------
 if not exist "data\train_dataset.jsonl" (
     echo.
     echo [Step 1/3] Splitting dataset (novel-unit split)...
-    python src\scripts\split_dataset.py ^
+    "%VENV_PYTHON%" src\scripts\split_dataset.py ^
         --input ..\DataPreprocessing\data\dataset.jsonl ^
         --train-output data\train_dataset.jsonl ^
         --val-output data\val_dataset.jsonl ^
@@ -67,9 +77,9 @@ set PYTHONPATH=%PROJECT_ROOT%;%PYTHONPATH%
 
 if "%RESUME_FLAG%"=="--resume" (
     echo Resuming from latest checkpoint...
-    python -m src.training.train_model %CONFIG_FILE% --resume
+    "%VENV_PYTHON%" -m src.training.train_model %CONFIG_FILE% --resume
 ) else (
-    python -m src.training.train_model %CONFIG_FILE%
+    "%VENV_PYTHON%" -m src.training.train_model %CONFIG_FILE%
 )
 
 if errorlevel 1 (

@@ -6,7 +6,6 @@ import shutil
 import os
 import subprocess
 import datetime
-import mlflow
 from pathlib import Path
 from datasets import load_dataset
 from transformers import (
@@ -14,6 +13,7 @@ from transformers import (
     PreTrainedTokenizerFast, DataCollatorForLanguageModeling,
     TrainerCallback, TrainerState, TrainerControl
 )
+import mlflow
 
 # ============================================================
 # Google Drive Upload Callback
