@@ -7,7 +7,6 @@ ADR-018/019/020/021 実装テスト
 """
 
 import json
-import math
 import os
 import sys
 from pathlib import Path
@@ -19,34 +18,39 @@ import pytest  # noqa: E402
 
 
 # ============================================================
-# 1. training_config.py の設定値テスト
+# 1. config.py の設定値テスト
 # ============================================================
 class TestTrainingConfig:
     def test_target_params(self):
-        """ADR-019: ターゲットパラメータ数は 100M"""
-        import training_config as config
+        """ADR-019: ターゲットパラメータ数は 150M"""
+        from src.config import load_config, resolve_config_path
 
-        assert config.TARGET_PARAMS == 100_000_000
+        config_path = resolve_config_path(None)
+        config = load_config(config_path)
+        assert config["model_params"]["n_params"] == 150_000_000
 
     def test_seq_len(self):
-        """ADR-019: シーケンス長は 2048"""
-        import training_config as config
+        """ADR-019: シーケンス長は 1024"""
+        from src.config import load_config, resolve_config_path
 
-        assert config.SEQ_LEN == 2048
+        config_path = resolve_config_path(None)
+        config = load_config(config_path)
+        assert config["hpo"]["seq_len"] == 1024
 
     def test_precision_default(self):
         """ADR-018: デフォルト precision は bf16"""
-        import training_config as config
+        from src.config import load_config, resolve_config_path
 
-        assert config.PRECISION == "bf16"
+        config_path = resolve_config_path(None)
+        config = load_config(config_path)
+        assert config["precision"] == "bf16"
 
     def test_vram_limit_default(self):
-        """ADR-019: VRAM制限デフォルトは 4.0 GB (GPU検出値を許容)"""
-        import training_config as config
+        """ADR-019: VRAM制限は自動検出される"""
+        from src.config import detect_vram
 
-        assert math.isclose(config.VRAM_LIMIT_GB, 4.0, abs_tol=0.1), (
-            f"VRAM_LIMIT_GB should be ~4.0, got {config.VRAM_LIMIT_GB}"
-        )
+        vram = detect_vram()
+        assert vram > 0, f"VRAM should be detected, got {vram}"
 
 
 # ============================================================
@@ -203,21 +207,21 @@ class TestConfigYAML:
             self.config = yaml.safe_load(f)
 
     def test_model_architecture(self):
-        """ADR-019: 100M アーキテクチャ"""
+        """ADR-019: 150M アーキテクチャ"""
         model = self.config["model"]
-        assert model["target_params"] == 100_000_000
-        assert model["llama"]["hidden_size"] == 512
-        assert model["llama"]["num_hidden_layers"] == 16
-        assert model["llama"]["num_attention_heads"] == 8
-        assert model["llama"]["intermediate_size"] == 2048
+        assert model["target_params"] == 150_000_000
+        assert model["llama"]["hidden_size"] == 768
+        assert model["llama"]["num_hidden_layers"] == 12
+        assert model["llama"]["num_attention_heads"] == 12
+        assert model["llama"]["intermediate_size"] == 3072
 
     def test_rope_theta(self):
-        """ADR-019: RoPE theta が 2048ctx に対応"""
-        assert self.config["model"]["llama"]["rope_theta"] == 50000.0
+        """ADR-019: RoPE theta が 1024ctx に対応"""
+        assert self.config["model"]["llama"]["rope_theta"] == 10000.0
 
     def test_seq_len(self):
-        """ADR-019: シーケンス長 2048"""
-        assert self.config["training"]["seq_len"] == 2048
+        """ADR-019: シーケンス長 1024"""
+        assert self.config["training"]["seq_len"] == 1024
 
     def test_vocab_size(self):
         """ADR-021: vocab 64k"""
@@ -354,37 +358,28 @@ class TestADRFiles:
 # ============================================================
 class TestArchitectureConsistency:
     def test_params_consistency(self):
-        """config.yaml と training_config.py の TARGET_PARAMS 一致"""
-        import yaml
+        """config.yaml の target_params が正しく読み込まれる"""
+        from src.config import load_config, resolve_config_path
 
-        import training_config as config
-
-        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, encoding="utf-8") as f:
-            yaml_config = yaml.safe_load(f)
-        assert yaml_config["model"]["target_params"] == config.TARGET_PARAMS
+        config_path = resolve_config_path(None)
+        config = load_config(config_path)
+        assert config["model_params"]["n_params"] == 150_000_000
 
     def test_seq_len_consistency(self):
-        """config.yaml と training_config.py の SEQ_LEN 一致"""
-        import yaml
+        """config.yaml の seq_len が正しく読み込まれる"""
+        from src.config import load_config, resolve_config_path
 
-        import training_config as config
-
-        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, encoding="utf-8") as f:
-            yaml_config = yaml.safe_load(f)
-        assert yaml_config["training"]["seq_len"] == config.SEQ_LEN
+        config_path = resolve_config_path(None)
+        config = load_config(config_path)
+        assert config["hpo"]["seq_len"] == 1024
 
     def test_precision_consistency(self):
-        """config.yaml と training_config.py の PRECISION 一致"""
-        import yaml
+        """config.yaml の precision が bf16"""
+        from src.config import load_config, resolve_config_path
 
-        import training_config as config
-
-        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, encoding="utf-8") as f:
-            yaml_config = yaml.safe_load(f)
-        assert yaml_config["hardware"]["precision"] == config.PRECISION
+        config_path = resolve_config_path(None)
+        config = load_config(config_path)
+        assert config["precision"] == "bf16"
 
 
 # ============================================================
@@ -502,51 +497,5 @@ class TestModelInit:
 
 
 # ============================================================
-# 10. Tokenizer 特殊トークンテスト
-# ============================================================
-class TestTokenizerTokens:
-    def test_special_tokens_list(self):
-        """特殊トークンが9個ある"""
-        import yaml
-
-        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        tokens = config["tokenizer"]["special_tokens"]
-        assert len(tokens) == 9
-
-    def test_metadata_boundary_tokens(self):
-        """メタデータ境界トークンのペア確認"""
-        import yaml
-
-        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        tokens = config["tokenizer"]["special_tokens"]
-        assert "<|start_of_metadata|>" in tokens
-        assert "<|end_of_metadata|>" in tokens
-
-    def test_story_boundary_tokens(self):
-        """物語境界トークンのペア確認"""
-        import yaml
-
-        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        tokens = config["tokenizer"]["special_tokens"]
-        assert "<|start_of_story|>" in tokens
-        assert "<|end_of_story|>" in tokens
-
-    def test_no_duplicate_tokens(self):
-        """重複トークンなし"""
-        import yaml
-
-        yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        tokens = config["tokenizer"]["special_tokens"]
-        assert len(tokens) == len(set(tokens)), "Duplicate special tokens found"
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

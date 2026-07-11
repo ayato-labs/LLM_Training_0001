@@ -1,107 +1,25 @@
-# Novel LLM Pretraining Configuration
-# Hydra + OmegaConf managed - ADR-014/015/016
-# Usage: python main.py --config-name=config
+# Novel LLM - Base Config
+# これは全ての実験の起点。scaling_*.yaml がこの設定を継承して差分を上書きする。
+# VRAM検出、precision、checkpoint、logging はコードが自動的に処理する。
 
-# ============================================================
-# 1. Hardware & Environment Constraints (ADR-018: BF16)
-# ============================================================
-hardware:
-  vram_limit_gb: ${oc.env:VRAM_LIMIT_GB,4.0}
-  precision: "bf16"  # ADR-018: bf16 採用 (Loss Scaling 不要)
-  precision_bytes: 2  # 16-bit (fp16/bf16) = 2
+seed: 42
 
-# ============================================================
-# 2. Data
-# ============================================================
-data:
-  db_path: "../Novel_Data_Collection/novels.db"
-  corpus_path: "data/corpus.jsonl"
-  dataset_path: "data/dataset.jsonl"
-  tokenizer_path: "data/tokenizer.json"
-
-  preprocessing:
-    chunk_size: 1024     # ~512 tokens (1024ctx対応)
-    overlap: 100         # 文脈断絶の最小化
-
-# ============================================================
-# 3. Model Architecture (ADR-019: 150M / 1024ctx / GQA)
-# ============================================================
 model:
   arch: "llama"
-  target_params: 150000000
-  proxy_min_params: 30000000
-
-  # Llama config - 150M: 12 layers × 768d × 12 heads (GQA: 3 KV heads)
+  target_params: 150_000_000
   llama:
     hidden_size: 768
     num_hidden_layers: 12
     num_attention_heads: 12
-    num_key_value_heads: 3  # GQA: 12/4 = 3
+    num_key_value_heads: 3
     intermediate_size: 3072
     rope_theta: 10000.0
 
-# ============================================================
-# 4. Tokenizer (ADR-021: 64k vocab + end_of_story)
-# ============================================================
-tokenizer:
-  vocab_size: 64000
-  special_tokens:
-    - "[UNK]"
-    - "[CLS]"
-    - "[SEP]"
-    - "[PAD]"
-    - "[MASK]"
-    - "<|start_of_metadata|>"
-    - "<|end_of_metadata|>"
-    - "<|start_of_story|>"
-    - "<|end_of_story|>"
+data:
+  dataset_path: "data/dataset.jsonl"
+  tokenizer_path: "data/tokenizer.json"
 
-# ============================================================
-# 5. Training / HPO (ADR-019: 1024ctx, ADR-018: bf16)
-# ============================================================
 training:
   seq_len: 1024
-  max_steps: -1          # -1 = epoch-based
+  max_steps: -1
   num_epochs: 3
-  target_tokens: 30000000
-  chinchilla_ratio: 100
-
-  # Step Law defaults (arXiv:2503.04715)
-  hpo:
-    min_lr: 1e-5
-    warmup_ratio: 0.03
-    stable_lr_ratio: 0.55
-
-  # Muon / AdamW split
-  optimizer:
-    muon_lr_ratio: 1.0     # muon_lr = max_lr * ratio
-    adamw_lr_ratio: 0.298  # adamw_lr = max_lr * ratio (IMU-1)
-    adamw_betas: [0.9, 0.95]
-    weight_decay: 0.01
-
-# ============================================================
-# 6. Reproducibility (ADR-017)
-# ============================================================
-seed: 42
-
-# ============================================================
-# 7. MLflow Tracking
-# ============================================================
-mlflow:
-  tracking_uri: "file:./mlruns"
-  experiment_name: "LLM_Training"
-
-# ============================================================
-# 8. Checkpoint Management
-# ============================================================
-checkpoint:
-  save_strategy: "steps"
-  save_steps: 1000
-  save_total_limit: null  # null = keep all
-
-# ============================================================
-# 9. Logging
-# ============================================================
-logging:
-  report_to: ["tensorboard", "mlflow"]
-  logging_steps: 10

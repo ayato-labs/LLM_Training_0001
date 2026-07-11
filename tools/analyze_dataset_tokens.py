@@ -6,7 +6,7 @@ from transformers import PreTrainedTokenizerFast
 
 # プロジェクトルートパスの設定
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-import training_config as config
+from src.config import load_config, resolve_config_path
 
 # DataPreprocessing のパス
 DATAPREPROCESSING_DIR = Path(__file__).resolve().parent.parent.parent / "DataPreprocessing"

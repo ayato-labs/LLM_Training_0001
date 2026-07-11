@@ -16,14 +16,11 @@ sys.path.append(BASE_DIR)
 # カレントディレクトリをプロジェクトルートに変更して相対パスのズレを防止
 os.chdir(BASE_DIR)
 
+from src.config import load_config, resolve_config_path  # noqa: E402
 from src.train_model import train  # noqa: E402
 
 if __name__ == "__main__":
-    # 引数からconfigパスを取得、デフォルトはルートのexperiment_config.json
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "experiment_config.json"
-
-    # config_pathが絶対パスでない場合、BASE_DIR基準で絶対パス化
-    if not os.path.isabs(config_path):
-        config_path = os.path.join(BASE_DIR, config_path)
-
-    train(config_path)
+    config_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    config_path = resolve_config_path(config_arg)
+    config = load_config(config_path)
+    train(config)

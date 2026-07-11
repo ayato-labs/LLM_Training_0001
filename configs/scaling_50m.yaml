@@ -1,60 +1,17 @@
-# Novel LLM - 50M Model Test Configuration
-# Usage: python main.py --config-name=scaling_50m
-#
-# Target: ~50M parameters, seq_len=2048, 30-minute test run
-# VRAM estimate: ~0.9GB (BF16)
-
+# 50M - RTX 3050 (4GB)
 defaults:
-  - config  # inherit base config
+  - config
 
-# Skip preprocessing (dataset already prepared)
-run_preprocessing: false
-
-# ============================================================
-# Hardware
-# ============================================================
-hardware:
-  vram_limit_gb: 4.0  # RTX 3050 Laptop (4GB)
-
-# ============================================================
-# Model: ~50M Llama
-# Chinchilla formula: N ≈ 12 * L * H^2
-# ============================================================
 model:
-  target_params: 50000000  # 50M
-  proxy_min_params: 15000000  # 15M proxy for HPO
-
+  target_params: 50_000_000
   llama:
-    hidden_size: 640      # Auto-calculated for 50M
-    num_hidden_layers: 10  # Auto-calculated for 50M
-    num_attention_heads: 10  # Auto-calculated for 50M
-    intermediate_size: 2560 # 4 * hidden_size
+    hidden_size: 640
+    num_hidden_layers: 10
+    num_attention_heads: 10
+    intermediate_size: 2560
     rope_theta: 50000.0
 
-# ============================================================
-# Training (30-minute test)
-# ============================================================
 training:
   seq_len: 2048
-  max_steps: 1500  # ~30 minutes on RTX 3050
+  max_steps: 1500
   num_epochs: 1
-  target_tokens: 30000000
-
-  hpo:
-    min_lr: 1e-5
-    warmup_ratio: 0.03
-
-# ============================================================
-# Checkpoint
-# ============================================================
-checkpoint:
-  save_strategy: "steps"
-  save_steps: 500
-  save_total_limit: 3
-
-# ============================================================
-# Logging
-# ============================================================
-logging:
-  report_to: ["tensorboard"]
-  logging_steps: 10

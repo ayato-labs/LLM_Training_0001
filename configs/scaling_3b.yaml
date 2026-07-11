@@ -1,61 +1,15 @@
-# Novel LLM - 3B Model Configuration (RTX 5090 / 24GB VRAM)
-# Usage: python main.py --config-name=scaling_3b
-#
-# Target: ~3B parameters, seq_len=2048, full fine-tuning
-# VRAM estimate: ~18-20GB (FP16 + ZeRO Stage 2)
-
+# 3B - RTX 5090 (24GB)
 defaults:
-  - config  # inherit base config
+  - config
 
-# ============================================================
-# Hardware
-# ============================================================
-hardware:
-  vram_limit_gb: 24.0  # RTX 5090
-
-# ============================================================
-# Model: ~3B Llama (LLaMA 3.1 3B style: 28L x 2560d x 20h)
-# ============================================================
 model:
-  target_params: 3000000000  # 3B
-  proxy_min_params: 300000000  # 300M proxy for HPO
-
+  target_params: 3_000_000_000
   llama:
     hidden_size: 2560
     num_hidden_layers: 28
     num_attention_heads: 20
-    intermediate_size: 10240  # 4 * hidden_size
+    intermediate_size: 10240
 
-# ============================================================
-# Training
-# ============================================================
 training:
-  seq_len: 2048          # 3Bなら2048まで可能
-  max_steps: -1
+  seq_len: 2048
   num_epochs: 3
-  target_tokens: 100000000  # 100M tokens (Chinchilla optimal for 3B)
-
-  hpo:
-    min_lr: 1e-6
-    warmup_ratio: 0.03
-
-# ============================================================
-# Data
-# ============================================================
-data:
-  preprocessing:
-    chunk_size: 4000     # ~2048 tokens
-    overlap: 400
-
-# ============================================================
-# Reproducibility
-# ============================================================
-seed: 42
-
-# ============================================================
-# Checkpoint (more frequent for larger model)
-# ============================================================
-checkpoint:
-  save_strategy: "steps"
-  save_steps: 500
-  save_total_limit: 5  # keep last 5 locally, all on Drive

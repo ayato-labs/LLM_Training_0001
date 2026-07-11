@@ -110,49 +110,21 @@ def compute_db_fingerprint(db_path: str) -> dict:
 
 
 # ============================================================
-# Config normalization: Hydra DictConfig ↔ legacy JSON
+# Config normalization: accept internal dict directly
 # ============================================================
 def normalize_config(raw) -> dict:
     """
-    Accept either a Hydra DictConfig or a legacy JSON dict and return
+    Accept an internal config dict (from src/config.py) and return
     a flat dictionary with standardized keys.
     """
-    # Convert DictConfig to plain dict
-    from omegaconf import OmegaConf
-
-    if OmegaConf.is_config(raw):
-        cfg = OmegaConf.to_container(raw, resolve=True)
-    elif isinstance(raw, dict):
-        cfg = raw
-    else:
+    if not isinstance(raw, dict):
         raise TypeError(f"Unsupported config type: {type(raw)}")
 
-    # --- Legacy JSON format passthrough ---
-    if "hpo" in cfg and "model_params" in cfg:
-        return cfg
+    # Already normalized (has model_params and hpo)
+    if "model_params" in raw and "hpo" in raw:
+        return raw
 
-    # --- Hydra config.yaml format → legacy dict ---
-    hpo = {}
-    t = cfg.get("training", {})
-    hpo["seq_len"] = t.get("seq_len", 512)
-    hpo["warmup_ratio"] = t.get("warmup_ratio", 0.03)
-    hpo["max_lr_2d"] = t.get("max_lr_2d", 3e-4)
-    hpo["max_lr_1d"] = t.get("max_lr_1d", 3e-3)
-    hpo["batch_size_seqs"] = t.get("batch_size_seqs", 16)
-    # LR/batch will be injected by main.py after HPO
-
-    model_params = cfg.get("model", {})
-
-    return {
-        "model_params": model_params,
-        "hpo": hpo,
-        "data_path": cfg.get("data", {}).get("dataset_path", "data/dataset.jsonl"),
-        "tokenizer_path": cfg.get("data", {}).get("tokenizer_path", "data/tokenizer.json"),
-        "max_steps": t.get("max_steps", -1),
-        "num_epochs": t.get("num_epochs", 3),
-        "seed": cfg.get("seed", 42),
-        "_hydra_cfg": cfg,  # preserve full Hydra config for logging
-    }
+    raise ValueError("Config must have 'model_params' and 'hpo' keys")
 
 
 # ============================================================
@@ -428,19 +400,12 @@ class CustomTrainer(Trainer):
 # ============================================================
 # Main training function
 # ============================================================
-def train(config_path_or_cfg):
+def train(config):
     """
     Args:
-        config_path_or_cfg: str (path to JSON) or Hydra DictConfig
+        config: dict from src.config.load_config()
     """
-    # --- Config loading ---
-    if isinstance(config_path_or_cfg, (str, Path)):
-        with open(config_path_or_cfg, encoding="utf-8") as f:
-            raw_config = json.load(f)
-    else:
-        raw_config = config_path_or_cfg
-
-    config = normalize_config(raw_config)
+    config = normalize_config(config)
     git_hash = get_git_revision_hash()
     seed = config.get("seed", 42)
 
@@ -452,11 +417,7 @@ def train(config_path_or_cfg):
     # --- Dataset fingerprinting (traceability) ---
     data_path_str = config.get("data_path", "data/dataset.jsonl")
     data_fingerprint = compute_dataset_fingerprint(data_path_str)
-    db_path_str = (
-        config.get("_hydra_cfg", {})
-        .get("data", {})
-        .get("db_path", "../Novel_Data_Collection/novels.db")
-    )
+    db_path_str = config.get("db_path", "../Novel_Data_Collection/novels.db")
     db_fingerprint = compute_db_fingerprint(db_path_str)
 
     # --- Environment snapshot (traceability) ---
@@ -515,14 +476,8 @@ def train(config_path_or_cfg):
         # Environment snapshot (traceability)
         mlflow.log_dict(env_snapshot, "environment.json")
 
-        # Config artifact
-        config_path_obj = (
-            Path(config_path_or_cfg)
-            if isinstance(config_path_or_cfg, (str, Path))
-            else Path("hydra_config.yaml")
-        )
-        if config_path_obj.exists():
-            mlflow.log_artifact(str(config_path_obj))
+        # Config artifact (log as dict)
+        mlflow.log_dict(config, "config.json")
 
     except Exception as e:
         logger.warning(f"MLflow initialization failed: {e}", exc_info=True)
@@ -600,7 +555,6 @@ def train(config_path_or_cfg):
     logger.info("Initializing model...")
     model_params = config["model_params"].copy()
     model_params.pop("hidden_size", None)
-    model_params.pop("_hydra_cfg", None)
 
     hidden_size = config["model_params"]["hidden_size"]
     num_heads = config["model_params"]["num_attention_heads"]
@@ -632,27 +586,17 @@ def train(config_path_or_cfg):
     target_total_batch_seqs = hpo_config.get("batch_size_seqs", 16)
 
     n_params_est = config["model_params"].get("n_params", 125_000_000)
-    # Try to get VRAM limit from config, fallback to training_config
-    try:
-        vram_limit = config.get("_hydra_cfg", {}).get("hardware", {}).get("vram_limit_gb", 4.0)
-        if vram_limit is None:
-            vram_limit = 4.0
-        vram_limit = float(vram_limit)
-    except Exception:
-        try:
-            from src.config import training_config as prj_config
 
-            vram_limit = prj_config.VRAM_LIMIT_GB
-        except Exception:
-            vram_limit = 4.0
+    # VRAM limit: from config or auto-detect
+    vram_limit = config.get("vram_limit_gb")
+    if vram_limit is None:
+        from src.config import detect_vram
 
-    # ADR-018: precision (bf16/fp16) を config から取得
-    try:
-        precision = config.get("_hydra_cfg", {}).get("hardware", {}).get("precision", "bf16")
-        if precision is None:
-            precision = "bf16"
-    except Exception:
-        precision = "bf16"
+        vram_limit = detect_vram()
+    vram_limit = float(vram_limit)
+
+    # Precision: from config or default bf16
+    precision = config.get("precision", "bf16")
 
     ds_config_path = generate_deepspeed_config(n_params_est, vram_limit, precision=precision)
 
