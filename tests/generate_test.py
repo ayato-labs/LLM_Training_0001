@@ -1,5 +1,5 @@
 import sys
-from src.eval_inference.generate import generate_text
+from src.eval.generate import generate_text
 
 prompt = (
     "作品名: 魔女と傭兵\n"

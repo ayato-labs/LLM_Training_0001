@@ -11,15 +11,17 @@ Usage:
 import sys
 import argparse
 import json
+import optuna
 from pathlib import Path
+from src.logger import logger, log_exceptions
 
-# Add project root and HPO module to path
+# Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "LLM_Hyperparameter_Optimization"))
 
-from src.training.train_model import train, compute_dataset_fingerprint
-from LLM_Hyperparameter_Optimization.src.step_law import compute_hpo_for_target
+from src.train_model import train, compute_dataset_fingerprint
+from src.step_law import compute_hpo_for_target
+from src.hpo_manager import objective
 
 
 def load_config(config_path: str) -> dict:
@@ -42,14 +44,14 @@ def apply_step_law(config: dict) -> dict:
     
     stats = compute_dataset_fingerprint(str(train_path))
     if "error" in stats:
-        print(f"Warning: Could not compute fingerprint: {stats['error']}")
+        logger.warning(f"Could not compute fingerprint: {stats['error']}")
         return config
     
     # 1チャンク=1024トークンと仮定してトークン数を推定
     n_tokens = stats["line_count"] * 1024
     seq_len = config["training"]["seq_len"]
     
-    print(f"Applying Step Law for {n_params} params and {n_tokens} tokens...")
+    logger.info(f"Applying Step Law for {n_params} params and {n_tokens} tokens...")
     hpo = compute_hpo_for_target(n_params=n_params, n_tokens=n_tokens, seq_len=seq_len)
     
     # Configを更新
@@ -57,6 +59,7 @@ def apply_step_law(config: dict) -> dict:
     return config
 
 
+@log_exceptions
 def main():
     parser = argparse.ArgumentParser(description="Novel LLM Scratch Training")
     parser.add_argument(
@@ -71,17 +74,34 @@ def main():
         help="Resume from latest checkpoint"
     )
     parser.add_argument(
+        "--hpo",
+        action="store_true",
+        help="Run Optuna HPO study"
+    )
+    parser.add_argument(
         "--max-steps",
         type=int,
         help="Override max_steps from config"
     )
     args = parser.parse_args()
-
+    
     # Load config
     print(f"Loading config from: {args.config}")
     config = load_config(args.config)
     
-    # Apply Step Law Optimization
+    # Apply HPO Optimization (Default)
+    print("Starting HPO study with proxy models...")
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=config.get("hpo_trials", 10))
+    
+    # Update config with HPO results
+    best_params = study.best_params
+    print(f"Best params found: {best_params}")
+    if "hpo" not in config:
+        config["hpo"] = {}
+    config["hpo"].update(best_params)
+    
+    # Apply Step Law (as fallback/prior)
     config = apply_step_law(config)
     
     # Apply CLI overrides

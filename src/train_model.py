@@ -219,7 +219,10 @@ def normalize_config(raw) -> dict:
     hpo = {}
     t = cfg.get("training", {})
     hpo["seq_len"] = t.get("seq_len", 512)
-    hpo["warmup_ratio"] = t.get("hpo", {}).get("warmup_ratio", 0.03)
+    hpo["warmup_ratio"] = t.get("warmup_ratio", 0.03)
+    hpo["max_lr_2d"] = t.get("max_lr_2d", 3e-4)
+    hpo["max_lr_1d"] = t.get("max_lr_1d", 3e-3)
+    hpo["batch_size_seqs"] = t.get("batch_size_seqs", 16)
     # LR/batch will be injected by main.py after HPO
 
     model_params = cfg.get("model", {})

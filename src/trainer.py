@@ -1,6 +1,7 @@
 import torch
 import torch.optim as optim
 from .registry import MODEL_REGISTRY
+from .modern_gpt import ModernGPT, ModernGPTConfig  # 明示的にインポート
 from .normuon import NorMuon
 from .wsd import WSDScheduler
 from datasets import load_from_disk
@@ -12,7 +13,7 @@ def train_model(config_dict, trial=None):
     model_cls = MODEL_REGISTRY.get(model_name)
     
     # Instantiate model using its Config class
-    model_config = model_cls.Config(**config_dict.get('model_config', {}))
+    model_config = ModernGPTConfig(**config_dict.get('model_config', {}))
     model = model_cls(model_config).cuda()
     
     # Optimizer selection
