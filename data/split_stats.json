@@ -1,0 +1,7 @@
+{
+  "train_novels": 605,
+  "val_novels": 6,
+  "train_chunks": 472479,
+  "val_chunks": 5869,
+  "total_chunks": 478348
+}

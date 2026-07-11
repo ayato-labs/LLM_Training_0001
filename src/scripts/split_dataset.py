@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""
+Dataset Split Script: Novel-Unit Split
+=======================================
+Splits dataset by unique novel titles to prevent data leakage between
+training and validation sets.
+
+Each novel's chapters are kept together in either train or val set.
+Split ratio: 99% train / 1% val (configurable).
+"""
+import json
+import random
+import argparse
+from pathlib import Path
+from collections import defaultdict
+
+
+def split_dataset(
+    input_path: Path,
+    train_output: Path,
+    val_output: Path,
+    val_ratio: float = 0.01,
+    seed: int = 42,
+) -> dict:
+    """Split dataset by novel title."""
+
+    # Read all data and group by title
+    title_to_lines = defaultdict(list)
+
+    print(f"Reading dataset from {input_path}...")
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+                title = data.get("metadata", {}).get("title", "unknown")
+                title_to_lines[title].append(line)
+            except json.JSONDecodeError:
+                continue
+
+    titles = list(title_to_lines.keys())
+    print(f"Found {len(titles)} unique novels")
+    print(f"Total chunks: {sum(len(v) for v in title_to_lines.values())}")
+
+    # Shuffle titles deterministically
+    random.seed(seed)
+    random.shuffle(titles)
+
+    # Split
+    val_count = max(1, int(len(titles) * val_ratio))
+    val_titles = set(titles[:val_count])
+    train_titles = set(titles[val_count:])
+
+    print(f"Train novels: {len(train_titles)}")
+    print(f"Val novels: {len(val_titles)}")
+
+    # Write split files
+    train_chunks = 0
+    val_chunks = 0
+
+    with open(train_output, "w", encoding="utf-8") as f_train, \
+         open(val_output, "w", encoding="utf-8") as f_val:
+
+        for title in titles:
+            lines = title_to_lines[title]
+            if title in val_titles:
+                f_val.writelines(lines)
+                val_chunks += len(lines)
+            else:
+                f_train.writelines(lines)
+                train_chunks += len(lines)
+
+    # Verify
+    stats = {
+        "train_novels": len(train_titles),
+        "val_novels": len(val_titles),
+        "train_chunks": train_chunks,
+        "val_chunks": val_chunks,
+        "total_chunks": train_chunks + val_chunks,
+    }
+
+    print(f"\nSplit complete:")
+    print(f"  Train: {train_chunks} chunks ({len(train_titles)} novels)")
+    print(f"  Val:   {val_chunks} chunks ({len(val_titles)} novels)")
+
+    return stats
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Split dataset by novel title")
+    parser.add_argument("--input", default="../DataPreprocessing/data/dataset.jsonl",
+                        help="Input dataset path")
+    parser.add_argument("--train-output", default="data/train_dataset.jsonl",
+                        help="Training output path")
+    parser.add_argument("--val-output", default="data/val_dataset.jsonl",
+                        help="Validation output path")
+    parser.add_argument("--val-ratio", type=float, default=0.01,
+                        help="Validation ratio (default: 0.01)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+
+    args = parser.parse_args()
+
+    input_path = Path(args.input).resolve()
+    train_output = Path(args.train_output).resolve()
+    val_output = Path(args.val_output).resolve()
+
+    train_output.parent.mkdir(parents=True, exist_ok=True)
+    val_output.parent.mkdir(parents=True, exist_ok=True)
+
+    stats = split_dataset(input_path, train_output, val_output, args.val_ratio, args.seed)
+
+    # Save stats
+    stats_path = train_output.parent / "split_stats.json"
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2)
+    print(f"Stats saved to {stats_path}")
+
+
+if __name__ == "__main__":
+    main()

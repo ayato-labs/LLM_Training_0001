@@ -9,7 +9,87 @@ import datetime
 import mlflow
 from pathlib import Path
 from datasets import load_dataset
-from transformers import LlamaConfig, LlamaForCausalLM, Trainer, TrainingArguments, PreTrainedTokenizerFast, DataCollatorForLanguageModeling
+from transformers import (
+    LlamaConfig, LlamaForCausalLM, Trainer, TrainingArguments,
+    PreTrainedTokenizerFast, DataCollatorForLanguageModeling,
+    TrainerCallback, TrainerState, TrainerControl
+)
+
+# ============================================================
+# Google Drive Upload Callback
+# ============================================================
+class DriveUploadCallback(TrainerCallback):
+    """
+    Callback to upload checkpoints to Google Drive after saving.
+    Uses the drive_uploader module utilities.
+    """
+    def __init__(self, output_dir: str = "models/output"):
+        self.output_dir = Path(output_dir)
+        self.drive_service = None
+        self.root_folder_id = None
+        self._init_drive()
+
+    def _init_drive(self):
+        """Initialize Google Drive service."""
+        try:
+            from src.utils.drive_uploader import get_drive_service, get_or_create_drive_folder
+            self.drive_service = get_drive_service()
+            self.root_folder_id = get_or_create_drive_folder(self.drive_service, "Novel_LLM_Checkpoints")
+            print(f"[DriveUploadCallback] Google Drive initialized: folder_id={self.root_folder_id}")
+        except Exception as e:
+            print(f"[DriveUploadCallback] Failed to initialize Drive: {e}")
+            self.drive_service = None
+            self.root_folder_id = None
+
+    def on_save(self, args, state: TrainerState, control: TrainerControl, **kwargs):
+        """Called after a checkpoint is saved."""
+        if not self.drive_service or not self.root_folder_id:
+            return
+
+        # Find the latest checkpoint
+        checkpoints = list(self.output_dir.glob("checkpoint-*"))
+        if not checkpoints:
+            return
+
+        latest = max(checkpoints, key=lambda p: int(p.name.split("-")[1]))
+        step = int(latest.name.split("-")[1])
+
+        # Skip if already uploaded
+        uploaded_flag = latest / ".uploaded"
+        if uploaded_flag.exists():
+            return
+
+        # Wait for checkpoint to be fully written
+        import time
+        time.sleep(2)
+
+        try:
+            from src.utils.drive_uploader import upload_file_to_drive, file_exists_on_drive
+
+            # Compress checkpoint
+            zip_path = self.output_dir / f"{latest.name}.zip"
+            print(f"[DriveUploadCallback] Compressing checkpoint {latest.name}...")
+            import shutil
+            shutil.make_archive(str(self.output_dir / latest.name), 'zip', str(latest))
+
+            # Upload
+            if not file_exists_on_drive(self.drive_service, zip_path.name, self.root_folder_id):
+                print(f"[DriveUploadCallback] Uploading checkpoint {latest.name} to Google Drive...")
+                upload_file_to_drive(self.drive_service, zip_path, self.root_folder_id)
+                print(f"[DriveUploadCallback] Uploaded: {zip_path.name}")
+            else:
+                print(f"[DriveUploadCallback] Checkpoint {latest.name} already on Drive, skipping.")
+
+            # Mark as uploaded
+            uploaded_flag.touch()
+
+            # Clean up zip
+            if zip_path.exists():
+                zip_path.unlink()
+
+        except Exception as e:
+            print(f"[DriveUploadCallback] Error uploading checkpoint: {e}")
+
 
 # ============================================================
 # Logging setup
@@ -254,6 +334,112 @@ def get_git_revision_hash():
 
 
 # ============================================================
+# Google Drive Checkpoint Upload Callback
+# ============================================================
+class DriveUploadCallback(TrainerCallback):
+    """
+    Callback to upload checkpoints to Google Drive after saving.
+    Integrates with drive_uploader.py logic.
+    """
+    def __init__(self, upload_interval_steps: int = 1000):
+        self.upload_interval_steps = upload_interval_steps
+        self.last_uploaded_step = -1
+        self.drive_service = None
+        self.root_folder_id = None
+        self._initialized = False
+
+    def _init_drive(self):
+        """Lazy initialize Google Drive service."""
+        if self._initialized:
+            return
+        try:
+            from src.utils.drive_uploader import (
+                get_drive_service, get_or_create_drive_folder, upload_file_to_drive
+            )
+            self.drive_service = get_drive_service()
+            self.root_folder_id = get_or_create_drive_folder(
+                self.drive_service, "Novel_LLM_Checkpoints"
+            )
+            self._initialized = True
+            print("[DriveUploadCallback] Google Drive service initialized")
+        except Exception as e:
+            print(f"[DriveUploadCallback] Failed to init Drive: {e}")
+            self._initialized = False
+
+    def _compress_and_upload(self, checkpoint_path: Path, step: int):
+        """Compress checkpoint folder and upload to Drive."""
+        if not self._initialized:
+            self._init_drive()
+            if not self._initialized:
+                return
+
+        zip_name = f"checkpoint-{step}.zip"
+        zip_path = Path("models/output") / zip_name
+
+        try:
+            print(f"[DriveUploadCallback] Compressing checkpoint-{step}...")
+            shutil.make_archive(
+                str(Path("models/output") / f"checkpoint-{step}"),
+                'zip', str(checkpoint_path)
+            )
+
+            from src.utils.drive_uploader import upload_file_to_drive
+            upload_file_to_drive(self.drive_service, zip_path, self.root_folder_id)
+
+            # Mark as uploaded
+            (checkpoint_path / ".uploaded").touch()
+
+            # Clean up zip
+            if zip_path.exists():
+                os.remove(zip_path)
+
+            print(f"[DriveUploadCallback] Uploaded checkpoint-{step} to Google Drive")
+
+        except Exception as e:
+            print(f"[DriveUploadCallback] Error uploading checkpoint-{step}: {e}")
+
+    def on_save(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        """Called after checkpoint save."""
+        # Check if we should upload (every upload_interval_steps)
+        if state.global_step % self.upload_interval_steps != 0:
+            return
+
+        # Avoid duplicate uploads
+        if state.global_step <= self.last_uploaded_step:
+            return
+
+        checkpoint_dirs = sorted(
+            Path(args.output_dir).glob("checkpoint-*"),
+            key=lambda p: int(p.name.split("-")[1])
+        )
+        if not checkpoint_dirs:
+            return
+
+        latest_checkpoint = checkpoint_dirs[-1]
+        step = int(latest_checkpoint.name.split("-")[1])
+
+        print(f"[DriveUploadCallback] Uploading checkpoint at step {step}...")
+        self._compress_and_upload(latest_checkpoint, step)
+        self.last_uploaded_step = step
+
+    def on_train_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        """Upload final checkpoint on training end."""
+        checkpoint_dirs = sorted(
+            Path(args.output_dir).glob("checkpoint-*"),
+            key=lambda p: int(p.name.split("-")[1])
+        )
+        if not checkpoint_dirs:
+            return
+
+        latest_checkpoint = checkpoint_dirs[-1]
+        step = int(latest_checkpoint.name.split("-")[1])
+
+        if step > self.last_uploaded_step:
+            print(f"[DriveUploadCallback] Final upload of checkpoint-{step}...")
+            self._compress_and_upload(latest_checkpoint, step)
+
+
+# ============================================================
 # CustomTrainer with Muon/AdamW split
 # ============================================================
 class CustomTrainer(Trainer):
@@ -417,7 +603,30 @@ def train(config_path_or_cfg):
                 f"Could not find dataset at '{data_path_str}' or '{fallback_path.resolve()}'"
             )
 
-    dataset = load_dataset("json", data_files=str(data_path))
+    # Check for separate train/val files
+    train_path = config.get("train_data_path")
+    val_path = config.get("val_data_path")
+
+    if train_path and val_path:
+        # Use explicit train/val files
+        train_data_path = Path(train_path)
+        val_data_path = Path(val_path)
+        if not train_data_path.is_absolute():
+            train_data_path = Path(data_path.parent) / train_path
+        if not val_data_path.is_absolute():
+            val_data_path = Path(data_path.parent) / val_path
+
+        print(f"Loading train from: {train_data_path}")
+        print(f"Loading val from: {val_data_path}")
+
+        dataset = load_dataset("json", data_files={
+            "train": str(train_data_path),
+            "validation": str(val_data_path)
+        })
+    else:
+        # Single file - use as train only, no validation
+        print(f"Loading single dataset from: {data_path}")
+        dataset = load_dataset("json", data_files=str(data_path))
 
     seq_len = config.get('hpo', {}).get('seq_len', 512)
     print(f"Tokenizing dataset with max_length={seq_len}...")
@@ -428,7 +637,12 @@ def train(config_path_or_cfg):
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
     tokenized_datasets = tokenized_datasets.remove_columns(["text", "metadata"])
     tokenized_datasets.set_format("torch")
-    print(f"Dataset loaded. Size: {len(tokenized_datasets['train'])}")
+
+    # Print dataset sizes
+    if "train" in tokenized_datasets:
+        print(f"Train dataset size: {len(tokenized_datasets['train'])}")
+    if "validation" in tokenized_datasets:
+        print(f"Validation dataset size: {len(tokenized_datasets['validation'])}")
 
     # --- Model initialization ---
     print("Initializing model...")
@@ -472,7 +686,7 @@ def train(config_path_or_cfg):
         vram_limit = float(vram_limit)
     except Exception:
         try:
-            import training_config as prj_config
+            from src.config import training_config as prj_config
             vram_limit = prj_config.VRAM_LIMIT_GB
         except Exception:
             vram_limit = 4.0
@@ -517,16 +731,26 @@ def train(config_path_or_cfg):
         deepspeed=ds_config_path if (torch.cuda.is_available() and is_deepspeed_available()) else None,
         save_strategy="steps",
         save_steps=1000,
+        eval_strategy="steps" if "validation" in tokenized_datasets else "no",
+        eval_steps=1000 if "validation" in tokenized_datasets else None,
         logging_steps=10,
         report_to=["tensorboard", "mlflow"],
+        load_best_model_at_end=True if "validation" in tokenized_datasets else False,
+        metric_for_best_model="eval_loss" if "validation" in tokenized_datasets else None,
+        greater_is_better=False,
     )
+
+    # Prepare callbacks
+    callbacks = [DriveUploadCallback(upload_interval_steps=1000)]
 
     trainer = CustomTrainer(
         model=model,
         args=training_args,
         train_dataset=tokenized_datasets['train'],
+        eval_dataset=tokenized_datasets.get('validation'),
         data_collator=data_collator,
         additional_config=config,
+        callbacks=callbacks,
     )
 
     print(f"Trainer: batch={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})", flush=True)

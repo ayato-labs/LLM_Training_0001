@@ -13,6 +13,9 @@ logs/
 models/
 mlruns/
 generate_result.txt
+inference_output.txt
+current_run_config.json
+last_run_result.json
 
 # Data files (tracked by DVC, not Git)
 data/*.jsonl
@@ -20,7 +23,6 @@ data/corpus.jsonl
 data/tokenizer.json
 data/tokenizer.model
 !data/*.dvc
-docs/
 
 # Hydra output directories
 outputs/
@@ -32,8 +34,7 @@ outputs/
 credentials.json
 service_account.json
 token.json
-temp_ds_config.json
-client_secret_1082524187757-73gj1nh4tfl2si7gmnvbvp6u1fr5dk0h.apps.googleusercontent.com.json
+client_secret_*.json
 
 # DVC cache (large files)
 .dvc/cache/
