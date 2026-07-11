@@ -5,44 +5,48 @@ ADR-018/019/020/021 実装テスト
 - DeepSpeed ZeRO-3 設定
 - Vocab 64k + end_of_story
 """
+
 import json
 import math
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import pytest
+import pytest  # noqa: E402
 
 
 # ============================================================
 # 1. training_config.py の設定値テスト
 # ============================================================
 class TestTrainingConfig:
-
     def test_target_params(self):
         """ADR-019: ターゲットパラメータ数は 100M"""
         import training_config as config
+
         assert config.TARGET_PARAMS == 100_000_000
 
     def test_seq_len(self):
         """ADR-019: シーケンス長は 2048"""
         import training_config as config
+
         assert config.SEQ_LEN == 2048
 
     def test_precision_default(self):
         """ADR-018: デフォルト precision は bf16"""
         import training_config as config
+
         assert config.PRECISION == "bf16"
 
     def test_vram_limit_default(self):
         """ADR-019: VRAM制限デフォルトは 4.0 GB (GPU検出値を許容)"""
         import training_config as config
-        assert math.isclose(config.VRAM_LIMIT_GB, 4.0, abs_tol=0.1), \
+
+        assert math.isclose(config.VRAM_LIMIT_GB, 4.0, abs_tol=0.1), (
             f"VRAM_LIMIT_GB should be ~4.0, got {config.VRAM_LIMIT_GB}"
+        )
 
 
 # ============================================================
@@ -50,7 +54,6 @@ class TestTrainingConfig:
 # ============================================================
 def _generate_deepspeed_config(n_params, vram_limit_gb, precision="bf16"):
     """train_model.py から独立してテストするためのコピー"""
-    est_vram_gb = (n_params * 14) / (1024**3)
 
     if precision == "bf16":
         precision_config = {"bf16": {"enabled": True}}
@@ -104,12 +107,11 @@ def _generate_deepspeed_config(n_params, vram_limit_gb, precision="bf16"):
 
 
 class TestDeepSpeedConfig:
-
     def test_bf16_default(self):
         """ADR-018: デフォルトは bf16"""
         result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
         try:
-            with open(result_path, "r") as f:
+            with open(result_path) as f:
                 ds_config = json.load(f)
             assert "bf16" in ds_config
             assert ds_config["bf16"]["enabled"] is True
@@ -122,7 +124,7 @@ class TestDeepSpeedConfig:
         """ADR-018: fp16 フォールバック動作"""
         result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="fp16")
         try:
-            with open(result_path, "r") as f:
+            with open(result_path) as f:
                 ds_config = json.load(f)
             assert "fp16" in ds_config
             assert ds_config["fp16"]["enabled"] is True
@@ -135,7 +137,7 @@ class TestDeepSpeedConfig:
         """ADR-019: VRAM 4GB 以下なら ZeRO-3 + CPU offload"""
         result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
         try:
-            with open(result_path, "r") as f:
+            with open(result_path) as f:
                 ds_config = json.load(f)
             zero = ds_config["zero_optimization"]
             assert zero["stage"] == 3
@@ -151,7 +153,7 @@ class TestDeepSpeedConfig:
         """VRAM 5GB 超なら ZeRO-2"""
         result_path = _generate_deepspeed_config(100_000_000, 8.0, precision="bf16")
         try:
-            with open(result_path, "r") as f:
+            with open(result_path) as f:
                 ds_config = json.load(f)
             zero = ds_config["zero_optimization"]
             assert zero["stage"] == 2
@@ -164,7 +166,7 @@ class TestDeepSpeedConfig:
         """Activation Checkpointing が有効"""
         result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
         try:
-            with open(result_path, "r") as f:
+            with open(result_path) as f:
                 ds_config = json.load(f)
             ac = ds_config["activation_checkpointing"]
             assert ac["partition_activations"] is True
@@ -177,7 +179,7 @@ class TestDeepSpeedConfig:
         """ZeRO-3 のパラメータオフロード設定"""
         result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
         try:
-            with open(result_path, "r") as f:
+            with open(result_path) as f:
                 ds_config = json.load(f)
             zero = ds_config["zero_optimization"]
             assert zero["stage3_param_persistence_threshold"] == 10000
@@ -192,12 +194,12 @@ class TestDeepSpeedConfig:
 # 3. configs/config.yaml テスト
 # ============================================================
 class TestConfigYAML:
-
     @pytest.fixture(autouse=True)
     def setup(self):
         import yaml
+
         config_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
 
     def test_model_architecture(self):
@@ -245,21 +247,23 @@ class TestConfigYAML:
         # + embedding (vocab * hidden)
         est_params += self.config["tokenizer"]["vocab_size"] * model["hidden_size"]
         # + FFN (2 * intermediate * hidden per layer)
-        est_params += 2 * model["intermediate_size"] * model["hidden_size"] * model["num_hidden_layers"]
+        est_params += (
+            2 * model["intermediate_size"] * model["hidden_size"] * model["num_hidden_layers"]
+        )
         # 目安: 100M ± 50%
-        assert 50_000_000 < est_params < 150_000_000, \
+        assert 50_000_000 < est_params < 150_000_000, (
             f"Estimated params should be ~100M, got {est_params / 1e6:.1f}M"
+        )
 
 
 # ============================================================
 # 4. ds_config.json テスト
 # ============================================================
 class TestDSConfigJSON:
-
     @pytest.fixture(autouse=True)
     def setup(self):
         config_path = PROJECT_ROOT / "ds_config.json"
-        with open(config_path, "r") as f:
+        with open(config_path) as f:
             self.ds_config = json.load(f)
 
     def test_bf16_enabled(self):
@@ -290,10 +294,10 @@ class TestDSConfigJSON:
 # 5. pyproject.toml 依存関係テスト
 # ============================================================
 class TestDependencies:
-
     @pytest.fixture(autouse=True)
     def setup(self):
         import tomllib
+
         config_path = PROJECT_ROOT / "pyproject.toml"
         with open(config_path, "rb") as f:
             self.pyproject = tomllib.load(f)
@@ -321,7 +325,6 @@ class TestDependencies:
 # 6. Python バージョンテスト
 # ============================================================
 class TestPythonVersion:
-
     def test_python_version_file(self):
         version_file = PROJECT_ROOT / ".python-version"
         assert version_file.exists()
@@ -333,7 +336,6 @@ class TestPythonVersion:
 # 7. ADR ファイル存在テスト
 # ============================================================
 class TestADRFiles:
-
     def test_adr018_exists(self):
         assert (PROJECT_ROOT / "docs" / "adr" / "ADR-018-bf16-adoption.md").exists()
 
@@ -351,31 +353,36 @@ class TestADRFiles:
 # 8. アーキテクチャ整合性テスト
 # ============================================================
 class TestArchitectureConsistency:
-
     def test_params_consistency(self):
         """config.yaml と training_config.py の TARGET_PARAMS 一致"""
         import yaml
+
         import training_config as config
+
         yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, "r", encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             yaml_config = yaml.safe_load(f)
         assert yaml_config["model"]["target_params"] == config.TARGET_PARAMS
 
     def test_seq_len_consistency(self):
         """config.yaml と training_config.py の SEQ_LEN 一致"""
         import yaml
+
         import training_config as config
+
         yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, "r", encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             yaml_config = yaml.safe_load(f)
         assert yaml_config["training"]["seq_len"] == config.SEQ_LEN
 
     def test_precision_consistency(self):
         """config.yaml と training_config.py の PRECISION 一致"""
         import yaml
+
         import training_config as config
+
         yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, "r", encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             yaml_config = yaml.safe_load(f)
         assert yaml_config["hardware"]["precision"] == config.PRECISION
 
@@ -384,11 +391,11 @@ class TestArchitectureConsistency:
 # 9. モデル初期化テスト (torch必要)
 # ============================================================
 class TestModelInit:
-
     @pytest.fixture(autouse=True)
     def setup(self):
         try:
             import torch
+
             self.torch = torch
             self.cuda_available = torch.cuda.is_available()
         except ImportError:
@@ -397,6 +404,7 @@ class TestModelInit:
     def test_llama_config_creation(self):
         """LlamaConfig が正しく作成できる"""
         from transformers import LlamaConfig
+
         config = LlamaConfig(
             hidden_size=512,
             num_hidden_layers=16,
@@ -414,6 +422,7 @@ class TestModelInit:
     def test_model_instantiation_cpu(self):
         """LlamaForCausalLM が CPU で初期化できる"""
         from transformers import LlamaConfig, LlamaForCausalLM
+
         config = LlamaConfig(
             hidden_size=512,
             num_hidden_layers=16,
@@ -425,13 +434,15 @@ class TestModelInit:
         model = LlamaForCausalLM(config)
         param_count = sum(p.numel() for p in model.parameters())
         # 100M ± 40% (embedding/FFN含む)
-        assert 60_000_000 < param_count < 140_000_000, \
+        assert 60_000_000 < param_count < 140_000_000, (
             f"Model params should be ~100M, got {param_count / 1e6:.1f}M"
+        )
 
     def test_model_forward_cpu(self):
         """CPU で forward pass が通る"""
         import torch
         from transformers import LlamaConfig, LlamaForCausalLM
+
         config = LlamaConfig(
             hidden_size=512,
             num_hidden_layers=4,
@@ -453,6 +464,7 @@ class TestModelInit:
             pytest.skip("CUDA not available")
         import torch
         from transformers import LlamaConfig, LlamaForCausalLM
+
         config = LlamaConfig(
             hidden_size=512,
             num_hidden_layers=4,
@@ -471,8 +483,8 @@ class TestModelInit:
 
     def test_model_resize_token_embeddings(self):
         """特殊トークン追加後の resize が動作"""
-        import torch
         from transformers import LlamaConfig, LlamaForCausalLM
+
         config = LlamaConfig(
             hidden_size=512,
             num_hidden_layers=4,
@@ -493,12 +505,12 @@ class TestModelInit:
 # 10. Tokenizer 特殊トークンテスト
 # ============================================================
 class TestTokenizerTokens:
-
     def test_special_tokens_list(self):
         """特殊トークンが9個ある"""
         import yaml
+
         yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, "r", encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         tokens = config["tokenizer"]["special_tokens"]
         assert len(tokens) == 9
@@ -506,8 +518,9 @@ class TestTokenizerTokens:
     def test_metadata_boundary_tokens(self):
         """メタデータ境界トークンのペア確認"""
         import yaml
+
         yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, "r", encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         tokens = config["tokenizer"]["special_tokens"]
         assert "<|start_of_metadata|>" in tokens
@@ -516,8 +529,9 @@ class TestTokenizerTokens:
     def test_story_boundary_tokens(self):
         """物語境界トークンのペア確認"""
         import yaml
+
         yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, "r", encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         tokens = config["tokenizer"]["special_tokens"]
         assert "<|start_of_story|>" in tokens
@@ -526,8 +540,9 @@ class TestTokenizerTokens:
     def test_no_duplicate_tokens(self):
         """重複トークンなし"""
         import yaml
+
         yaml_path = PROJECT_ROOT / "configs" / "config.yaml"
-        with open(yaml_path, "r", encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         tokens = config["tokenizer"]["special_tokens"]
         assert len(tokens) == len(set(tokens)), "Duplicate special tokens found"

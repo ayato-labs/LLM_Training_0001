@@ -5,6 +5,7 @@ ADR-021: SentencePiece BPE 64k トークナイザー統合テスト
 - LlamaConfig との互換性
 - Forward pass の動作確認
 """
+
 import sys
 from pathlib import Path
 
@@ -20,7 +21,6 @@ SP_MODEL_PATH = PROJECT_ROOT / "data" / "tokenizer_novel64k.model"
 def _check_pyarrow():
     """pyarrow の access violation を事前検出"""
     try:
-        import pyarrow
         return True
     except Exception:
         return False
@@ -28,14 +28,14 @@ def _check_pyarrow():
 
 HAS_PYARROW = _check_pyarrow()
 requires_pyarrow = pytest.mark.skipif(
-    not HAS_PYARROW,
-    reason="pyarrow has access violation on this Windows system"
+    not HAS_PYARROW, reason="pyarrow has access violation on this Windows system"
 )
 
 
 def load_hf_tokenizer():
     """HF tokenizer をロードして特殊トークンを設定"""
     from transformers import PreTrainedTokenizerFast
+
     tok = PreTrainedTokenizerFast(tokenizer_file=str(TOKENIZER_PATH))
     tok.unk_token = "<unk>"
     tok.bos_token = "<s>"
@@ -48,7 +48,6 @@ def load_hf_tokenizer():
 # 1. tokenizer.json 存在・構造テスト
 # ============================================================
 class TestTokenizerFileExists:
-
     def test_tokenizer_json_exists(self):
         """data/tokenizer.json が存在する"""
         assert TOKENIZER_PATH.exists(), f"{TOKENIZER_PATH} not found"
@@ -60,7 +59,8 @@ class TestTokenizerFileExists:
     def test_tokenizer_json_is_valid_json(self):
         """tokenizer.json は有効な JSON"""
         import json
-        with open(TOKENIZER_PATH, "r", encoding="utf-8") as f:
+
+        with open(TOKENIZER_PATH, encoding="utf-8") as f:
             data = json.load(f)
         assert "model" in data
         assert "vocab" in data["model"]
@@ -70,24 +70,25 @@ class TestTokenizerFileExists:
 # 2. Vocab サイズテスト
 # ============================================================
 class TestVocabSize:
-
     def test_vocab_size_64k(self):
         """vocab サイズは 64000"""
         import json
-        with open(TOKENIZER_PATH, "r", encoding="utf-8") as f:
+
+        with open(TOKENIZER_PATH, encoding="utf-8") as f:
             data = json.load(f)
         vocab = data["model"]["vocab"]
         assert len(vocab) == 64000, f"Expected 64000, got {len(vocab)}"
 
     def test_sp_vocab_matches_json(self):
         """SentencePiece vocab と tokenizer.json の vocab が一致"""
-        import sentencepiece as spm
         import json
+
+        import sentencepiece as spm
 
         sp = spm.SentencePieceProcessor()
         sp.load(str(SP_MODEL_PATH))
 
-        with open(TOKENIZER_PATH, "r", encoding="utf-8") as f:
+        with open(TOKENIZER_PATH, encoding="utf-8") as f:
             data = json.load(f)
         json_vocab = data["model"]["vocab"]
 
@@ -96,14 +97,15 @@ class TestVocabSize:
         for i in range(sp.get_piece_size()):
             piece = sp.id_to_piece(i)
             assert piece in json_vocab, f"SP piece '{piece}' (id={i}) not in JSON vocab"
-            assert json_vocab[piece] == i, f"ID mismatch for '{piece}': SP={i}, JSON={json_vocab[piece]}"
+            assert json_vocab[piece] == i, (
+                f"ID mismatch for '{piece}': SP={i}, JSON={json_vocab[piece]}"
+            )
 
 
 # ============================================================
 # 3. HF tokenizer ロードテスト
 # ============================================================
 class TestHFLoader:
-
     def test_loads_without_error(self):
         """tokenizer.json がエラーなくロードできる"""
         tok = load_hf_tokenizer()
@@ -139,7 +141,6 @@ class TestHFLoader:
 # 4. 日本語テキストエンコード/デコードテスト
 # ============================================================
 class TestJapaneseEncoding:
-
     def test_encode_returns_list(self):
         """encode() は list を返す"""
         tok = load_hf_tokenizer()
@@ -218,10 +219,10 @@ class TestSpecialTokenSplitting:
 # 6. LlamaConfig 互換性テスト
 # ============================================================
 class TestLlamaConfigCompatibility:
-
     def test_llama_config_creation(self):
         """LlamaConfig が正しく作成できる"""
         from transformers import LlamaConfig
+
         tok = load_hf_tokenizer()
         config = LlamaConfig(
             vocab_size=len(tok),
@@ -240,8 +241,8 @@ class TestLlamaConfigCompatibility:
     @requires_pyarrow
     def test_model_instantiation(self):
         """LlamaForCausalLM が正しくインスタンス化できる"""
-        import torch
         from transformers import LlamaConfig
+
         tok = load_hf_tokenizer()
 
         config = LlamaConfig(
@@ -257,6 +258,7 @@ class TestLlamaConfigCompatibility:
         # LlamaForCausalLM の遅延インポート（pyarrow crash 回避）
         try:
             from transformers import LlamaForCausalLM
+
             model = LlamaForCausalLM(config)
         except (ImportError, OSError, Exception) as e:
             pytest.skip(f"LlamaForCausalLM not available: {e}")
@@ -264,19 +266,18 @@ class TestLlamaConfigCompatibility:
         param_count = sum(p.numel() for p in model.parameters())
         assert param_count > 0
         # vocab_size=64000 のため embedding が大きめ。モデルサイズは設定次第
-        assert param_count > 10_000_000, \
-            f"Expected >10M params, got {param_count:,}"
+        assert param_count > 10_000_000, f"Expected >10M params, got {param_count:,}"
 
 
 # ============================================================
 # 7. Forward Pass テスト
 # ============================================================
 class TestForwardPass:
-
     def test_forward_single_sentence(self):
         """単文の forward pass"""
         import torch
         from transformers import LlamaConfig
+
         tok = load_hf_tokenizer()
 
         config = LlamaConfig(
@@ -291,6 +292,7 @@ class TestForwardPass:
 
         try:
             from transformers import LlamaForCausalLM
+
             model = LlamaForCausalLM(config)
         except (ImportError, OSError, Exception) as e:
             pytest.skip(f"LlamaForCausalLM not available: {e}")
@@ -308,6 +310,7 @@ class TestForwardPass:
         """バッチの forward pass"""
         import torch
         from transformers import LlamaConfig
+
         tok = load_hf_tokenizer()
 
         config = LlamaConfig(
@@ -322,6 +325,7 @@ class TestForwardPass:
 
         try:
             from transformers import LlamaForCausalLM
+
             model = LlamaForCausalLM(config)
         except (ImportError, OSError, Exception) as e:
             pytest.skip(f"LlamaForCausalLM not available: {e}")
@@ -337,6 +341,7 @@ class TestForwardPass:
         """forward pass で NaN が出ない"""
         import torch
         from transformers import LlamaConfig
+
         tok = load_hf_tokenizer()
 
         config = LlamaConfig(
@@ -351,6 +356,7 @@ class TestForwardPass:
 
         try:
             from transformers import LlamaForCausalLM
+
             model = LlamaForCausalLM(config)
         except (ImportError, OSError, Exception) as e:
             pytest.skip(f"LlamaForCausalLM not available: {e}")
@@ -367,6 +373,7 @@ class TestForwardPass:
         """ロス計算が正しく動く"""
         import torch
         from transformers import LlamaConfig
+
         tok = load_hf_tokenizer()
 
         config = LlamaConfig(
@@ -381,6 +388,7 @@ class TestForwardPass:
 
         try:
             from transformers import LlamaForCausalLM
+
             model = LlamaForCausalLM(config)
         except (ImportError, OSError, Exception) as e:
             pytest.skip(f"LlamaForCausalLM not available: {e}")
@@ -398,7 +406,6 @@ class TestForwardPass:
 # 8. データセットとの統合テスト
 # ============================================================
 class TestDatasetIntegration:
-
     @requires_pyarrow
     def test_dataset_loads(self):
         """データセットがロードできる"""
@@ -456,7 +463,6 @@ class TestDatasetIntegration:
 # 9. train_tokenizer.py スクリプトテスト
 # ============================================================
 class TestTrainTokenizerScript:
-
     def test_script_exists(self):
         """train_tokenizer.py が存在する"""
         script_path = PROJECT_ROOT / "src" / "train_tokenizer.py"
@@ -465,10 +471,13 @@ class TestTrainTokenizerScript:
     def test_skip_training_flag(self):
         """--skip-training フラグがサポートされている"""
         import subprocess
+
         script_path = PROJECT_ROOT / "src" / "train_tokenizer.py"
         result = subprocess.run(
             [sys.executable, str(script_path), "--help"],
-            capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
         )
         assert "--skip-training" in result.stdout or "--skip-training" in result.stderr
 
@@ -477,14 +486,14 @@ class TestTrainTokenizerScript:
 # 10. train_model.py トークナイザー読み込みテスト
 # ============================================================
 class TestTrainModelTokenizerLoading:
-
     def test_tokenizer_path_in_config(self):
         """config に tokenizer_path が含まれる"""
         import json
+
         config_path = PROJECT_ROOT / "current_run_config.json"
         if not config_path.exists():
             pytest.skip("current_run_config.json not found")
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
         tokenizer_path = config.get("tokenizer_path", "data/tokenizer.json")
         assert tokenizer_path

@@ -1,4 +1,3 @@
-import sys
 from src.eval.generate import generate_text
 
 prompt = (
