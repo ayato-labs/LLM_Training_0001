@@ -1,7 +1,8 @@
-# ADR-022: config.yaml の最小化と responsibility 分離
+# ADR-022: config.yaml の最小化と responsibility 分離 / プロキシモデル動的スケーリング
 
 - **Status:** Accepted
 - **Date:** 2026-07-11
+- **Updated:** 2026-07-11
 - **Deciders:** Novel LLM Team
 
 ## Context
@@ -18,9 +19,12 @@
 3. **scaling_*.yaml の冗長性**
    - ベース設定を丸ごとコピー → 差分だけ記述すべき
 
+**追加課題 (2026-07-11)**: HPO (Optuna) で使用するプロキシモデルのサイズがハードコードされており、本番モデルのスケールに追従しなかった。
+
 ## Decision
 
 config.yaml を30行の最小ベースに削減し、scaling_*.yaml は差分のみに。
+**プロキシモデルの構成をパラメータ数から動的に生成するロジックを導入。**
 
 ### 変更前 (107行)
 ```yaml
@@ -91,7 +95,7 @@ training:
 |----------|------|------|
 | VRAM検出 | コード (`config.py`) | 環境依存で人間が設定不要 |
 | precision (bf16) | コード (`config.py`) | GPU依存で人間が設定不要 |
-| DeepSpeed設定 | ココード (`train_model.py`) | ZeRO stage は VRAM に依存 |
+| DeepSpeed設定 | コード (`train_model.py`) | ZeRO stage は VRAM に依存 |
 | gradient_checkpointing | コード (`train_model.py`) | VRAM に依存 |
 | checkpoint保存間隔 | コード (`train_model.py`) | 過学習監視に最適化済み |
 | ログ設定 | コード (`logger.py`) | 固定値で十分 |
@@ -100,6 +104,16 @@ training:
 | **seq_len** | **YAML** | 人間がGPUメモリに合わせて変更 |
 | **エポック数** | **YAML** | 人間が過学習に合わせて変更 |
 
+### プロキシモデル動的生成 (追加)
+
+`src/model_utils.py` に `estimate_config_from_params(target_params)` を追加。
+
+- **計算式**: `params = max(target_params * 0.05, 30_000_000)`
+- **アーキテクチャ**: `L=12固定`, `H=12固定`, `H_dim` をパラメータ数から逆算
+- **制約**: `n_embd % n_head == 0` を強制し、形状エラーを防止
+
+`hpo_manager.py` の `objective()` がこの関数を呼び出し、本番モデル規模に追従したプロキシモデルで探索を実行。
+
 ## Consequences
 
 ### メリット
@@ -107,6 +121,7 @@ training:
 - 人間が触る必要のある設定だけが残る
 - コードが自動処理する設定はYAMLから排除
 - scaling_*.yaml は差分だけ記述 → 冗長性の排除
+- **HPOプロキシモデルが本番モデルのスケールに自動追従し、探索結果が本番に転移可能になった**
 
 ### デメリット
 - 設定を変更したい場合、コードを修正する必要がある
@@ -117,3 +132,5 @@ training:
 - `configs/scaling_*.yaml`: 差分のみに削減
 - `src/config.py`: 新規作成 (YAML読み込み + VRAM自動検出)
 - `src/main.py`: 設定読み込みをYAMLベースに書き換え
+- `src/model_utils.py`: 新規作成 (プロキシモデル構成算出)
+- `src/hpo_manager.py`: 動的プロキシ生成に対応
