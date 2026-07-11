@@ -1,19 +1,11 @@
 import datetime
-print("DEBUG: train_model - import datetime", flush=True)
 import hashlib
-print("DEBUG: train_model - import hashlib", flush=True)
 import json
-print("DEBUG: train_model - import json", flush=True)
 import os
-print("DEBUG: train_model - import os", flush=True)
 import shutil
-print("DEBUG: train_model - import shutil", flush=True)
 import subprocess
-print("DEBUG: train_model - import subprocess", flush=True)
 import sys
-print("DEBUG: train_model - import sys", flush=True)
 from pathlib import Path
-print("DEBUG: train_model - import Path", flush=True)
 
 import mlflow
 import torch
@@ -638,30 +630,6 @@ def train(config):
     grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
     warmup_ratio = hpo_config.get("warmup_ratio", 0.03)
 
-    # --- Pilot Mode handling ---
-    pilot_mode = config.get("pilot_mode", False)
-    if pilot_mode:
-        logger.info("PILOT MODE: Disabling checkpoints, eval, callbacks, and uploads")
-        save_strategy = "no"
-        save_steps = None
-        eval_strategy = "no"
-        eval_steps = None
-        logging_steps = 5
-        report_to = "none"
-        callbacks = []
-        load_best_model_at_end = False
-        metric_for_best_model = None
-    else:
-        save_strategy = "steps"
-        save_steps = 1000
-        eval_strategy = "steps" if "validation" in tokenized_datasets else "no"
-        eval_steps = 1000 if "validation" in tokenized_datasets else None
-        logging_steps = 10
-        report_to = ["tensorboard", "mlflow"]
-        callbacks = [DriveUploadCallback(upload_interval_steps=1000)]
-        load_best_model_at_end = "validation" in tokenized_datasets
-        metric_for_best_model = "eval_loss" if "validation" in tokenized_datasets else None
-
     training_args = TrainingArguments(
         output_dir="models/output",
         learning_rate=hpo_config["max_lr_2d"],
@@ -677,19 +645,19 @@ def train(config):
         deepspeed=ds_config_path
         if (torch.cuda.is_available() and is_deepspeed_available())
         else None,
-        save_strategy=save_strategy,
-        save_steps=save_steps if not pilot_mode else None,
-        eval_strategy=eval_strategy,
-        eval_steps=eval_steps if not pilot_mode else None,
-        logging_steps=logging_steps,
-        report_to=report_to,
-        load_best_model_at_end=load_best_model_at_end,
-        metric_for_best_model=metric_for_best_model,
+        save_strategy="steps",
+        save_steps=1000,
+        eval_strategy="steps" if "validation" in tokenized_datasets else "no",
+        eval_steps=1000 if "validation" in tokenized_datasets else None,
+        logging_steps=10,
+        report_to=["tensorboard", "mlflow"],
+        load_best_model_at_end="validation" in tokenized_datasets,
+        metric_for_best_model="eval_loss" if "validation" in tokenized_datasets else None,
         greater_is_better=False,
     )
 
     # Prepare callbacks
-    callbacks = callbacks if not pilot_mode else []
+    callbacks = [DriveUploadCallback(upload_interval_steps=1000)]
 
     trainer = CustomTrainer(
         model=model,
