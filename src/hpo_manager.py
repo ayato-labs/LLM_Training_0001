@@ -53,19 +53,19 @@ def compute_scaling_priors(target_params: int, n_tokens: int) -> dict:
         # LR (log-uniform prior around theoretical optimum)
         "lr_2d_center": base_lr_2d,
         "lr_1d_center": base_lr_1d,
-        "lr_2d_range": (base_lr_2d * 0.3, base_lr_2d * 3.0),
-        "lr_1d_range": (base_lr_1d * 0.3, base_lr_1d * 3.0),
+        "lr_2d_range": (base_lr_2d * 0.1, base_lr_2d * 10.0),
+        "lr_1d_range": (base_lr_1d * 0.1, base_lr_1d * 10.0),
         
         # Batch size (discrete)
         "batch_size_candidates": [8, 16, 32, 64],
         "batch_size_prior": optimal_batch,
         
         # Warmup
-        "warmup_ratio_range": (0.01, 0.1),
+        "warmup_ratio_range": (0.005, 0.2),
         "warmup_ratio_prior": warmup_ratio,
         
         # Weight decay
-        "weight_decay_range": (0.01, 0.3),
+        "weight_decay_range": (0.001, 0.5),
         "weight_decay_prior": weight_decay,
         
         # Beta2
@@ -73,7 +73,7 @@ def compute_scaling_priors(target_params: int, n_tokens: int) -> dict:
         "beta2_prior": beta2,
         
         # Gradient clipping
-        "grad_clip_range": (0.5, 2.0),
+        "grad_clip_range": (0.25, 4.0),
         "grad_clip_prior": grad_clip,
         
         # Other

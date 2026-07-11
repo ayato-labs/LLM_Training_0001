@@ -353,9 +353,13 @@ class CustomTrainer(Trainer):
 
         model = self.model
         config = self.additional_config
+        hpo_config = config.get("hpo", {})
 
-        lr_2d = config["hpo"]["max_lr_2d"]
-        lr_1d = config["hpo"]["max_lr_1d"]
+        lr_2d = hpo_config.get("max_lr_2d", 3e-4)
+        lr_1d = hpo_config.get("max_lr_1d", 3e-3)
+        weight_decay = hpo_config.get("weight_decay", 0.1)
+        beta2 = hpo_config.get("beta2", 0.95)
+        grad_clip = hpo_config.get("grad_clip", 1.0)
 
         params_2d = []
         params_1d = []
@@ -378,8 +382,8 @@ class CustomTrainer(Trainer):
                 adamw_params=dict(
                     params=params_1d,
                     lr=lr_1d,
-                    betas=(0.9, 0.95),
-                    weight_decay=0.01,
+                    betas=(0.9, hpo_config.get("beta2", 0.95)),
+                    weight_decay=hpo_config.get("weight_decay", 0.1),
                 ),
             )
         except ImportError:
@@ -389,9 +393,9 @@ class CustomTrainer(Trainer):
             self.optimizer = AdamW(
                 [
                     {"params": params_2d, "lr": lr_2d, "weight_decay": 0.0},
-                    {"params": params_1d, "lr": lr_1d, "weight_decay": 0.01},
+                    {"params": params_1d, "lr": lr_1d, "weight_decay": hpo_config.get("weight_decay", 0.1)},
                 ],
-                betas=(0.9, 0.95),
+                betas=(0.9, hpo_config.get("beta2", 0.95)),
             )
 
         return self.optimizer
@@ -629,6 +633,9 @@ def train(config):
     per_device_batch = min(target_total_batch_seqs, max_batch)
     grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
     warmup_ratio = hpo_config.get("warmup_ratio", 0.03)
+    weight_decay = hpo_config.get("weight_decay", 0.1)
+    adam_beta2 = hpo_config.get("beta2", 0.95)
+    max_grad_norm = hpo_config.get("grad_clip", 1.0)
 
     training_args = TrainingArguments(
         output_dir="models/output",
@@ -641,6 +648,9 @@ def train(config):
         remove_unused_columns=False,
         lr_scheduler_type="cosine",
         warmup_ratio=warmup_ratio,
+        weight_decay=weight_decay,
+        adam_beta2=adam_beta2,
+        max_grad_norm=max_grad_norm,
         seed=seed,
         deepspeed=ds_config_path
         if (torch.cuda.is_available() and is_deepspeed_available())
