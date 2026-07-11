@@ -20,6 +20,7 @@ dependencies = [
     "bitsandbytes>=0.43.0",
     "flash-attn>=2.5.0; platform_system == 'Linux'",
     "sentencepiece>=0.2.0",
+    "loguru>=0.7.0",
 ]
 
 [project.optional-dependencies]
@@ -30,3 +31,14 @@ dev = [
 
 [project.scripts]
 train = "src.main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"

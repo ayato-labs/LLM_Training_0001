@@ -1,36 +1,38 @@
 import json
-import yaml
 from pathlib import Path
-import numpy as np
+
+import yaml
+
 
 def calculate_model_params(config):
     """
     Llama系モデルのパラメータ数を概算 (おおよその式: 12 * layers * hidden^2)
     より正確にするにはembeddingやnorm層を含める必要がある
     """
-    layers = config['model']['num_hidden_layers']
-    hidden = config['model']['hidden_size']
+    layers = config["model"]["num_hidden_layers"]
+    hidden = config["model"]["hidden_size"]
     # 概算式: 簡易的に構成要素から算出
-    params = 12 * layers * (hidden ** 2)
+    params = 12 * layers * (hidden**2)
     return params
+
 
 def get_experiment_data(model_dir):
     """実験ディレクトリから設定と最終Lossを抽出"""
     model_dir = Path(model_dir)
     if not (model_dir / "config.yaml").exists() or not (model_dir / "trainer_state.json").exists():
         return None
-    
-    with open(model_dir / "config.yaml", "r") as f:
+
+    with open(model_dir / "config.yaml") as f:
         config = yaml.safe_load(f)
-    with open(model_dir / "trainer_state.json", "r") as f:
+    with open(model_dir / "trainer_state.json") as f:
         trainer_state = json.load(f)
-        
-    loss = trainer_state.get("best_loss") or trainer_state.get("train_loss_history", [{}])[-1].get("loss")
-    
-    return {
-        "params": calculate_model_params(config),
-        "loss": loss
-    }
+
+    loss = trainer_state.get("best_loss") or trainer_state.get("train_loss_history", [{}])[-1].get(
+        "loss"
+    )
+
+    return {"params": calculate_model_params(config), "loss": loss}
+
 
 def estimate_optimal_compute(target_loss, alpha=0.34, beta=0.28):
     """

@@ -7,12 +7,14 @@ Usage:
     env_info = capture_env_snapshot()
     mlflow.log_dict(env_info, "environment.json")
 """
-import os
-import sys
-import platform
-import subprocess
+
 import datetime
 import json
+import os
+import platform
+import subprocess
+import sys
+
 from src.logger import logger
 
 
@@ -21,6 +23,7 @@ def _get_gpu_info() -> dict:
     info = {"available": False}
     try:
         import torch
+
         if not torch.cuda.is_available():
             return info
         info["available"] = True
@@ -33,7 +36,9 @@ def _get_gpu_info() -> dict:
         info["minor"] = props.minor
         info["multi_processor_count"] = props.multi_processor_count
         info["cuda_version"] = torch.version.cuda or "N/A"
-        info["cudnn_version"] = str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else "N/A"
+        info["cudnn_version"] = (
+            str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else "N/A"
+        )
     except Exception as e:
         info["error"] = str(e)
     return info
@@ -46,7 +51,7 @@ def _get_git_info() -> dict:
         result = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
             stderr=subprocess.DEVNULL,
-            cwd=os.path.dirname(os.path.abspath(__file__))
+            cwd=os.path.dirname(os.path.abspath(__file__)),
         )
         info["hash"] = result.decode("ascii").strip()
     except Exception:
@@ -58,11 +63,21 @@ def _get_pip_packages() -> dict:
     """Capture key package versions."""
     packages = {}
     key_pkgs = [
-        "torch", "transformers", "datasets", "accelerate", "tokenizers",
-        "mlflow", "hydra-core", "omegaconf", "dvc", "scipy", "numpy"
+        "torch",
+        "transformers",
+        "datasets",
+        "accelerate",
+        "tokenizers",
+        "mlflow",
+        "hydra-core",
+        "omegaconf",
+        "dvc",
+        "scipy",
+        "numpy",
     ]
     try:
         import pkg_resources
+
         for pkg in key_pkgs:
             try:
                 packages[pkg] = pkg_resources.get_distribution(pkg).version

@@ -1,7 +1,8 @@
-import sys
 import datetime
-from loguru import logger
+import sys
 from pathlib import Path
+
+from loguru import logger
 
 # Create logs directory if not exists
 log_dir = Path("logs")
@@ -38,10 +39,12 @@ logger.add(
 
 def log_exceptions(func):
     """Decorator to log exceptions with full traceback."""
+
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
         except Exception as e:
             logger.exception(f"Unhandled exception in {func.__name__}: {e}")
             raise e
+
     return wrapper

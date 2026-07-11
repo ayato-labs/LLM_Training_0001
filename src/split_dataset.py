@@ -8,11 +8,13 @@ training and validation sets.
 Each novel's chapters are kept together in either train or val set.
 Split ratio: 99% train / 1% val (configurable).
 """
+
+import argparse
 import json
 import random
-import argparse
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
+
 from src.logger import logger
 
 
@@ -28,7 +30,7 @@ def split_dataset(
         title_to_lines = defaultdict(list)
 
         logger.info(f"Reading dataset from {input_path}...")
-        with open(input_path, "r", encoding="utf-8") as f:
+        with open(input_path, encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
                     continue
@@ -56,9 +58,10 @@ def split_dataset(
         train_chunks = 0
         val_chunks = 0
 
-        with open(train_output, "w", encoding="utf-8") as f_train, \
-             open(val_output, "w", encoding="utf-8") as f_val:
-
+        with (
+            open(train_output, "w", encoding="utf-8") as f_train,
+            open(val_output, "w", encoding="utf-8") as f_val,
+        ):
             for title in titles:
                 lines = title_to_lines[title]
                 if title in val_titles:
@@ -86,14 +89,18 @@ def split_dataset(
 
 def main():
     parser = argparse.ArgumentParser(description="Split dataset by novel title")
-    parser.add_argument("--input", default="../DataPreprocessing/data/dataset.jsonl",
-                        help="Input dataset path")
-    parser.add_argument("--train-output", default="data/train_dataset.jsonl",
-                        help="Training output path")
-    parser.add_argument("--val-output", default="data/val_dataset.jsonl",
-                        help="Validation output path")
-    parser.add_argument("--val-ratio", type=float, default=0.01,
-                        help="Validation ratio (default: 0.01)")
+    parser.add_argument(
+        "--input", default="../DataPreprocessing/data/dataset.jsonl", help="Input dataset path"
+    )
+    parser.add_argument(
+        "--train-output", default="data/train_dataset.jsonl", help="Training output path"
+    )
+    parser.add_argument(
+        "--val-output", default="data/val_dataset.jsonl", help="Validation output path"
+    )
+    parser.add_argument(
+        "--val-ratio", type=float, default=0.01, help="Validation ratio (default: 0.01)"
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     args = parser.parse_args()

@@ -9,14 +9,17 @@ Extends the original uploader with:
 
 ADR-019: Storage optimization via cloud-first strategy.
 """
+
+import contextlib
+import datetime
+import glob
 import os
+import re
+import shutil
 import sys
 import time
-import shutil
-import re
-import glob
-import datetime
 from pathlib import Path
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -26,12 +29,12 @@ from googleapiclient.http import MediaFileUpload
 # ============================================================
 # Configuration
 # ============================================================
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 OUTPUT_DIR = Path("models/output")
 DRIVE_FOLDER_NAME = "Novel_LLM_Checkpoints"
-POLL_INTERVAL = 30          # seconds
-MIN_FOLDER_AGE = 60         # seconds before processing a checkpoint
+POLL_INTERVAL = 30  # seconds
+MIN_FOLDER_AGE = 60  # seconds before processing a checkpoint
 
 # Directories to backup as zips
 LOG_DIRS = [
@@ -59,8 +62,8 @@ LOCAL_CHECKPOINT_KEEP = 2
 def get_drive_service():
     """OAuth 2.0 authentication using client_secret_*.json."""
     creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -79,10 +82,10 @@ def get_drive_service():
             flow = InstalledAppFlow.from_client_secrets_file(secret_file, SCOPES)
             creds = flow.run_local_server(port=0)
 
-        with open('token.json', 'w') as token:
+        with open("token.json", "w") as token:
             token.write(creds.to_json())
 
-    return build('drive', 'v3', credentials=creds)
+    return build("drive", "v3", credentials=creds)
 
 
 def get_or_create_drive_folder(service, folder_name, parent_id=None):
@@ -91,24 +94,24 @@ def get_or_create_drive_folder(service, folder_name, parent_id=None):
     if parent_id:
         query += f" and '{parent_id}' in parents"
     results = service.files().list(q=query, fields="files(id)").execute()
-    items = results.get('files', [])
+    items = results.get("files", [])
     if items:
-        return items[0]['id']
+        return items[0]["id"]
 
-    folder_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
+    folder_metadata = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
     if parent_id:
-        folder_metadata['parents'] = [parent_id]
-    folder = service.files().create(body=folder_metadata, fields='id').execute()
+        folder_metadata["parents"] = [parent_id]
+    folder = service.files().create(body=folder_metadata, fields="id").execute()
     print(f"Created remote folder '{folder_name}' (ID: {folder['id']})")
-    return folder['id']
+    return folder["id"]
 
 
 def upload_file_to_drive(service, file_path, folder_id):
     """Upload a file to Google Drive with progress reporting."""
     file_name = file_path.name
-    file_metadata = {'name': file_name, 'parents': [folder_id]}
-    media = MediaFileUpload(str(file_path), chunksize=1024*1024*5, resumable=True)
-    request = service.files().create(body=file_metadata, media_body=media, fields='id')
+    file_metadata = {"name": file_name, "parents": [folder_id]}
+    media = MediaFileUpload(str(file_path), chunksize=1024 * 1024 * 5, resumable=True)
+    request = service.files().create(body=file_metadata, media_body=media, fields="id")
 
     response = None
     print(f"Uploading {file_name}...")
@@ -117,7 +120,7 @@ def upload_file_to_drive(service, file_path, folder_id):
         if status:
             print(f"  {int(status.progress() * 100)}%")
     print(f"  Uploaded (ID: {response['id']})")
-    return response['id']
+    return response["id"]
 
 
 def delete_remote_file(service, file_id):
@@ -131,7 +134,7 @@ def delete_remote_file(service, file_id):
 def file_exists_on_drive(service, file_name, folder_id):
     """Check if a file already exists on Google Drive."""
     query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
-    return bool(service.files().list(q=query, fields="files(id)").execute().get('files', []))
+    return bool(service.files().list(q=query, fields="files(id)").execute().get("files", []))
 
 
 def compress_and_upload(service, source_dir, folder_id, label):
@@ -147,25 +150,23 @@ def compress_and_upload(service, source_dir, folder_id, label):
 
     try:
         print(f"Compressing {source_dir}...")
-        shutil.make_archive(str(zip_base), 'zip', str(source_path))
+        shutil.make_archive(str(zip_base), "zip", str(source_path))
 
         remote_name = zip_path.name
         if file_exists_on_drive(service, remote_name, folder_id):
             # Delete old version first
             query = f"name = '{remote_name}' and '{folder_id}' in parents and trashed = false"
-            old = service.files().list(q=query, fields="files(id)").execute().get('files', [])
+            old = service.files().list(q=query, fields="files(id)").execute().get("files", [])
             for f in old:
-                delete_remote_file(service, f['id'])
+                delete_remote_file(service, f["id"])
 
         upload_file_to_drive(service, zip_path, folder_id)
     except Exception as e:
         print(f"Error backing up {source_dir}: {e}", file=sys.stderr)
     finally:
         if zip_path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 os.remove(zip_path)
-            except Exception:
-                pass
 
 
 def backup_dvc_cache(service, folder_id):
@@ -189,7 +190,9 @@ def backup_dvc_cache(service, folder_id):
 
     # Skip if cache is too large (> 500MB) - user should configure dvc remote instead
     if total_mb > 500:
-        print(f"DVC cache too large ({total_mb:.1f} MB). Skipping backup. Consider configuring 'dvc remote'.")
+        print(
+            f"DVC cache too large ({total_mb:.1f} MB). Skipping backup. Consider configuring 'dvc remote'."
+        )
         return
 
     print(f"Backing up DVC cache ({len(cache_files)} files, {total_mb:.1f} MB)...")
@@ -220,7 +223,7 @@ def cleanup_old_checkpoints(keep=LOCAL_CHECKPOINT_KEEP):
 
     # Remove oldest checkpoints (keep the latest `keep`)
     to_remove = checkpoints[:-keep]
-    for step, path in to_remove:
+    for _step, path in to_remove:
         uploaded_flag = path / ".uploaded"
         if uploaded_flag.exists():
             print(f"Cleaning up old checkpoint: {path.name}")
@@ -251,7 +254,9 @@ def backup_final_model(service, root_folder_id):
         return
 
     # Check if model files exist (model.safetensors or config.json)
-    has_model = any(FINAL_MODEL_DIR.glob("*.safetensors")) or (FINAL_MODEL_DIR / "config.json").exists()
+    has_model = (
+        any(FINAL_MODEL_DIR.glob("*.safetensors")) or (FINAL_MODEL_DIR / "config.json").exists()
+    )
     if not has_model:
         return
 
@@ -281,8 +286,8 @@ def backup_final_model(service, root_folder_id):
     zip_path = Path(f"{zip_base}.zip")
 
     try:
-        print(f"Backing up final model to Google Drive...")
-        shutil.make_archive(str(zip_base), 'zip', str(FINAL_MODEL_DIR))
+        print("Backing up final model to Google Drive...")
+        shutil.make_archive(str(zip_base), "zip", str(FINAL_MODEL_DIR))
 
         upload_file_to_drive(service, zip_path, model_folder_id)
         uploaded_flag.touch()
@@ -292,10 +297,8 @@ def backup_final_model(service, root_folder_id):
         print(f"Error backing up final model: {e}", file=sys.stderr)
     finally:
         if zip_path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 os.remove(zip_path)
-            except Exception:
-                pass
 
 
 def backup_inference_reports(service, root_folder_id):
@@ -304,12 +307,16 @@ def backup_inference_reports(service, root_folder_id):
     if not log_dir.exists():
         return
 
-    report_files = list(log_dir.glob("eval_report_*.md")) + list(log_dir.glob("eval_results_*.json"))
+    report_files = list(log_dir.glob("eval_report_*.md")) + list(
+        log_dir.glob("eval_results_*.json")
+    )
     if not report_files:
         return
 
     # Create inference reports folder
-    reports_folder_id = get_or_create_drive_folder(service, "Novel_LLM_Inference_Reports", root_folder_id)
+    reports_folder_id = get_or_create_drive_folder(
+        service, "Novel_LLM_Inference_Reports", root_folder_id
+    )
 
     # Only upload files newer than the last backup
     backup_flag = log_dir / ".inference_backup_timestamp"
@@ -398,7 +405,7 @@ def monitor_and_upload():
                 # Compress
                 if not zip_file.exists():
                     print(f"Compressing {path.name}...")
-                    shutil.make_archive(str(OUTPUT_DIR / path.name), 'zip', str(path))
+                    shutil.make_archive(str(OUTPUT_DIR / path.name), "zip", str(path))
 
                 # Upload
                 try:
@@ -422,10 +429,8 @@ def monitor_and_upload():
                 except Exception as e:
                     print(f"Error processing {path.name}: {e}", file=sys.stderr)
                     if zip_file.exists():
-                        try:
+                        with contextlib.suppress(Exception):
                             os.remove(zip_file)
-                        except Exception:
-                            pass
 
             # === Local storage cleanup (every 10 loops = ~5min) ===
             if loop_count % 10 == 0:
