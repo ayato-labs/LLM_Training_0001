@@ -1,8 +1,7 @@
 """
-ADR-018/019/020/021 実装テスト
+ADR-018/019/021 実装テスト
 - BF16 対応
-- 100M/2048ctx アーキテクチャ
-- DeepSpeed ZeRO-3 設定
+- 150M/1024ctx アーキテクチャ
 - Vocab 64k + end_of_story
 """
 
@@ -51,147 +50,6 @@ class TestTrainingConfig:
 
         vram = detect_vram()
         assert vram > 0, f"VRAM should be detected, got {vram}"
-
-
-# ============================================================
-# 2. DeepSpeed 設定生成テスト (独立関数として直接テスト)
-# ============================================================
-def _generate_deepspeed_config(n_params, vram_limit_gb, precision="bf16"):
-    """train_model.py から独立してテストするためのコピー"""
-
-    if precision == "bf16":
-        precision_config = {"bf16": {"enabled": True}}
-    else:
-        precision_config = {"fp16": {"enabled": True, "loss_scale": 0, "loss_scale_window": 1000}}
-
-    if vram_limit_gb <= 5.0:
-        zero_config = {
-            "stage": 3,
-            "offload_param": {"device": "cpu", "pin_memory": True},
-            "offload_optimizer": {"device": "cpu", "pin_memory": True},
-            "stage3_param_persistence_threshold": 10000,
-            "stage3_max_live_parameters": 1e7,
-            "stage3_max_reuse_distance": 1e7,
-            "sub_group_size": 1e7,
-            "allgather_partitions": True,
-            "allgather_bucket_size": 2e8,
-            "overlap_comm": True,
-            "reduce_scatter": True,
-            "reduce_bucket_size": 2e8,
-        }
-    else:
-        zero_config = {
-            "stage": 2,
-            "allgather_partitions": True,
-            "allgather_bucket_size": 2e8,
-            "overlap_comm": True,
-            "reduce_scatter": True,
-            "reduce_bucket_size": 2e8,
-        }
-
-    ds_config = {
-        **precision_config,
-        "zero_optimization": zero_config,
-        "activation_checkpointing": {
-            "partition_activations": True,
-            "cpu_checkpointing": True,
-            "contiguous_memory_optimization": False,
-            "number_of_nodes": 1,
-            "synchronize_checkpoint_boundary": False,
-            "profile": False,
-        },
-        "gradient_accumulation_steps": "auto",
-        "train_batch_size": "auto",
-    }
-
-    ds_config_path = "temp_ds_config_test.json"
-    with open(ds_config_path, "w", encoding="utf-8") as f:
-        json.dump(ds_config, f, indent=2)
-    return ds_config_path
-
-
-class TestDeepSpeedConfig:
-    def test_bf16_default(self):
-        """ADR-018: デフォルトは bf16"""
-        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
-        try:
-            with open(result_path) as f:
-                ds_config = json.load(f)
-            assert "bf16" in ds_config
-            assert ds_config["bf16"]["enabled"] is True
-            assert "fp16" not in ds_config
-        finally:
-            if os.path.exists(result_path):
-                os.remove(result_path)
-
-    def test_fp16_fallback(self):
-        """ADR-018: fp16 フォールバック動作"""
-        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="fp16")
-        try:
-            with open(result_path) as f:
-                ds_config = json.load(f)
-            assert "fp16" in ds_config
-            assert ds_config["fp16"]["enabled"] is True
-            assert "bf16" not in ds_config
-        finally:
-            if os.path.exists(result_path):
-                os.remove(result_path)
-
-    def test_zerostage3_for_4gb(self):
-        """ADR-019: VRAM 4GB 以下なら ZeRO-3 + CPU offload"""
-        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
-        try:
-            with open(result_path) as f:
-                ds_config = json.load(f)
-            zero = ds_config["zero_optimization"]
-            assert zero["stage"] == 3
-            assert "offload_param" in zero
-            assert zero["offload_param"]["device"] == "cpu"
-            assert "offload_optimizer" in zero
-            assert zero["offload_optimizer"]["device"] == "cpu"
-        finally:
-            if os.path.exists(result_path):
-                os.remove(result_path)
-
-    def test_zerostage2_for_large_vram(self):
-        """VRAM 5GB 超なら ZeRO-2"""
-        result_path = _generate_deepspeed_config(100_000_000, 8.0, precision="bf16")
-        try:
-            with open(result_path) as f:
-                ds_config = json.load(f)
-            zero = ds_config["zero_optimization"]
-            assert zero["stage"] == 2
-            assert "offload_param" not in zero
-        finally:
-            if os.path.exists(result_path):
-                os.remove(result_path)
-
-    def test_activation_checkpointing(self):
-        """Activation Checkpointing が有効"""
-        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
-        try:
-            with open(result_path) as f:
-                ds_config = json.load(f)
-            ac = ds_config["activation_checkpointing"]
-            assert ac["partition_activations"] is True
-            assert ac["cpu_checkpointing"] is True
-        finally:
-            if os.path.exists(result_path):
-                os.remove(result_path)
-
-    def test_zero3_offload_params(self):
-        """ZeRO-3 のパラメータオフロード設定"""
-        result_path = _generate_deepspeed_config(100_000_000, 4.0, precision="bf16")
-        try:
-            with open(result_path) as f:
-                ds_config = json.load(f)
-            zero = ds_config["zero_optimization"]
-            assert zero["stage3_param_persistence_threshold"] == 10000
-            assert zero["stage3_max_live_parameters"] == 1e7
-            assert zero["stage3_max_reuse_distance"] == 1e7
-        finally:
-            if os.path.exists(result_path):
-                os.remove(result_path)
 
 
 # ============================================================
@@ -261,40 +119,6 @@ class TestConfigYAML:
 
 
 # ============================================================
-# 4. ds_config.json テスト
-# ============================================================
-class TestDSConfigJSON:
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        config_path = PROJECT_ROOT / "ds_config.json"
-        with open(config_path) as f:
-            self.ds_config = json.load(f)
-
-    def test_bf16_enabled(self):
-        """ADR-018: bf16 有効"""
-        assert "bf16" in self.ds_config
-        assert self.ds_config["bf16"]["enabled"] is True
-        assert "fp16" not in self.ds_config
-
-    def test_zerostage3(self):
-        """ADR-019: ZeRO-3"""
-        assert self.ds_config["zero_optimization"]["stage"] == 3
-
-    def test_cpu_offload(self):
-        """ADR-019: CPU offload"""
-        zero = self.ds_config["zero_optimization"]
-        assert zero["offload_param"]["device"] == "cpu"
-        assert zero["offload_optimizer"]["device"] == "cpu"
-        assert zero["offload_param"]["pin_memory"] is True
-        assert zero["offload_optimizer"]["pin_memory"] is True
-
-    def test_activation_checkpointing(self):
-        ac = self.ds_config["activation_checkpointing"]
-        assert ac["partition_activations"] is True
-        assert ac["cpu_checkpointing"] is True
-
-
-# ============================================================
 # 5. pyproject.toml 依存関係テスト
 # ============================================================
 class TestDependencies:
@@ -305,18 +129,6 @@ class TestDependencies:
         config_path = PROJECT_ROOT / "pyproject.toml"
         with open(config_path, "rb") as f:
             self.pyproject = tomllib.load(f)
-
-    def test_deepspeed_dependency(self):
-        deps = self.pyproject["project"]["dependencies"]
-        assert any("deepspeed" in d.lower() for d in deps)
-
-    def test_bitsandbytes_dependency(self):
-        deps = self.pyproject["project"]["dependencies"]
-        assert any("bitsandbytes" in d.lower() for d in deps)
-
-    def test_flash_attn_dependency(self):
-        deps = self.pyproject["project"]["dependencies"]
-        assert any("flash-attn" in d.lower() for d in deps)
 
     def test_torch_version(self):
         deps = self.pyproject["project"]["dependencies"]

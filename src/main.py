@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 LLM Training Entry Point
 
@@ -32,7 +32,6 @@ from src.logger import logger, log_exceptions
 from src.model_utils import (
     create_model_config,
     estimate_model_size,
-    generate_deepspeed_config,
 )
 from src.set_seed import set_seed
 
@@ -68,8 +67,7 @@ def main(cfg: DictConfig) -> None:
     train_ds, eval_ds = load_and_tokenize_datasets(config, tokenizer)
 
     model = create_model(config, tokenizer)
-    ds_config = resolve_deepspeed_config(config, model)
-    args = build_training_args(config, ds_config)
+    args = build_training_args(config)
 
     callbacks = [DriveUploadCallback(upload_interval_steps=config["drive_upload_interval"])]
 
@@ -125,8 +123,9 @@ def create_model(config: dict, tokenizer):
     return model
 
 
-def build_training_args(config: dict, ds_config_path: str | None):
+def build_training_args(config: dict):
     """TrainingArguments 構築"""
+    precision = config.get("precision", "bf16")
     return TrainingArguments(
         output_dir=config["output_dir"],
         learning_rate=config["max_lr_1d"],
@@ -140,9 +139,8 @@ def build_training_args(config: dict, ds_config_path: str | None):
         weight_decay=config["weight_decay"],
         adam_beta2=config["beta2"],
         max_grad_norm=config["grad_clip"],
-        bf16=config["precision"] == "bf16",
-        fp16=config["precision"] == "fp16",
-        deepspeed=ds_config_path if ds_config_path else None,
+        bf16=(precision == "bf16"),
+        fp16=(precision == "fp16"),
         save_strategy="steps",
         save_steps=config["save_steps"],
         eval_strategy="steps" if config.get("val_data_path") else "no",
@@ -155,13 +153,6 @@ def build_training_args(config: dict, ds_config_path: str | None):
         seed=config["seed"],
         remove_unused_columns=False,
     )
-
-
-def resolve_deepspeed_config(config: dict, model) -> str | None:
-    vram_gb = config.get("vram_limit_gb") or detect_vram()
-    n_params = estimate_model_size(model)
-    return generate_deepspeed_config(n_params, vram_gb, config["precision"])
-
 
 def detect_vram() -> float:
     try:

@@ -26,19 +26,6 @@ from transformers import (
 from src.logger import logger
 
 
-# ============================================================
-# Logging setup
-# ============================================================
-def is_deepspeed_available():
-    try:
-        import importlib.metadata
-
-        importlib.metadata.version("deepspeed")
-        return True
-    except Exception:
-        return False
-
-
 logger.info(f"CUDA available: {torch.cuda.is_available()}")
 
 
@@ -126,100 +113,6 @@ def normalize_config(raw) -> dict:
         return raw
 
     raise ValueError("Config must have 'model_params' and 'hpo' keys")
-
-
-# ============================================================
-# DeepSpeed config generation (ADR-018: BF16, ADR-019: ZeRO-3)
-# ============================================================
-def generate_deepspeed_config(n_params, vram_limit_gb, precision="bf16"):
-    est_vram_gb = (n_params * 14) / (1024**3)
-
-    # BF16 (推奨) or FP16 (フォールバック)
-    if precision == "bf16":
-        precision_config = {"bf16": {"enabled": True}}
-        precision_name = "bf16"
-    else:
-        precision_config = {"fp16": {"enabled": True, "loss_scale": 0, "loss_scale_window": 1000}}
-        precision_name = "fp16"
-
-    # モデルサイズに基づいてDeepSpeedステージを決定
-    # CPUオフロードは極力避ける（学習速度が大幅に低下するため）
-    if est_vram_gb > vram_limit_gb * 0.9:
-        # VRAMに収まらない場合はZeRO-3 + CPU offload
-        zero_config = {
-            "stage": 3,
-            "offload_param": {
-                "device": "cpu",
-                "pin_memory": True,
-            },
-            "offload_optimizer": {
-                "device": "cpu",
-                "pin_memory": True,
-            },
-            "stage3_param_persistence_threshold": 10000,
-            "stage3_max_live_parameters": 1e7,
-            "stage3_max_reuse_distance": 1e7,
-            "sub_group_size": 1e7,
-            "allgather_partitions": True,
-            "allgather_bucket_size": 2e8,
-            "overlap_comm": True,
-            "reduce_scatter": True,
-            "reduce_bucket_size": 2e8,
-        }
-        zero_name = "ZeRO-3 (CPU offload)"
-    elif vram_limit_gb <= 5.0:
-        # VRAM制限が小さいがモデルが収まる場合はZeRO-1（軽量）
-        zero_config = {
-            "stage": 1,
-            "allgather_partitions": True,
-            "allgather_bucket_size": 2e8,
-            "overlap_comm": True,
-            "reduce_scatter": True,
-            "reduce_bucket_size": 2e8,
-        }
-        zero_name = "ZeRO-1"
-    else:
-        # VRAMに余裕がある場合はZeRO-2
-        zero_config = {
-            "stage": 2,
-            "allgather_partitions": True,
-            "allgather_bucket_size": 2e8,
-            "overlap_comm": True,
-            "reduce_scatter": True,
-            "reduce_bucket_size": 2e8,
-        }
-        zero_name = "ZeRO-2"
-
-    ds_config = {
-        **precision_config,
-        "zero_optimization": zero_config,
-        "activation_checkpointing": {
-            "partition_activations": True,
-            "cpu_checkpointing": True,
-            "contiguous_memory_optimization": False,
-            "number_of_nodes": 1,
-            "synchronize_checkpoint_boundary": False,
-            "profile": False,
-        },
-        "gradient_accumulation_steps": "auto",
-        "train_batch_size": "auto",
-    }
-
-    if est_vram_gb > vram_limit_gb:
-        logger.warning(
-            f"DeepSpeed: Est. param memory ({est_vram_gb:.2f} GB) > VRAM ({vram_limit_gb} GB). GPU-only may OOM."
-        )
-    else:
-        logger.info(
-            f"DeepSpeed: Est. VRAM ({est_vram_gb:.2f} GB) fits within limit ({vram_limit_gb} GB)."
-        )
-
-    logger.info(f"DeepSpeed: {precision_name} + {zero_name} (VRAM limit: {vram_limit_gb} GB)")
-
-    ds_config_path = "temp_ds_config.json"
-    with open(ds_config_path, "w", encoding="utf-8") as f:
-        json.dump(ds_config, f, indent=2)
-    return ds_config_path
 
 
 def get_git_revision_hash():
@@ -429,65 +322,14 @@ def train(config):
     from src.env_snapshot import capture_env_snapshot
 
     env_snapshot = capture_env_snapshot()
-
-    # --- MLflow init with full traceability ---
-    os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
-    mlflow_run = None
-    try:
-        import mlflow
-        mlflow.set_tracking_uri("file:./mlruns")
-        mlflow.set_experiment("LLM_Training")
-        mlflow.end_run()  # End any existing run
-        mlflow_run = mlflow.start_run()
-
-        # Core params
-        mlflow.log_params(
-            {
-                "git_hash": git_hash,
-                "seed": seed,
-                "data_path": data_path_str,
-                "max_steps": str(config.get("max_steps", -1)),
-            }
-        )
-
-        # Model params
-        for k, v in config.get("model_params", {}).items():
-            if v is not None:
-                mlflow.log_param(f"model.{k}", v)
-
-        # HPO params
-        for k, v in config.get("hpo", {}).items():
-            if v is not None:
-                mlflow.log_param(f"hpo.{k}", v)
-
-        # Dataset fingerprint (traceability)
-        if "error" not in data_fingerprint:
-            mlflow.log_params(
-                {
-                    "dataset.sha256": data_fingerprint["sha256"],
-                    "dataset.rows": data_fingerprint["line_count"],
-                    "dataset.size_bytes": data_fingerprint["size_bytes"],
-                }
-            )
-
-        # DB fingerprint (traceability)
-        if "error" not in db_fingerprint:
-            mlflow.log_params(
-                {
-                    "db.sha256": db_fingerprint["sha256"],
-                    "db.chapters": db_fingerprint["chapter_count"],
-                    "db.novels": db_fingerprint["novel_count"],
-                }
-            )
-
-        # Environment snapshot (traceability)
-        mlflow.log_dict(env_snapshot, "environment.json")
-
-        # Config artifact (log as dict)
-        mlflow.log_dict(config, "config.json")
-
-    except Exception as e:
-        logger.warning(f"MLflow initialization failed: {e}", exc_info=True)
+    logger.info("Training started", extra={
+        "git_hash": git_hash,
+        "seed": seed,
+        "data_path": data_path_str,
+        "dataset_fingerprint": data_fingerprint,
+        "db_fingerprint": db_fingerprint,
+        "env_snapshot": env_snapshot,
+    })
 
     # --- Tokenizer ---
     tokenizer_path = config.get("tokenizer_path", "data/tokenizer.json")
@@ -610,18 +452,9 @@ def train(config):
 
     n_params_est = config["model_params"].get("n_params", 125_000_000)
 
-    # VRAM limit: from config or auto-detect
-    vram_limit = config.get("vram_limit_gb")
-    if vram_limit is None:
-        from src.config import detect_vram
-
-        vram_limit = detect_vram()
-    vram_limit = float(vram_limit)
-
-    # Precision: from config or default bf16
+    # Precision: bf16 or fp16 (TrainingArguments ネイティブフラグで制御)
     precision = config.get("precision", "bf16")
-
-    ds_config_path = generate_deepspeed_config(n_params_est, vram_limit, precision=precision)
+    logger.info(f"Precision: {precision}")
 
     # Batch size calculation - モデルサイズとVRAMに基づく
     # バッチサイズ計算: 4GB VRAMではseq_len=2048でbatch=1が限界
@@ -655,15 +488,14 @@ def train(config):
         adam_beta2=adam_beta2,
         max_grad_norm=max_grad_norm,
         seed=seed,
-        deepspeed=ds_config_path
-        if (torch.cuda.is_available() and is_deepspeed_available())
-        else None,
+        bf16=(precision == "bf16"),
+        fp16=(precision == "fp16"),
         save_strategy="steps",
         save_steps=1000,
         eval_strategy="steps" if "validation" in tokenized_datasets else "no",
         eval_steps=1000 if "validation" in tokenized_datasets else None,
         logging_steps=10,
-        report_to=["tensorboard", "mlflow"],
+        report_to=["tensorboard"],
         load_best_model_at_end="validation" in tokenized_datasets,
         metric_for_best_model="eval_loss" if "validation" in tokenized_datasets else None,
         greater_is_better=False,
@@ -740,75 +572,8 @@ def train(config):
     with open("last_run_result.json", "w", encoding="utf-8") as f:
         json.dump(train_result.metrics, f)
 
-    # Log final metrics to MLflow
-    try:
-        if mlflow_run is not None:
-            import mlflow
-            mlflow.log_metrics(
-                {
-                    "final_train_loss": train_result.metrics.get("train_loss", -1),
-                    "final_train_runtime": train_result.metrics.get("train_runtime", -1),
-                    "final_train_samples_per_second": train_result.metrics.get(
-                        "train_samples_per_second", -1
-                    ),
-                    "final_train_steps_per_second": train_result.metrics.get(
-                        "train_steps_per_second", -1
-                    ),
-                }
-            )
-    except Exception as e:
-        logger.warning(f"MLflow metrics logging failed: {e}", exc_info=True)
-
-    # --- Cleanup ---
-    if os.path.exists(ds_config_path):
-        import contextlib
-
-        with contextlib.suppress(Exception):
-            os.remove(ds_config_path)
-
     model.save_pretrained("models/output")
     tokenizer.save_pretrained("models/output")
-
-    # --- Log model as MLflow artifact (traceability) ---
-    try:
-        if mlflow_run is not None:
-            import mlflow
-            # Log model config as artifact
-            model_config_path = Path("models/output/config.json")
-            if model_config_path.exists():
-                mlflow.log_artifact(str(model_config_path), artifact_path="model")
-
-            # Log tokenizer as artifact
-            tokenizer_files = [
-                "models/output/tokenizer.json",
-                "models/output/special_tokens_map.json",
-                "models/output/tokenizer_config.json",
-            ]
-            for tf in tokenizer_files:
-                if Path(tf).exists():
-                    mlflow.log_artifact(tf, artifact_path="model")
-
-            # Log the full model directory as a zip artifact
-            import zipfile
-
-            model_zip_path = Path("logs/model_snapshot.zip")
-            with zipfile.ZipFile(model_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file_path in Path("models/output").rglob("*"):
-                    if file_path.is_file():
-                        arcname = file_path.relative_to("models/output")
-                        zf.write(file_path, arcname)
-            mlflow.log_artifact(str(model_zip_path), artifact_path="model")
-            model_zip_path.unlink(missing_ok=True)
-            logger.info("[MLflow] Model artifacts logged.")
-    except Exception as e:
-        logger.warning(f"[MLflow] Model artifact logging failed: {e}", exc_info=True)
-
-    try:
-        if mlflow_run is not None:
-            import mlflow
-            mlflow.end_run()
-    except Exception:
-        pass
 
     logger.info("Training finished.")
 

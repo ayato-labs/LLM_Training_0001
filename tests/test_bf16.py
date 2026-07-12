@@ -49,17 +49,7 @@ if bf16_supported and torch.cuda.is_available():
 
         traceback.print_exc()
 
-    # 4. DeepSpeed BF16 互換性チェック
-    print("\n[DeepSpeed BF16 互換性]")
-    try:
-        import deepspeed
-
-        print(f"  DeepSpeed version: {deepspeed.__version__}")
-        print("  OK: DeepSpeed インストール済み")
-    except ImportError:
-        print("  WARN: DeepSpeed 未インストール (pip install deepspeed)")
-
-    # 5. TransformerEngine / FlashAttention チェック
+    # 4. 高速化ライブラリチェック
     print("\n[高速化ライブラリ]")
     try:
         import flash_attn

@@ -8,7 +8,7 @@ import importlib.metadata
 
 
 def capture_env_snapshot() -> dict:
-    """MLflow artifact用の軽量スナップショット"""
+    """再現性のための最小限メタデータ取得"""
     snap = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
@@ -29,7 +29,7 @@ def capture_env_snapshot() -> dict:
         snap["git_hash"] = "unknown"
     
     # Key packages
-    for pkg in ["transformers", "datasets", "accelerate", "deepspeed", "tokenizers"]:
+    for pkg in ["transformers", "datasets", "accelerate", "tokenizers"]:
         try:
             snap[pkg] = importlib.metadata.version(pkg)
         except Exception:

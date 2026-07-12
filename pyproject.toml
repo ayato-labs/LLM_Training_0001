@@ -15,8 +15,7 @@ dependencies = [
     "omegaconf>=2.3.0",
     "scipy>=1.11.0",
     "dvc>=3.0.0",
-    "optuna>=0.0.0",
-
+    "optuna>=3.0.0",
     "sentencepiece>=0.2.0",
     "loguru>=0.7.0",
     "tensorboard",
@@ -29,9 +28,17 @@ packages = ["src"]
 dev = [
     "pytest>=7.0",
     "ruff>=0.4.0",
-    "optuna>=3.0.0",
-    "mlflow>=2.10.0",
 ]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 [project.scripts]
 train = "src.main:main"
