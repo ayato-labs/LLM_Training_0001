@@ -5,8 +5,6 @@ ADR-018/019/021 実装テスト
 - Vocab 64k + end_of_story
 """
 
-import json
-import os
 import sys
 from pathlib import Path
 

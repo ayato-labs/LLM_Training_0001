@@ -28,10 +28,9 @@ from transformers import (
 from src.config import load_config
 from src.drive_uploader import DriveUploadCallback
 from src.env_snapshot import capture_env_snapshot
-from src.logger import logger, log_exceptions
+from src.logger import log_exceptions, logger
 from src.model_utils import (
     create_model_config,
-    estimate_model_size,
 )
 from src.set_seed import set_seed
 
@@ -49,6 +48,7 @@ def main(cfg: DictConfig) -> None:
 
     # Local tokenizer.json を直接読み込み（HF Hub経由させない）
     from tokenizers import Tokenizer as HFTokenizer
+
     tokenizer_path = Path(config["tokenizer_path"])
     if tokenizer_path.suffix == ".json" and tokenizer_path.exists():
         hf_tokenizer = HFTokenizer.from_file(str(tokenizer_path))
@@ -153,6 +153,7 @@ def build_training_args(config: dict):
         seed=config["seed"],
         remove_unused_columns=False,
     )
+
 
 def detect_vram() -> float:
     try:

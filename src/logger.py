@@ -1,10 +1,10 @@
 import datetime
-import sys
 import json
+import sys
 import traceback
-from pathlib import Path
 from functools import wraps
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -25,8 +25,9 @@ logger.add(
     diagnose=True,
 )
 
+
 # Structured JSON file output (for machine parsing / traceability)
-def json_serializer(record: Dict[str, Any]) -> str:
+def json_serializer(record: dict[str, Any]) -> str:
     """Custom JSON serializer with additional fields."""
     log_entry = {
         "timestamp": record["time"].isoformat(),
@@ -48,9 +49,12 @@ def json_serializer(record: Dict[str, Any]) -> str:
         log_entry["exception"] = {
             "type": record["exception"].type.__name__ if record["exception"].type else None,
             "value": str(record["exception"].value) if record["exception"].value else None,
-            "traceback": "".join(traceback.format_tb(record["exception"].traceback)) if record["exception"].traceback else None,
+            "traceback": "".join(traceback.format_tb(record["exception"].traceback))
+            if record["exception"].traceback
+            else None,
         }
     return json.dumps(log_entry, ensure_ascii=False)
+
 
 # Structured JSON file output (for machine parsing / traceability)
 logger.add(
@@ -109,10 +113,18 @@ def log_function_call(log_args: bool = False, log_result: bool = False, level: s
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            logger.log(level, f"Entering {func.__name__}", extra={"args": args if log_args else None, "kwargs": kwargs if log_args else None})
+            logger.log(
+                level,
+                f"Entering {func.__name__}",
+                extra={"args": args if log_args else None, "kwargs": kwargs if log_args else None},
+            )
             try:
                 result = func(*args, **kwargs)
-                logger.log(level, f"Exiting {func.__name__}", extra={"result": result if log_result else None})
+                logger.log(
+                    level,
+                    f"Exiting {func.__name__}",
+                    extra={"result": result if log_result else None},
+                )
                 return result
             except Exception as e:
                 logger.exception(f"Exception in {func.__name__}: {e}")
@@ -139,6 +151,6 @@ class LogContext:
             logger.contextualize(**self.context).__exit__(exc_type, None, None)
 
 
-def get_logger(name: Optional[str] = None):
+def get_logger(name: str | None = None):
     """Get a logger instance with optional name binding."""
     return logger.bind(module=name) if name else logger

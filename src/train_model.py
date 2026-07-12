@@ -8,9 +8,8 @@ import sys
 import time
 from pathlib import Path
 
-
-import torch
 import psutil
+import torch
 from datasets import load_dataset
 from transformers import (
     DataCollatorForLanguageModeling,
@@ -29,6 +28,7 @@ from src.logger import logger
 
 class TokenizerWrapper:
     """Wrapper to support Windows multiprocessing without pickling issues."""
+
     def __init__(self, tokenizer, seq_len):
         self.tokenizer = tokenizer
         self.seq_len = seq_len
@@ -43,10 +43,10 @@ def get_optimal_num_proc() -> int:
     """Detect CPU logical cores and available memory to compute optimal num_proc."""
     cpu_cores = os.cpu_count() or 1
     try:
-        available_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+        available_mem_gb = psutil.virtual_memory().available / (1024**3)
     except Exception:
         available_mem_gb = 8.0  # Fallback to 8GB if detection fails
-    
+
     # 1プロセスあたり1.5GBを見積もる
     mem_based_cores = int(available_mem_gb // 1.5)
     optimal_cores = min(max(1, cpu_cores - 1), max(1, mem_based_cores))
@@ -281,9 +281,9 @@ class CustomTrainer(Trainer):
 
         lr_2d = hpo_config.get("max_lr_2d", 3e-4)
         lr_1d = hpo_config.get("max_lr_1d", 3e-3)
-        weight_decay = hpo_config.get("weight_decay", 0.1)
-        beta2 = hpo_config.get("beta2", 0.95)
-        grad_clip = hpo_config.get("grad_clip", 1.0)
+        hpo_config.get("weight_decay", 0.1)
+        hpo_config.get("beta2", 0.95)
+        hpo_config.get("grad_clip", 1.0)
 
         params_2d = []
         params_1d = []
@@ -317,7 +317,11 @@ class CustomTrainer(Trainer):
             self.optimizer = AdamW(
                 [
                     {"params": params_2d, "lr": lr_2d, "weight_decay": 0.0},
-                    {"params": params_1d, "lr": lr_1d, "weight_decay": hpo_config.get("weight_decay", 0.1)},
+                    {
+                        "params": params_1d,
+                        "lr": lr_1d,
+                        "weight_decay": hpo_config.get("weight_decay", 0.1),
+                    },
                 ],
                 betas=(0.9, hpo_config.get("beta2", 0.95)),
             )
@@ -352,14 +356,17 @@ def train(config):
     from src.env_snapshot import capture_env_snapshot
 
     env_snapshot = capture_env_snapshot()
-    logger.info("Training started", extra={
-        "git_hash": git_hash,
-        "seed": seed,
-        "data_path": data_path_str,
-        "dataset_fingerprint": data_fingerprint,
-        "db_fingerprint": db_fingerprint,
-        "env_snapshot": env_snapshot,
-    })
+    logger.info(
+        "Training started",
+        extra={
+            "git_hash": git_hash,
+            "seed": seed,
+            "data_path": data_path_str,
+            "dataset_fingerprint": data_fingerprint,
+            "db_fingerprint": db_fingerprint,
+            "env_snapshot": env_snapshot,
+        },
+    )
 
     # --- Tokenizer ---
     tokenizer_path = config.get("tokenizer_path", "data/tokenizer.json")
@@ -414,24 +421,20 @@ def train(config):
 
     # seq_len は run_hpo.bat などのトップレベルまたは hpo 辞書から取得
     seq_len = config.get("seq_len") or config.get("hpo", {}).get("seq_len", 512)
-    
+
     # Support data_fraction for pilot runs (e.g., 0.01 = 1% of data)
     data_fraction = config.get("data_fraction", 1.0)
     if data_fraction < 1.0:
         logger.info(f"Using data_fraction={data_fraction} for pilot run")
-    
+
     # Get resource-adjusted number of processes
     num_proc = get_optimal_num_proc()
     logger.info(f"Tokenizing dataset with max_length={seq_len} using num_proc={num_proc}...")
 
     tokenize_function = TokenizerWrapper(tokenizer, seq_len)
-    tokenized_datasets = dataset.map(
-        tokenize_function,
-        batched=True,
-        num_proc=num_proc
-    )
+    tokenized_datasets = dataset.map(tokenize_function, batched=True, num_proc=num_proc)
     tokenized_datasets = tokenized_datasets.remove_columns(["text", "metadata"])
-    
+
     # Apply data_fraction for pilot runs
     data_fraction = config.get("data_fraction", 1.0)
     if data_fraction < 1.0:
@@ -439,8 +442,10 @@ def train(config):
             n_samples = int(len(tokenized_datasets[split]) * data_fraction)
             if n_samples < len(tokenized_datasets[split]):
                 tokenized_datasets[split] = tokenized_datasets[split].select(range(n_samples))
-                logger.info(f"Split '{split}' sampled to {n_samples} samples (fraction={data_fraction})")
-    
+                logger.info(
+                    f"Split '{split}' sampled to {n_samples} samples (fraction={data_fraction})"
+                )
+
     tokenized_datasets.set_format("torch")
 
     # Print dataset sizes
@@ -483,7 +488,7 @@ def train(config):
     hpo_config = config["hpo"]
     target_total_batch_seqs = hpo_config.get("batch_size_seqs", 16)
 
-    n_params_est = config["model_params"].get("n_params", 125_000_000)
+    config["model_params"].get("n_params", 125_000_000)
 
     # Precision: bf16 or fp16 (TrainingArguments ネイティブフラグで制御)
     precision = config.get("precision", "bf16")
@@ -492,6 +497,7 @@ def train(config):
     # Batch size calculation - モデルサイズとVRAMに基づく
     # バッチサイズ計算: 4GB VRAMではseq_len=2048でbatch=1が限界
     # CPUオフロードを使わず、batch小さく + grad_accumで調整
+    vram_limit = config.get("vram_limit_gb", 4.0)
     if vram_limit <= 4.5:
         max_batch = 1  # seq_len=2048ではbatch=1が安全
     elif vram_limit <= 8.5:
@@ -551,7 +557,7 @@ def train(config):
         f"Trainer: batch={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})"
     )
 
-# --- Detailed Training Callback ---
+    # --- Detailed Training Callback ---
     class DetailedLoggingCallback(TrainerCallback):
         def __init__(self, logger, log_every_n_steps=1):
             self.logger = logger
@@ -563,32 +569,30 @@ def train(config):
             self.step_count += 1
             if self.step_count % self.log_every_n_steps == 0:
                 # Get current learning rate from optimizer
-                lr = None
                 if self.trainer and self.trainer.optimizer:
-                    lr = self.trainer.optimizer.param_groups[0]['lr']
+                    self.trainer.optimizer.param_groups[0]["lr"]
 
                 # Get loss from state
-                loss = state.log_history[-1].get('loss') if state.log_history else None
+                loss = state.log_history[-1].get("loss") if state.log_history else None
 
                 # GPU memory
-                gpu_mem = ""
                 if torch.cuda.is_available():
-                    allocated = torch.cuda.memory_allocated() / 1024**3
-                    total_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                    gpu_mem = f" | GPU: {torch.cuda.memory_allocated() / 1024**3:.2f}/{torch.cuda.get_device_properties(0).total_memory/1024**3:.1f}GB"
+                    torch.cuda.memory_allocated() / 1024**3
+                    torch.cuda.get_device_properties(0).total_memory / 1024**3
+                    f" | GPU: {torch.cuda.memory_allocated() / 1024**3:.2f}/{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB"
 
                 if loss is not None:
-                    elapsed = time.time() - self.epoch_start_time
+                    time.time() - self.epoch_start_time
                     if self.trainer and self.trainer.optimizer:
-                        lr_str = f"lr={self.trainer.optimizer.param_groups[0]['lr']:.2e}"
+                        f"lr={self.trainer.optimizer.param_groups[0]['lr']:.2e}"
                     else:
-                        lr_str = "lr=N/A"
+                        pass
                     self.logger.info(
                         f"Step {self.step_count} | "
                         f"loss={state.log_history[-1].get('loss', 'N/A'):.4f} | "
-                        f"lr={self.trainer.optimizer.param_groups[0]['lr']:.2e}" 
-                        f" | elapsed={time.time()-self.epoch_start_time:.1f}s"
-                        f" | GPU: {torch.cuda.memory_allocated()/1024**3:.2f}/{torch.cuda.get_device_properties(0).total_memory/1024**3:.1f}GB"
+                        f"lr={self.trainer.optimizer.param_groups[0]['lr']:.2e}"
+                        f" | elapsed={time.time() - self.epoch_start_time:.1f}s"
+                        f" | GPU: {torch.cuda.memory_allocated() / 1024**3:.2f}/{torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB"
                     )
 
             return control

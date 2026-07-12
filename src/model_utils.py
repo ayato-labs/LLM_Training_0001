@@ -1,7 +1,6 @@
 """Model Utilities: モデル初期化・パラメータ推定"""
 
 from transformers import LlamaConfig
-import torch
 
 
 def create_model_config(config: dict, tokenizer) -> LlamaConfig:
@@ -11,7 +10,7 @@ def create_model_config(config: dict, tokenizer) -> LlamaConfig:
     heads = mp["num_attention_heads"]
     # hidden_size を heads の倍数に調整
     adjusted_hidden = (hidden // heads) * heads
-    
+
     return LlamaConfig(
         vocab_size=mp["vocab_size"],
         hidden_size=adjusted_hidden,

@@ -4,8 +4,9 @@ main.py からは import されない。scripts/find_hparams.py からのみ使�
 
 import optuna
 import torch
-from src.model_utils import estimate_model_size
+
 from src.logger import logger
+
 # Note: Since train_model.py still exists, we reuse train from there.
 # If this is not correct, we need to adapt it. Assuming train() can accept config dict.
 from src.train_model import train as proxy_train
@@ -25,9 +26,16 @@ def create_search_space(step_law_hpo: dict, vram_gb: float) -> dict:
     }
 
 
-def objective(trial: optuna.Trial, arch: dict, data_path: str, seq_len: int, vram_gb: float, step_law_hpo: dict) -> float:
+def objective(
+    trial: optuna.Trial,
+    arch: dict,
+    data_path: str,
+    seq_len: int,
+    vram_gb: float,
+    step_law_hpo: dict,
+) -> float:
     """Proxy training objective (short run, small data fraction)"""
-    
+
     # Sample hyperparams
     hpo = {}
     space = create_search_space(step_law_hpo, vram_gb)
@@ -38,7 +46,7 @@ def objective(trial: optuna.Trial, arch: dict, data_path: str, seq_len: int, vra
             hpo[param] = trial.suggest_float(param, spec[0], spec[1], log=True)
         else:
             hpo[param] = trial.suggest_float(param, spec[0], spec[1])
-    
+
     # Build config matching normalize_config expectations
     config = {
         "model_params": {
@@ -60,11 +68,15 @@ def objective(trial: optuna.Trial, arch: dict, data_path: str, seq_len: int, vra
         "vram_limit_gb": vram_gb,
         "seed": 42,
     }
-    
+
     try:
         # Quick proxy training (reuse train_model logic but minimal)
         loss = proxy_train(config)
-        return loss if not (torch.isnan(torch.tensor(loss)) or torch.isinf(torch.tensor(loss))) else 1e9
+        return (
+            loss
+            if not (torch.isnan(torch.tensor(loss)) or torch.isinf(torch.tensor(loss)))
+            else 1e9
+        )
     except Exception as e:
         logger.warning(f"Trial failed: {e}")
         return 1e9
