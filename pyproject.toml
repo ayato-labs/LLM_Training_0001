@@ -15,11 +15,15 @@ dependencies = [
     "omegaconf>=2.3.0",
     "scipy>=1.11.0",
     "dvc>=3.0.0",
+    "optuna>=0.0.0",
 
     "sentencepiece>=0.2.0",
     "loguru>=0.7.0",
     "tensorboard",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
 
 [project.optional-dependencies]
 dev = [
