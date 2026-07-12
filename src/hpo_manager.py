@@ -18,19 +18,19 @@ def create_search_space(step_law_hpo: dict, vram_gb: float) -> dict:
         "max_lr_2d": (lr_center * 0.5, lr_center * 2.0, "log"),
         "max_lr_1d": (lr_center * 5, lr_center * 20, "log"),
         "batch_size_seqs": [8, 16, 32],
-        "warmup_ratio": (0.01, 0.1),
-        "weight_decay": (0.01, 0.3),
-        "beta2": (0.9, 0.99),
-        "grad_clip": (0.5, 2.0),
+        "warmup_ratio": (0.01, 0.1, ""),
+        "weight_decay": (0.01, 0.3, ""),
+        "beta2": (0.9, 0.99, ""),
+        "grad_clip": (0.5, 2.0, ""),
     }
 
 
-def objective(trial: optuna.Trial, arch: dict, data_path: str, seq_len: int, vram_gb: float) -> float:
+def objective(trial: optuna.Trial, arch: dict, data_path: str, seq_len: int, vram_gb: float, step_law_hpo: dict) -> float:
     """Proxy training objective (short run, small data fraction)"""
     
     # Sample hyperparams
     hpo = {}
-    space = create_search_space({}, vram_gb)  # baseline
+    space = create_search_space(step_law_hpo, vram_gb)
     for param, spec in space.items():
         if isinstance(spec, list):
             hpo[param] = trial.suggest_categorical(param, spec)
@@ -39,14 +39,23 @@ def objective(trial: optuna.Trial, arch: dict, data_path: str, seq_len: int, vra
         else:
             hpo[param] = trial.suggest_float(param, spec[0], spec[1])
     
-    # Build minimal config for proxy training
+    # Build config matching normalize_config expectations
     config = {
-        **arch,
+        "model_params": {
+            "n_params": arch["n_params"],
+            "hidden_size": arch["hidden"],
+            "num_hidden_layers": arch["layers"],
+            "num_attention_heads": arch["heads"],
+            "num_key_value_heads": arch["kv_heads"],
+            "intermediate_size": arch["ffn"],
+            "rope_theta": 10000.0,
+            "vocab_size": 64000,
+        },
         "hpo": hpo,
         "data_path": data_path,
         "seq_len": seq_len,
-        "max_steps": 50,  # Proxy steps
-        "data_fraction": 0.005,
+        "max_steps": 10,  # Very short proxy run
+        "data_fraction": 0.001,  # Tiny fraction for speed
         "precision": "bf16",
         "vram_limit_gb": vram_gb,
         "seed": 42,

@@ -15,7 +15,7 @@ import json
 import optuna
 from src.step_law import compute_hpo_for_target
 from src.hpo_manager import objective, create_search_space
-from src.config import detect_vram
+from src.config import _detect_vram as detect_vram
 from src.logger import logger
 
 
@@ -43,9 +43,9 @@ def get_base_config(model_size: str) -> dict:
 
 
 def estimate_tokens(data_path: str) -> int:
-    """データセットトークン数概算"""
+    """データセットのトークン数概算"""
     count = 0
-    with open(data_path) as f:
+    with open(data_path, encoding="utf-8") as f:
         for line in f:
             count += 1
     return count * 1024  # 1行≒1024トークン想定
@@ -73,7 +73,7 @@ def main():
     
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=42))
     study.optimize(
-        lambda trial: objective(trial, arch, args.data_path, args.seq_len, vram),
+        lambda trial: objective(trial, arch, args.data_path, args.seq_len, vram, step_law_hpo),
         n_trials=args.n_trials,
         timeout=3600,  # 1時間制限
     )

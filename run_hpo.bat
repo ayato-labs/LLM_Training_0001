@@ -46,7 +46,7 @@ if not exist "%DATA_PATH%" (
 )
 
 REM Run HPO search
-uv run --active python -m scripts.find_hparams ^
+.venv\Scripts\python.exe -m scripts.find_hparams ^
     --model-size %MODEL_SIZE% ^
     --data-path %DATA_PATH% ^
     --output %OUTPUT% ^

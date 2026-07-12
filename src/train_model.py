@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import mlflow
@@ -435,6 +436,7 @@ def train(config):
     try:
         mlflow.set_tracking_uri("file:./mlruns")
         mlflow.set_experiment("LLM_Training")
+        mlflow.end_run()  # End any existing run
         mlflow_run = mlflow.start_run()
 
         # Core params
