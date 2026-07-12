@@ -1,87 +1,36 @@
-# ============================================================
-# Novel LLM - ベース設定
-# ============================================================
-# このファイルは全ての実験の起点となる。
-# scaling_*.yaml がこの設定を継承し、差分だけ上書きする。
-#
-# 設計原則:
-#   - VRAM検出、precision(bf16)、DeepSpeed設定、ZeROステージはコードが自動処理する
-#   - checkpoint保存間隔、ログ設定もコードが自動処理する
-#   - このYAMLには「人間が変更する必要がある最小限のパラメータ」だけを書く
-#
-# 使い方:
-#   python -m src.main                          # このconfig.yamlを使用
-#   python -m src.main configs/scaling_50m.yaml # 50Mスケーリングを使用
-#
-# 参照: ADR-018 (bf16), ADR-019 (150M/1024ctx), ADR-021 (vocab 64k)
+# @package _global_
+# ベース設定（変更頻度低）
+defaults:
+  - hparams_150M  # モデルサイズ固有の最適HP（自動生成される）
 
-# シード値: 再現性のため固定 (ADR-017)
-# 同じシード = 同じ初期化 = 同じ学習結果（理論上）
+# 共通固定値
 seed: 42
+precision: "bf16"
+output_dir: "models/output"
 
-# ============================================================
-# モデルアーキテクチャ
-# ============================================================
-model:
-  # アーキテクチャ選択。現在は "llama" のみ対応
-  arch: "llama"
+# データ
+data_path: "data/dataset.jsonl"
+val_data_path: null  # 存在すれば評価有効化
+tokenizer_path: "data/tokenizer.json"
 
-  # ターゲットパラメータ数 (150M)
-  # Chinchilla則: N ≈ 12 × L × H^2 で計算
-  #   L=12層, H=768次元 → 12 × 12 × 768^2 ≈ 85M (埋め込み・FFN含めると150M)
-  # VRAM目安: BF16 + ZeRO-1 で約2.1GB
-  target_params: 150_000_000
-
-  llama:
-    # 隠れ層の次元数。モデルの表現力に直結。
-    # 大きいほど表現力が高いが、VRAMと計算量が増える。
-    hidden_size: 768
-
-    # Transformerブロックの数。深さを制御。
-    # 大きいほど長期依存関係を学習できるが、勾配消失のリスクがある。
-    num_hidden_layers: 12
-
-    # アテンションヘッド数。並列計算と表現力の両立。
-    # hidden_size は num_heads の倍数である必要がある。
-    num_attention_heads: 12
-
-    # Key/Valueヘッド数 (GQA: Grouped Query Attention)
-    # 12頭 / 3头 = 4倍のGQA。KVキャッシュを削減し、推論を高速化。
-    # ADR-020: GQAの採用
-    num_key_value_heads: 3
-
-    # Feed-Forward Network の中間層サイズ
-    # 一般的に hidden_size × 4 が目安。SwiGLU使用時は 8/3 倍が推奨。
-    intermediate_size: 3072
-
-    # RoPE (Rotary Position Embedding) のスケーリングパラメータ
-    # 大きいほど長いコンテキストに対応できるが、短い序列では過剰。
-    # 1024ctx → 10000.0, 2048ctx → 50000.0 が目安
-    rope_theta: 10000.0
-
-# ============================================================
-# データパス
-# ============================================================
-data:
-  # 学習データ (JSONL形式: 各行に {"text": "...", "metadata": {...}})
-  dataset_path: "data/dataset.jsonl"
-  # トークナイザー (HuggingFace tokenizer.json 形式)
-  # vocab_size=64000, SentencePiece BPE (ADR-021)
-  tokenizer_path: "data/tokenizer.json"
-
-# ============================================================
-# 学習設定
-# ============================================================
+# 学習制御（hparamsで上書きされる値のデフォルト・フォールバック）
 training:
-  # シーケンス長: 1回のforward/backwardで処理するトークン数
-  # 日本語小説では1024で実用十分。長文が必要なら2048〜4096に拡張。
-  # VRAM使用量に比例するため、GPUメモリと相談して決定。
   seq_len: 1024
-
-  # 最大学習ステップ数。-1にするとエポックベースで学習。
-  # 早期停止したい場合や、短時間テストしたい場合は値を指定。
   max_steps: -1
-
-  # エポック数: 全データを何周学習するか
-  # 3エポックが一般的。過学習のリスクがある場合は減らす。
   num_epochs: 3
+  save_steps: 1000
+  eval_steps: 1000
+  logging_steps: 10
+  drive_upload_interval: 1000
+
+# モデルアーキテクチャ（スケール変更時のみ書き換え）
+model:
+  target_params: 150_000_000
+  llama:
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 12
+    num_key_value_heads: 3
+    intermediate_size: 3072
+    rope_theta: 10000.0
+    vocab_size: 64000

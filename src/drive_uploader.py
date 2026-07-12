@@ -445,3 +445,103 @@ def monitor_and_upload():
 
 if __name__ == "__main__":
     monitor_and_upload()
+
+
+class DriveUploadCallback:
+    """Trainer Callback: 定期的にチェックポイントをGoogle Driveへアップロード"""
+
+    def __init__(self, upload_interval_steps: int = 1000):
+        self.upload_interval_steps = upload_interval_steps
+        self._service = None
+        self._folder_id = None
+
+    def _get_service(self):
+        if self._service is None:
+            from google.auth.transport.requests import Request
+            from google.oauth2.credentials import Credentials
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from googleapiclient.discovery import build
+            import glob
+            import os
+
+            SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+            creds = None
+            if os.path.exists("token.json"):
+                creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    secret_files = glob.glob("client_secret_*.json") + glob.glob("credentials.json")
+                    if not secret_files:
+                        return None
+                    flow = InstalledAppFlow.from_client_secrets_file(secret_files[0], SCOPES)
+                    creds = flow.run_local_server(port=0)
+                with open("token.json", "w") as token:
+                    token.write(creds.to_json())
+            self._service = build("drive", "v3", credentials=creds)
+            # Create/get folder
+            folder_name = "Novel_LLM_Checkpoints"
+            query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+            results = self._service.files().list(q=query, fields="files(id)").execute()
+            items = results.get("files", [])
+            if items:
+                self._folder_id = items[0]["id"]
+            else:
+                folder_metadata = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
+                folder = self._service.files().create(body=folder_metadata, fields="id").execute()
+                self._folder_id = folder["id"]
+        return self._service, self._folder_id
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % self.upload_interval_steps == 0 and state.global_step > 0:
+            self._upload_checkpoint(state.global_step)
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self._upload_checkpoint(state.global_step, force=True)
+
+    def force_final_upload(self, global_step: int):
+        self._upload_checkpoint(global_step, force=True)
+
+    def _upload_checkpoint(self, step: int, force: bool = False):
+        try:
+            service, folder_id = self._get_service()
+            if service is None:
+                return
+            
+            from pathlib import Path
+            import shutil
+            import os
+            
+            output_dir = Path("models/output")
+            checkpoint_dir = output_dir / f"checkpoint-{step}"
+            if not checkpoint_dir.exists():
+                return
+            
+            zip_path = output_dir / f"checkpoint-{step}.zip"
+            if zip_path.exists() and not force:
+                return
+            
+            print(f"[DriveUpload] Compressing checkpoint-{step}...")
+            shutil.make_archive(str(output_dir / f"checkpoint-{step}"), "zip", str(checkpoint_dir))
+            
+            # Upload
+            from googleapiclient.http import MediaFileUpload
+            file_metadata = {"name": f"checkpoint-{step}.zip", "parents": [folder_id]}
+            media = MediaFileUpload(str(zip_path), chunksize=1024*1024*5, resumable=True)
+            request = service.files().create(body=file_metadata, media_body=media, fields="id")
+            
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    print(f"[DriveUpload] {int(status.progress() * 100)}%")
+            
+            print(f"[DriveUpload] Uploaded checkpoint-{step}.zip (ID: {response['id']})")
+            
+            # Cleanup zip
+            if zip_path.exists():
+                os.remove(zip_path)
+                
+        except Exception as e:
+            print(f"[DriveUpload] Warning: {e}")

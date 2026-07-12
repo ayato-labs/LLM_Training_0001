@@ -1,64 +1,38 @@
-"""
-Config loader: YAML → internal dict.
-VRAM detection, precision, and defaults are handled in code.
-"""
-
-from __future__ import annotations
+"""Config Loader: Hydra DictConfig → 内部dict 正規化"""
 
 from pathlib import Path
-
-import yaml
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from omegaconf import DictConfig, OmegaConf
+import torch
 
 
-def detect_vram() -> float:
-    """Auto-detect GPU VRAM. Returns 4.0 as fallback."""
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(torch.cuda.current_device())
-            return round(props.total_memory / (1024**3), 2)
-    except Exception:
-        pass
-    return 4.0
-
-
-def load_yaml(path: Path) -> dict:
-    """Load a YAML file and return as dict."""
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
-def resolve_config_path(config_arg: str | None) -> Path:
-    """Resolve config path from CLI argument."""
-    if config_arg:
-        p = Path(config_arg)
-        if not p.is_absolute():
-            p = PROJECT_ROOT / config_arg
-    else:
-        p = PROJECT_ROOT / "configs" / "config.yaml"
-    if not p.exists():
-        raise FileNotFoundError(f"Config not found: {p}")
-    return p
-
-
-def load_config(config_path: Path) -> dict:
+def load_config(cfg: DictConfig) -> dict:
     """
-    Load YAML config and normalize to internal format.
-
-    Returns dict with keys:
-        model_params, hpo, data_path, tokenizer_path,
-        max_steps, num_epochs, seed, vram_limit_gb, precision
+    Hydra合成済みDictConfigをフラットなdictに変換・検証。
+    必須キー: model_params, training, data_path, tokenizer_path, output_dir, seed
     """
-    raw = load_yaml(config_path)
-    return normalize_config(raw)
+    # 構造化設定への変換
+    container = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+    
+    # 正規化・デフォルト値補完
+    normalized = _normalize_config(container)
+    
+    # VRAM自動検出（上書き可能）
+    if "vram_limit_gb" not in normalized or normalized["vram_limit_gb"] is None:
+        normalized["vram_limit_gb"] = _detect_vram()
+    
+    # Precision既定値
+    normalized.setdefault("precision", "bf16")
+    
+    # 出力ディレクトリ解決
+    normalized["output_dir"] = str(Path(normalized.get("output_dir", "models/output")).resolve())
+    
+    return normalized
 
 
-def normalize_config(raw: dict) -> dict:
-    """Convert YAML config to internal dict format."""
-    # Model params
+def _normalize_config(raw: dict) -> dict:
+    """ネストしたYAML構造を学習パイプライン用フラットdictに変換"""
+    
+    # model_params 抽出
     model = raw.get("model", {})
     llama = model.get("llama", {})
     model_params = {
@@ -71,30 +45,33 @@ def normalize_config(raw: dict) -> dict:
         "rope_theta": llama.get("rope_theta", 10000.0),
         "vocab_size": llama.get("vocab_size", 64000),
     }
-
-    # Training / HPO
+    
+    # training 抽出（hparams_*.yaml で上書きされる前提）
     t = raw.get("training", {})
-    hpo = {
+    training = {
         "seq_len": t.get("seq_len", 1024),
         "max_lr_2d": t.get("max_lr_2d", 3e-4),
         "max_lr_1d": t.get("max_lr_1d", 3e-3),
         "batch_size_seqs": t.get("batch_size_seqs", 16),
         "warmup_ratio": t.get("warmup_ratio", 0.03),
-        "min_lr": t.get("min_lr", 1e-5),
+        "weight_decay": t.get("weight_decay", 0.1),
+        "beta2": t.get("beta2", 0.95),
+        "grad_clip": t.get("grad_clip", 1.0),
     }
-
-    # Hardware (auto-detected)
-    vram_limit_gb = detect_vram()
-    precision = "bf16"
-
+    
+    # トップレベルマージ
     return {
+        **raw,  # seed, data_path, tokenizer_path, max_steps, num_epochs, etc.
         "model_params": model_params,
-        "hpo": hpo,
-        "data_path": raw.get("data", {}).get("dataset_path", "data/dataset.jsonl"),
-        "tokenizer_path": raw.get("data", {}).get("tokenizer_path", "data/tokenizer.json"),
-        "max_steps": t.get("max_steps", -1),
-        "num_epochs": t.get("num_epochs", 3),
-        "seed": raw.get("seed", 42),
-        "vram_limit_gb": vram_limit_gb,
-        "precision": precision,
+        "hpo": training,  # 互換性のため hpo キーも残す
+        **training,       # フラットにも展開（TrainingArguments直渡し用）
     }
+
+
+def _detect_vram() -> float:
+    try:
+        if torch.cuda.is_available():
+            return round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
+    except Exception:
+        pass
+    return 4.0
