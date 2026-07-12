@@ -1,22 +1,16 @@
-from src.modern_gpt import ModernGPTConfig
-
-def estimate_config_from_params(target_params: int) -> ModernGPTConfig:
-    # 目標は 5% または 30M
-    params = max(int(target_params * 0.05), 30_000_000)
+def estimate_config_from_params(target_params: int) -> dict:
+    """プロキシモデルの設定を計算（4GB GPU用に極小化）"""
+    # プロキシモデルは本番の5%だが、最小3Mパラメータ
+    # 語彙サイズを削減（32768 -> 8192）してメモリ節約
+    vocab_size = 8192
     
-    # Llama-like scaling: N ≈ 12 * L * H^2
-    # L=12固定としてHを逆算
-    L = 12
-    H = int((params / (12 * L)) ** 0.5)
+    # L=4, H=256, n_head=8 で約 4.5M パラメータ
+    # 埋め込み: 8192 * 256 = 2.1M パラメータ（32768->8192で削減）
     
-    # 安定性のための制約: n_head=12 とし、Hがその倍数になるように調整
-    n_head = 12
-    H = (H // n_head) * n_head
-    
-    return ModernGPTConfig(
-        n_layer=L,
-        n_embd=H,
-        n_head=n_head,
-        n_kv_head=max(1, n_head // 4),
-        vocab_size=32768
-    )
+    return {
+        "n_layer": 4,
+        "n_embd": 256,
+        "n_head": 8,
+        "n_kv_head": 2,
+        "vocab_size": 8192,  # 32768 -> 8192 に削減
+    }

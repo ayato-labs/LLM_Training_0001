@@ -683,6 +683,52 @@ def train(config):
         f"Trainer: batch={per_device_batch}, grad_accum={grad_accum_steps}, scheduler=cosine (warmup={warmup_ratio})"
     )
 
+# --- Detailed Training Callback ---
+    class DetailedLoggingCallback(TrainerCallback):
+        def __init__(self, logger, log_every_n_steps=1):
+            self.logger = logger
+            self.log_every_n_steps = log_every_n_steps
+            self.step_count = 0
+            self.epoch_start_time = time.time()
+
+        def on_step_end(self, args, state, control, **kwargs):
+            self.step_count += 1
+            if self.step_count % self.log_every_n_steps == 0:
+                # Get current learning rate from optimizer
+                lr = None
+                if self.trainer and self.trainer.optimizer:
+                    lr = self.trainer.optimizer.param_groups[0]['lr']
+
+                # Get loss from state
+                loss = state.log_history[-1].get('loss') if state.log_history else None
+
+                # GPU memory
+                gpu_mem = ""
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated() / 1024**3
+                    total_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                    gpu_mem = f" | GPU: {torch.cuda.memory_allocated() / 1024**3:.2f}/{torch.cuda.get_device_properties(0).total_memory/1024**3:.1f}GB"
+
+                if loss is not None:
+                    elapsed = time.time() - self.epoch_start_time
+                    if self.trainer and self.trainer.optimizer:
+                        lr_str = f"lr={self.trainer.optimizer.param_groups[0]['lr']:.2e}"
+                    else:
+                        lr_str = "lr=N/A"
+                    self.logger.info(
+                        f"Step {self.step_count} | "
+                        f"loss={state.log_history[-1].get('loss', 'N/A'):.4f} | "
+                        f"lr={self.trainer.optimizer.param_groups[0]['lr']:.2e}" 
+                        f" | elapsed={time.time()-self.epoch_start_time:.1f}s"
+                        f" | GPU: {torch.cuda.memory_allocated()/1024**3:.2f}/{torch.cuda.get_device_properties(0).total_memory/1024**3:.1f}GB"
+                    )
+
+            return control
+
+    # Attach custom callback
+    detailed_callback = DetailedLoggingCallback(logger, log_every_n_steps=1)
+    callbacks.append(detailed_callback)
+
     # --- Resume ---
     resume_flag = config.get("resume", False)
     train_result = trainer.train(resume_from_checkpoint=resume_flag)
