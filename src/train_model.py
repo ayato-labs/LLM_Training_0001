@@ -432,8 +432,21 @@ def train(config):
     logger.info(f"Tokenizing dataset with max_length={seq_len} using num_proc={num_proc}...")
 
     tokenize_function = TokenizerWrapper(tokenizer, seq_len)
-    tokenized_datasets = dataset.map(tokenize_function, batched=True, num_proc=num_proc)
-    tokenized_datasets = tokenized_datasets.remove_columns(["text", "metadata"])
+
+    # モデル入力に関係のないすべての列を確実に削除 (quality, metadata, text など)
+    all_cols = dataset["train"].column_names
+    cols_to_remove = [c for c in all_cols if c not in ["input_ids", "attention_mask", "labels"]]
+
+    # HPOやデータ制限時は、ディスクのキャッシュファイルを生成せずメモリで処理する
+    keep_in_memory = data_fraction < 1.0 or config.get("max_steps", -1) > 0
+
+    tokenized_datasets = dataset.map(
+        tokenize_function,
+        batched=True,
+        num_proc=num_proc,
+        remove_columns=cols_to_remove,
+        keep_in_memory=keep_in_memory,
+    )
 
     # Apply data_fraction for pilot runs
     data_fraction = config.get("data_fraction", 1.0)
@@ -613,6 +626,7 @@ def train(config):
     tokenizer.save_pretrained("models/output")
 
     logger.info("Training finished.")
+    return train_result.training_loss
 
 
 if __name__ == "__main__":

@@ -80,3 +80,20 @@ def objective(
     except Exception as e:
         logger.warning(f"Trial failed: {e}")
         return 1e9
+    finally:
+        # HPO試行終了時にストレージを圧迫する中間生成物・モデルを完全に消去
+        import shutil
+        from pathlib import Path
+
+        output_dir = Path("models/output")
+        if output_dir.exists():
+            try:
+                logger.info(f"Cleaning up HPO trial output files in {output_dir}")
+                # ディレクトリの中身を全削除（次の試行に影響しないようにする）
+                for item in output_dir.iterdir():
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to clean up HPO output: {e}")

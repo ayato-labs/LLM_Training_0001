@@ -23,9 +23,8 @@ def parse_args():
     p = argparse.ArgumentParser(description="Offline HPO for LLM Training")
     p.add_argument(
         "--model-size",
-        required=True,
         choices=["50M", "150M", "3B", "7B"],
-        help="Target model size (determines architecture)",
+        help="Target model size (optional, overrides config.yaml architecture if specified)",
     )
     p.add_argument("--data-path", required=True, help="Path to training dataset (JSONL)")
     p.add_argument(
@@ -38,46 +37,72 @@ def parse_args():
 
 
 @log_function_call(log_args=True)
-def get_base_config(model_size: str) -> dict:
-    """モデルサイズごとのベースアーキテクチャ設定"""
+def get_base_config(model_size: str = None) -> dict:
+    """モデルサイズごとのベースアーキテクチャ設定、または configs/config.yaml から動的に取得"""
+    # 1. まず config.yaml からのロードを試みる
     try:
-        configs = {
-            "50M": {
-                "n_params": 50_000_000,
-                "hidden": 640,
-                "layers": 10,
-                "heads": 10,
-                "kv_heads": 10,
-                "ffn": 2560,
-            },
-            "150M": {
-                "n_params": 150_000_000,
-                "hidden": 768,
-                "layers": 12,
-                "heads": 12,
-                "kv_heads": 3,
-                "ffn": 3072,
-            },
-            "3B": {
-                "n_params": 3_000_000_000,
-                "hidden": 2560,
-                "layers": 28,
-                "heads": 20,
-                "kv_heads": 20,
-                "ffn": 10240,
-            },
-            "7B": {
-                "n_params": 7_000_000_000,
-                "hidden": 4096,
-                "layers": 32,
-                "heads": 32,
-                "kv_heads": 32,
-                "ffn": 11008,
-            },
-        }
-        return configs[model_size]
+        from omegaconf import OmegaConf
+
+        config_path = Path(__file__).resolve().parent.parent / "configs" / "config.yaml"
+        if config_path.exists():
+            cfg = OmegaConf.load(config_path)
+            model = cfg.get("model", {})
+            llama = model.get("llama", {})
+            if llama:
+                logger.info("Loaded architecture settings from configs/config.yaml")
+                return {
+                    "n_params": model.get("target_params", 150_000_000),
+                    "hidden": llama.get("hidden_size", 768),
+                    "layers": llama.get("num_hidden_layers", 12),
+                    "heads": llama.get("num_attention_heads", 12),
+                    "kv_heads": llama.get("num_key_value_heads", 3),
+                    "ffn": llama.get("intermediate_size", 3072),
+                }
+    except Exception as e:
+        logger.warning(
+            f"Could not load architecture from config.yaml: {e}. Falling back to default list."
+        )
+
+    # 2. 指定された model_size、またはデフォルトのフォールバック
+    size_key = model_size or "150M"
+    configs = {
+        "50M": {
+            "n_params": 50_000_000,
+            "hidden": 640,
+            "layers": 10,
+            "heads": 10,
+            "kv_heads": 10,
+            "ffn": 2560,
+        },
+        "150M": {
+            "n_params": 150_000_000,
+            "hidden": 768,
+            "layers": 12,
+            "heads": 12,
+            "kv_heads": 3,
+            "ffn": 3072,
+        },
+        "3B": {
+            "n_params": 3_000_000_000,
+            "hidden": 2560,
+            "layers": 28,
+            "heads": 20,
+            "kv_heads": 20,
+            "ffn": 10240,
+        },
+        "7B": {
+            "n_params": 7_000_000_000,
+            "hidden": 4096,
+            "layers": 32,
+            "heads": 32,
+            "kv_heads": 32,
+            "ffn": 11008,
+        },
+    }
+    try:
+        return configs[size_key]
     except KeyError:
-        logger.error(f"Invalid model size: {model_size}")
+        logger.error(f"Invalid model size: {size_key}")
         raise
 
 
