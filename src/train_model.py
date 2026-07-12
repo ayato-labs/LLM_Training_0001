@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-import mlflow
+
 import torch
 from datasets import load_dataset
 from transformers import (
@@ -434,6 +434,7 @@ def train(config):
     os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
     mlflow_run = None
     try:
+        import mlflow
         mlflow.set_tracking_uri("file:./mlruns")
         mlflow.set_experiment("LLM_Training")
         mlflow.end_run()  # End any existing run
@@ -742,6 +743,7 @@ def train(config):
     # Log final metrics to MLflow
     try:
         if mlflow_run is not None:
+            import mlflow
             mlflow.log_metrics(
                 {
                     "final_train_loss": train_result.metrics.get("train_loss", -1),
@@ -770,6 +772,7 @@ def train(config):
     # --- Log model as MLflow artifact (traceability) ---
     try:
         if mlflow_run is not None:
+            import mlflow
             # Log model config as artifact
             model_config_path = Path("models/output/config.json")
             if model_config_path.exists():
@@ -802,6 +805,7 @@ def train(config):
 
     try:
         if mlflow_run is not None:
+            import mlflow
             mlflow.end_run()
     except Exception:
         pass
