@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 import torch
+import psutil
 from datasets import load_dataset
 from transformers import (
     DataCollatorForLanguageModeling,
@@ -24,6 +25,35 @@ from transformers import (
 )
 
 from src.logger import logger
+
+
+class TokenizerWrapper:
+    """Wrapper to support Windows multiprocessing without pickling issues."""
+    def __init__(self, tokenizer, seq_len):
+        self.tokenizer = tokenizer
+        self.seq_len = seq_len
+
+    def __call__(self, examples):
+        return self.tokenizer(
+            examples["text"], padding="max_length", truncation=True, max_length=self.seq_len
+        )
+
+
+def get_optimal_num_proc() -> int:
+    """Detect CPU logical cores and available memory to compute optimal num_proc."""
+    cpu_cores = os.cpu_count() or 1
+    try:
+        available_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        available_mem_gb = 8.0  # Fallback to 8GB if detection fails
+    
+    # 1プロセスあたり1.5GBを見積もる
+    mem_based_cores = int(available_mem_gb // 1.5)
+    optimal_cores = min(max(1, cpu_cores - 1), max(1, mem_based_cores))
+    logger.info(
+        f"Resource Auto-Adjustment: Cores={cpu_cores}, Available RAM={available_mem_gb:.1f}GB -> num_proc={optimal_cores}"
+    )
+    return optimal_cores
 
 
 logger.info(f"CUDA available: {torch.cuda.is_available()}")
@@ -382,21 +412,24 @@ def train(config):
         logger.info(f"Loading single dataset from: {data_path}")
         dataset = load_dataset("json", data_files=str(data_path))
 
-    seq_len = config.get("hpo", {}).get("seq_len", 512)
+    # seq_len は run_hpo.bat などのトップレベルまたは hpo 辞書から取得
+    seq_len = config.get("seq_len") or config.get("hpo", {}).get("seq_len", 512)
     
     # Support data_fraction for pilot runs (e.g., 0.01 = 1% of data)
     data_fraction = config.get("data_fraction", 1.0)
     if data_fraction < 1.0:
         logger.info(f"Using data_fraction={data_fraction} for pilot run")
     
-    logger.info(f"Tokenizing dataset with max_length={seq_len}...")
+    # Get resource-adjusted number of processes
+    num_proc = get_optimal_num_proc()
+    logger.info(f"Tokenizing dataset with max_length={seq_len} using num_proc={num_proc}...")
 
-    def tokenize_function(examples):
-        return tokenizer(
-            examples["text"], padding="max_length", truncation=True, max_length=seq_len
-        )
-
-    tokenized_datasets = dataset.map(tokenize_function, batched=True)
+    tokenize_function = TokenizerWrapper(tokenizer, seq_len)
+    tokenized_datasets = dataset.map(
+        tokenize_function,
+        batched=True,
+        num_proc=num_proc
+    )
     tokenized_datasets = tokenized_datasets.remove_columns(["text", "metadata"])
     
     # Apply data_fraction for pilot runs
