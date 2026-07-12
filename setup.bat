@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM ============================================================
 REM setup.bat - 仮想環境セットアップ (GPU / CUDA 対応)
 REM
@@ -54,18 +55,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ============================================================
-echo  Step 4: プロジェクト自体をエディタブルインストール
-echo ============================================================
-uv pip install -e .
-if %errorlevel% neq 0 (
-    echo [ERROR] editable install に失敗しました。 Exit code: %errorlevel%
-    pause
-    exit /b %errorlevel%
-)
-
-echo.
-echo ============================================================
-echo  Step 5: CUDA / torch バージョン確認
+echo  Step 4: CUDA / torch バージョン確認
 echo ============================================================
 .venv\Scripts\python.exe -c "import torch; cuda_ok = torch.cuda.is_available(); print(f'torch       : {torch.__version__}'); print(f'CUDA build  : {torch.version.cuda}'); print(f'CUDA avail  : {cuda_ok}'); print(f'GPU name    : {torch.cuda.get_device_name(0) if cuda_ok else \"N/A\"}')"
 if %errorlevel% neq 0 (
