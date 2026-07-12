@@ -1,69 +1,68 @@
 @echo off
-chcp 65001 >nul
 REM ============================================================
-REM setup.bat - 仮想環境セットアップ (GPU / CUDA 対応)
+REM setup.bat - Virtual Environment Setup (GPU / CUDA Support)
 REM
-REM 変更点:
-REM   - python -m venv -> uv venv (uv 管理に統一)
-REM   - uv sync で pyproject.toml の依存を一括インストール
-REM   - torch は [tool.uv.sources] で cu124 インデックスから取得
-REM   - インストール後に CUDA 利用可否を自動検証
+REM Changes:
+REM   - python -m venv -> uv venv (Unified under uv management)
+REM   - uv sync installs pyproject.toml dependencies
+REM   - torch is retrieved from cu124 index via [tool.uv.sources]
+REM   - Verifies CUDA availability automatically after install
 REM ============================================================
 
 cd /d "%~dp0"
 
-REM ---- uv の存在確認 ----------------------------------------
+REM ---- Check if uv is installed --------------------------------
 where uv >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] uv が見つかりません。以下を実行してインストールしてください:
+    echo [ERROR] uv not found. Please install uv using:
     echo   winget install astral-sh.uv
-    echo   または: https://docs.astral.sh/uv/
+    echo   Or refer to: https://docs.astral.sh/uv/
     pause
     exit /b 1
 )
 
 echo ============================================================
-echo  Step 1: 既存の仮想環境を削除
+echo  Step 1: Remove existing virtual environment
 echo ============================================================
 if exist .venv (
-    echo [INFO] .venv を削除中...
+    echo [INFO] Removing .venv...
     rmdir /s /q .venv
 )
 
 echo.
 echo ============================================================
-echo  Step 2: 仮想環境を作成 (uv venv)
+echo  Step 2: Create virtual environment (uv venv)
 echo ============================================================
 uv venv .venv --python 3.12
 if %errorlevel% neq 0 (
-    echo [ERROR] 仮想環境の作成に失敗しました。 Exit code: %errorlevel%
+    echo [ERROR] Failed to create virtual environment. Exit code: %errorlevel%
     pause
     exit /b %errorlevel%
 )
 
 echo.
 echo ============================================================
-echo  Step 3: 依存パッケージをインストール (uv sync)
-echo  torch は CUDA 12.4 対応版 (cu124) をインストールします
+echo  Step 3: Install dependency packages (uv sync)
+echo  torch will be installed with CUDA 12.4 support (cu124)
 echo ============================================================
 uv sync
 if %errorlevel% neq 0 (
-    echo [ERROR] uv sync に失敗しました。 Exit code: %errorlevel%
+    echo [ERROR] uv sync failed. Exit code: %errorlevel%
     pause
     exit /b %errorlevel%
 )
 
 echo.
 echo ============================================================
-echo  Step 4: CUDA / torch バージョン確認
+echo  Step 4: Verify CUDA / torch installation
 echo ============================================================
 .venv\Scripts\python.exe -c "import torch; cuda_ok = torch.cuda.is_available(); print(f'torch       : {torch.__version__}'); print(f'CUDA build  : {torch.version.cuda}'); print(f'CUDA avail  : {cuda_ok}'); print(f'GPU name    : {torch.cuda.get_device_name(0) if cuda_ok else \"N/A\"}')"
 if %errorlevel% neq 0 (
-    echo [WARN] torch の検証中にエラーが発生しました。インストール結果を確認してください。
+    echo [WARN] Failed to verify torch. Please check the installation status.
 )
 
 echo.
 echo ============================================================
-echo  Setup 完了
+echo  Setup Completed Successfully
 echo ============================================================
 pause
