@@ -4,11 +4,14 @@ REM Offline HPO Launcher for LLM Training
 REM Search phase only - outputs best config to configs/hparams_XXX.yaml
 REM ============================================================
 
-REM Enable UTF-8 code page for Japanese comments if needed
+REM Change to script directory (critical for -m module resolution)
+cd /d "%~dp0"
+
+REM Enable UTF-8 code page
 chcp 65001 >nul
 
 set MODEL_SIZE=150M
-set DATA_PATH=data/dataset.jsonl
+set DATA_PATH=C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\DataPreprocessing\data\dataset.jsonl
 set OUTPUT=configs/hparams_150M.yaml
 set N_TRIALS=20
 set VRAM_GB=
@@ -46,10 +49,10 @@ if not exist "%DATA_PATH%" (
 )
 
 REM Run HPO search
-.venv\Scripts\python.exe -m scripts.find_hparams ^
+"%~dp0.venv\Scripts\python.exe" -m scripts.find_hparams ^
     --model-size %MODEL_SIZE% ^
-    --data-path %DATA_PATH% ^
-    --output %OUTPUT% ^
+    --data-path "%DATA_PATH%" ^
+    --output "%OUTPUT%" ^
     --n-trials %N_TRIALS% ^
     %VRAM_GB_FLAG% ^
     --seq-len %SEQ_LEN%
