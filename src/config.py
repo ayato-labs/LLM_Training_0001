@@ -58,6 +58,14 @@ def _normalize_config(raw: dict) -> dict:
         "weight_decay": t.get("weight_decay", 0.1),
         "beta2": t.get("beta2", 0.95),
         "grad_clip": t.get("grad_clip", 1.0),
+        "per_device_batch_size": t.get("per_device_batch_size", 1),
+        "grad_accum_steps": t.get("grad_accum_steps", 1),
+        "max_steps": t.get("max_steps", -1),
+        "num_epochs": t.get("num_epochs", 3),
+        "save_steps": t.get("save_steps", 1000),
+        "eval_steps": t.get("eval_steps", 1000),
+        "logging_steps": t.get("logging_steps", 10),
+        "drive_upload_interval": t.get("drive_upload_interval", 1000),
     }
 
     # トップレベルマージ

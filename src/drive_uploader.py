@@ -20,11 +20,15 @@ import sys
 import time
 from pathlib import Path
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    HAS_GOOGLE_DRIVE = True
+except ImportError:
+    HAS_GOOGLE_DRIVE = False
 
 # ============================================================
 # Configuration
@@ -341,6 +345,9 @@ def backup_inference_reports(service, root_folder_id):
 
 def monitor_and_upload():
     """Main daemon loop: monitor directories, backup, and cleanup."""
+    if not HAS_GOOGLE_DRIVE:
+        print("Error: Google Drive dependencies not installed. Exiting daemon.", file=sys.stderr)
+        return
     print("=" * 60)
     print("Google Drive Archiver Daemon Started")
     print(f"  Monitoring: {OUTPUT_DIR.resolve()}")
@@ -443,11 +450,14 @@ def monitor_and_upload():
         time.sleep(POLL_INTERVAL)
 
 
-if __name__ == "__main__":
-    monitor_and_upload()
+try:
+    from transformers import TrainerCallback
+except ImportError:
+    class TrainerCallback:
+        pass
 
 
-class DriveUploadCallback:
+class DriveUploadCallback(TrainerCallback):
     """Trainer Callback: 定期的にチェックポイントをGoogle Driveへアップロード"""
 
     def __init__(self, upload_interval_steps: int = 1000):
@@ -456,6 +466,8 @@ class DriveUploadCallback:
         self._folder_id = None
 
     def _get_service(self):
+        if not HAS_GOOGLE_DRIVE:
+            return None, None
         if self._service is None:
             import glob
             import os
@@ -550,3 +562,7 @@ class DriveUploadCallback:
 
         except Exception as e:
             print(f"[DriveUpload] Warning: {e}")
+
+
+if __name__ == "__main__":
+    monitor_and_upload()

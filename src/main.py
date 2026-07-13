@@ -47,22 +47,18 @@ def main(cfg: DictConfig) -> None:
     set_seed(config["seed"], deterministic=True)
 
     # Local tokenizer.json を直接読み込み（HF Hub経由させない）
-    from tokenizers import Tokenizer as HFTokenizer
-
     tokenizer_path = Path(config["tokenizer_path"])
     if tokenizer_path.suffix == ".json" and tokenizer_path.exists():
-        hf_tokenizer = HFTokenizer.from_file(str(tokenizer_path))
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")  # dummy for interface
-        tokenizer._tokenizer = hf_tokenizer
+        from transformers import PreTrainedTokenizerFast
+        tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path))
     else:
         tokenizer = AutoTokenizer.from_pretrained(config["tokenizer_path"])
 
-    tokenizer.unk_token = "ᠨ"
-    tokenizer.bos_token = "ᠠ"
-    tokenizer.eos_token = "ᠡ"
+    # ADR-021: Use SP-native token names (IDs 0-3 in vocab)
+    tokenizer.unk_token = "<unk>"
+    tokenizer.bos_token = "<s>"
+    tokenizer.eos_token = "</s>"
     tokenizer.pad_token = "<pad>"
-    if tokenizer.pad_token_id is None:
-        tokenizer.add_special_tokens({"pad_token": tokenizer.pad_token})
 
     train_ds, eval_ds = load_and_tokenize_datasets(config, tokenizer)
 

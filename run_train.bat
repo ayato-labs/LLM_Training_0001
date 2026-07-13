@@ -1,14 +1,17 @@
 @echo off
 REM ============================================================
 REM Training Launcher for LLM Training
-REM 学習フェーズのみを実行（HPO成果物 hparams_XXX.yaml を参照）
+REM Run only training phase (refer to HPO config hparams_150M.yaml)
 REM ============================================================
+
+REM Change to script directory
+cd /d "%~dp0"
 
 set MAX_STEPS=
 set DATA_FRACTION=
 set RESUME=
 
-REM 引数パース
+REM Parse arguments
 :parse
 if "%1"=="" goto :run
 if "%1"=="--max-steps" (
@@ -44,7 +47,7 @@ echo  Config         : configs/config.yaml + configs/hparams_150M.yaml
 echo ============================================================
 echo.
 
-REM 実行
+REM Execute training
 set OVERRIDES=
 if not "%MAX_STEPS%"=="" set OVERRIDES=%OVERRIDES% max_steps=%MAX_STEPS%
 if not "%DATA_FRACTION%"=="" set OVERRIDES=%OVERRIDES% data_fraction=%DATA_FRACTION%
