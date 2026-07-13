@@ -22,8 +22,49 @@ from transformers import (
     TrainerState,
     TrainingArguments,
 )
+from tqdm import tqdm
 
 from src.logger import logger
+
+
+# ============================================================
+# Custom tqdm progress bar format callback
+# ============================================================
+class ProgressBarFormatCallback(TrainerCallback):
+    """
+    Custom callback to customize tqdm progress bar format.
+    Shows average iteration time instead of estimated remaining time.
+    """
+    
+    def __init__(self):
+        self.iteration_times = []
+        self.last_time = None
+    
+    def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        """Initialize timing at start of training."""
+        self.iteration_times = []
+        self.last_time = time.time()
+    
+    def on_step_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        """Record iteration start time."""
+        self.last_time = time.time()
+    
+    def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        """Record iteration end time and update progress bar postfix with avg time."""
+        if self.last_time is not None:
+            iter_time = time.time() - self.last_time
+            self.iteration_times.append(iter_time)
+            # Keep only last 100 iterations for rolling average
+            if len(self.iteration_times) > 100:
+                self.iteration_times.pop(0)
+            self.last_time = None
+            
+            # Calculate average iteration time
+            if self.iteration_times:
+                avg_time = sum(self.iteration_times) / len(self.iteration_times)
+                # Update progress bar postfix if available
+                if 'pbar' in kwargs:
+                    kwargs['pbar'].set_postfix_str(f"avg: {avg_time:.2f}s/it")
 
 
 class TokenizerWrapper:
@@ -554,7 +595,7 @@ def train(config):
     )
 
     # Prepare callbacks
-    callbacks = [DriveUploadCallback(upload_interval_steps=1000)]
+    callbacks = [DriveUploadCallback(upload_interval_steps=1000), ProgressBarFormatCallback()]
 
     trainer = CustomTrainer(
         model=model,

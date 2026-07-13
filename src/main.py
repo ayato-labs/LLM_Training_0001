@@ -33,6 +33,7 @@ from src.model_utils import (
     create_model_config,
 )
 from src.set_seed import set_seed
+from src.train_model import ProgressBarFormatCallback
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -65,7 +66,10 @@ def main(cfg: DictConfig) -> None:
     model = create_model(config, tokenizer)
     args = build_training_args(config)
 
-    callbacks = [DriveUploadCallback(upload_interval_steps=config["drive_upload_interval"])]
+    callbacks = [
+        DriveUploadCallback(upload_interval_steps=config["drive_upload_interval"]),
+        ProgressBarFormatCallback(),
+    ]
 
     trainer = Trainer(
         model=model,
