@@ -12,11 +12,14 @@ from pathlib import Path
 
 import optuna
 import yaml
+from datasets import load_dataset
+from transformers import PreTrainedTokenizerFast
 
 from src.config import _detect_vram as detect_vram
 from src.hpo_manager import create_search_space, objective
 from src.logger import log_exceptions, log_function_call, logger
 from src.step_law import compute_hpo_for_target
+from src.train_model import TokenizerWrapper, get_optimal_num_proc
 
 
 def parse_args():
@@ -30,7 +33,7 @@ def parse_args():
     p.add_argument(
         "--output", required=True, help="Output YAML path (e.g., configs/hparams_150M.yaml)"
     )
-    p.add_argument("--n-trials", type=int, default=20, help="Optuna trials")
+    p.add_argument("--n-trials", type=int, default=100, help="Optuna trials")
     p.add_argument("--vram-gb", type=float, help="Override VRAM detection")
     p.add_argument("--seq-len", type=int, default=1024, help="Sequence length")
     return p.parse_args()
@@ -38,7 +41,7 @@ def parse_args():
 
 @log_function_call(log_args=True)
 def get_base_config(model_size: str = None) -> dict:
-    """モデルサイズごとのベースアーキテクチャ設定、または configs/config.yaml から動的に取得"""
+    """ベース設定構築、または configs/config.yaml から動的に取得"""
     # 1. まず config.yaml からのロードを試みる
     try:
         from omegaconf import OmegaConf
@@ -144,7 +147,45 @@ def main():
         },
     )
 
-    # 2. Step Law で初期値・探索空間取得
+    # 2. Tokenize dataset once
+    logger.info(f"Loading and tokenizing dataset from {args.data_path} once...")
+    try:
+        tokenizer = PreTrainedTokenizerFast(tokenizer_file="data/tokenizer.json")
+        tokenizer.unk_token = "<unk>"
+        tokenizer.bos_token = "<s>"
+        tokenizer.eos_token = "</s>"
+        tokenizer.pad_token = "<pad>"
+
+        dataset = load_dataset("json", data_files=str(args.data_path))
+        num_proc = get_optimal_num_proc()
+        tokenize_function = TokenizerWrapper(tokenizer, args.seq_len)
+        all_cols = dataset["train"].column_names
+        cols_to_remove = [c for c in all_cols if c not in ["input_ids", "attention_mask", "labels"]]
+
+        tokenized_dataset = dataset.map(
+            tokenize_function,
+            batched=True,
+            num_proc=num_proc,
+            remove_columns=cols_to_remove,
+            keep_in_memory=True,
+        )
+
+        # Apply data_fraction = 0.001 (0.1%) for HPO pilot run speed
+        for split in tokenized_dataset:
+            n_samples = int(len(tokenized_dataset[split]) * 0.001)
+            # Ensure at least 1 sample exists
+            n_samples = max(1, n_samples)
+            if n_samples < len(tokenized_dataset[split]):
+                tokenized_dataset[split] = tokenized_dataset[split].select(range(n_samples))
+                logger.info(f"Split '{split}' sampled to {n_samples} samples for HPO.")
+
+        tokenized_dataset.set_format("torch")
+        logger.info("Dataset tokenized and cached in memory successfully.")
+    except Exception as e:
+        logger.exception(f"Error pre-tokenizing dataset: {e}")
+        raise
+
+    # 3. Step Law で初期値・探索空間取得
     try:
         step_law_hpo = compute_hpo_for_target(
             n_params=arch["n_params"], n_tokens=n_tokens, seq_len=args.seq_len
@@ -154,19 +195,25 @@ def main():
         logger.exception(f"Error computing Step Law HPO: {e}")
         raise
 
-    # 3. Optuna Study
+    # 4. Optuna Study with MedianPruner
     try:
         search_space = create_search_space(step_law_hpo, vram)
         logger.debug(f"Search space: {search_space}")
 
         study = optuna.create_study(
-            direction="minimize", sampler=optuna.samplers.TPESampler(seed=42)
+            direction="minimize",
+            sampler=optuna.samplers.TPESampler(seed=42),
+            pruner=optuna.pruners.MedianPruner(
+                n_startup_trials=10,
+                n_warmup_steps=15,
+                interval_steps=5,
+            )
         )
         logger.info("Starting Optuna optimization")
         study.optimize(
-            lambda trial: objective(trial, arch, args.data_path, args.seq_len, vram, step_law_hpo),
+            lambda trial: objective(trial, arch, tokenized_dataset, args.seq_len, vram, step_law_hpo),
             n_trials=args.n_trials,
-            timeout=3600,  # 1時間制限
+            timeout=28800,  # 8 hours timeout
         )
         logger.info("Optuna optimization completed")
     except Exception as e:
@@ -178,14 +225,18 @@ def main():
         "Best parameters found", extra={"best_params": best, "best_value": study.best_value}
     )
 
-    # 4. 派生パラメータ計算（main.pyで再計算不要な値も含める）
+    # 5. 派生パラメータ計算（main.pyで再計算不要な値も含める）
     try:
         per_device = min(best["batch_size_seqs"], 1 if vram <= 4.5 else (4 if vram <= 8.5 else 8))
         grad_accum = max(1, best["batch_size_seqs"] // per_device)
 
+        # Include fixed parameters in the output configuration
         output = {
             "training": {
                 **best,
+                "warmup_ratio": 0.03,
+                "beta2": 0.95,
+                "grad_clip": 1.0,
                 "per_device_batch_size": per_device,
                 "grad_accum_steps": grad_accum,
             }
@@ -194,7 +245,7 @@ def main():
         logger.exception(f"Error calculating derived parameters: {e}")
         raise
 
-    # 5. YAML出力
+    # 6. YAML出力
     try:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         with open(args.output, "w") as f:

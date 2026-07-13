@@ -79,8 +79,7 @@ def get_drive_service():
         if not creds:
             secret_files = glob.glob("client_secret_*.json") + glob.glob("credentials.json")
             if not secret_files:
-                print("Error: No client_secret_*.json or credentials.json found.", file=sys.stderr)
-                sys.exit(1)
+                raise FileNotFoundError("No client_secret_*.json or credentials.json found.")
             secret_file = secret_files[0]
             print(f"Using client secret: {secret_file}")
             flow = InstalledAppFlow.from_client_secrets_file(secret_file, SCOPES)

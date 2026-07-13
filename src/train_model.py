@@ -373,10 +373,12 @@ class CustomTrainer(Trainer):
 # ============================================================
 # Main training function
 # ============================================================
-def train(config):
+def train(config, tokenized_datasets=None, extra_callbacks=None):
     """
     Args:
         config: dict from src.config.load_config()
+        tokenized_datasets: optional pre-tokenized DatasetDict
+        extra_callbacks: optional list of TrainerCallback
     """
     config = normalize_config(config)
     git_hash = get_git_revision_hash()
@@ -423,84 +425,87 @@ def train(config):
         f"eos={tokenizer.eos_token_id}, pad={tokenizer.pad_token_id}"
     )
 
-    # --- Dataset loading ---
-    logger.info("Starting dataset load...")
-    data_path = Path(data_path_str)
-    if not data_path.exists():
-        fallback_path = Path("data") / data_path.name
-        if fallback_path.exists():
-            data_path = fallback_path
-            logger.info(f"Dataset path resolved to fallback: {data_path}")
-        else:
-            raise FileNotFoundError(
-                f"Could not find dataset at '{data_path_str}' or '{fallback_path.resolve()}'"
-            )
-
-    # Check for separate train/val files
-    train_path = config.get("train_data_path")
-    val_path = config.get("val_data_path")
-
-    if train_path and val_path:
-        # Use explicit train/val files
-        train_data_path = Path(train_path)
-        val_data_path = Path(val_path)
-        if not train_data_path.is_absolute():
-            train_data_path = Path(data_path.parent) / train_path
-        if not val_data_path.is_absolute():
-            val_data_path = Path(data_path.parent) / val_path
-
-        logger.info(f"Loading train from: {train_data_path}")
-        logger.info(f"Loading val from: {val_data_path}")
-
-        dataset = load_dataset(
-            "json", data_files={"train": str(train_data_path), "validation": str(val_data_path)}
-        )
-    else:
-        # Single file - use as train only, no validation
-        logger.info(f"Loading single dataset from: {data_path}")
-        dataset = load_dataset("json", data_files=str(data_path))
-
-    # seq_len は run_hpo.bat などのトップレベルまたは hpo 辞書から取得
-    seq_len = config.get("seq_len") or config.get("hpo", {}).get("seq_len", 512)
-
-    # Support data_fraction for pilot runs (e.g., 0.01 = 1% of data)
-    data_fraction = config.get("data_fraction", 1.0)
-    if data_fraction < 1.0:
-        logger.info(f"Using data_fraction={data_fraction} for pilot run")
-
-    # Get resource-adjusted number of processes
-    num_proc = get_optimal_num_proc()
-    logger.info(f"Tokenizing dataset with max_length={seq_len} using num_proc={num_proc}...")
-
-    tokenize_function = TokenizerWrapper(tokenizer, seq_len)
-
-    # モデル入力に関係のないすべての列を確実に削除 (quality, metadata, text など)
-    all_cols = dataset["train"].column_names
-    cols_to_remove = [c for c in all_cols if c not in ["input_ids", "attention_mask", "labels"]]
-
-    # HPOやデータ制限時は、ディスクのキャッシュファイルを生成せずメモリで処理する
-    keep_in_memory = data_fraction < 1.0 or config.get("max_steps", -1) > 0
-
-    tokenized_datasets = dataset.map(
-        tokenize_function,
-        batched=True,
-        num_proc=num_proc,
-        remove_columns=cols_to_remove,
-        keep_in_memory=keep_in_memory,
-    )
-
-    # Apply data_fraction for pilot runs
-    data_fraction = config.get("data_fraction", 1.0)
-    if data_fraction < 1.0:
-        for split in tokenized_datasets:
-            n_samples = int(len(tokenized_datasets[split]) * data_fraction)
-            if n_samples < len(tokenized_datasets[split]):
-                tokenized_datasets[split] = tokenized_datasets[split].select(range(n_samples))
-                logger.info(
-                    f"Split '{split}' sampled to {n_samples} samples (fraction={data_fraction})"
+    if tokenized_datasets is None:
+        # --- Dataset loading ---
+        logger.info("Starting dataset load...")
+        data_path = Path(data_path_str)
+        if not data_path.exists():
+            fallback_path = Path("data") / data_path.name
+            if fallback_path.exists():
+                data_path = fallback_path
+                logger.info(f"Dataset path resolved to fallback: {data_path}")
+            else:
+                raise FileNotFoundError(
+                    f"Could not find dataset at '{data_path_str}' or '{fallback_path.resolve()}'"
                 )
 
-    tokenized_datasets.set_format("torch")
+        # Check for separate train/val files
+        train_path = config.get("train_data_path")
+        val_path = config.get("val_data_path")
+
+        if train_path and val_path:
+            # Use explicit train/val files
+            train_data_path = Path(train_path)
+            val_data_path = Path(val_path)
+            if not train_data_path.is_absolute():
+                train_data_path = Path(data_path.parent) / train_path
+            if not val_data_path.is_absolute():
+                val_data_path = Path(data_path.parent) / val_path
+
+            logger.info(f"Loading train from: {train_data_path}")
+            logger.info(f"Loading val from: {val_data_path}")
+
+            dataset = load_dataset(
+                "json", data_files={"train": str(train_data_path), "validation": str(val_data_path)}
+            )
+        else:
+            # Single file - use as train only, no validation
+            logger.info(f"Loading single dataset from: {data_path}")
+            dataset = load_dataset("json", data_files=str(data_path))
+
+        # seq_len は run_hpo.bat などのトップレベルまたは hpo 辞書から取得
+        seq_len = config.get("seq_len") or config.get("hpo", {}).get("seq_len", 512)
+
+        # Support data_fraction for pilot runs (e.g., 0.01 = 1% of data)
+        data_fraction = config.get("data_fraction", 1.0)
+        if data_fraction < 1.0:
+            logger.info(f"Using data_fraction={data_fraction} for pilot run")
+
+        # Get resource-adjusted number of processes
+        num_proc = get_optimal_num_proc()
+        logger.info(f"Tokenizing dataset with max_length={seq_len} using num_proc={num_proc}...")
+
+        tokenize_function = TokenizerWrapper(tokenizer, seq_len)
+
+        # モデル入力に関係のないすべての列を確実に削除 (quality, metadata, text など)
+        all_cols = dataset["train"].column_names
+        cols_to_remove = [c for c in all_cols if c not in ["input_ids", "attention_mask", "labels"]]
+
+        # HPOやデータ制限時は、ディスクのキャッシュファイルを生成せずメモリで処理する
+        keep_in_memory = data_fraction < 1.0 or config.get("max_steps", -1) > 0
+
+        tokenized_datasets = dataset.map(
+            tokenize_function,
+            batched=True,
+            num_proc=num_proc,
+            remove_columns=cols_to_remove,
+            keep_in_memory=keep_in_memory,
+        )
+
+        # Apply data_fraction for pilot runs
+        data_fraction = config.get("data_fraction", 1.0)
+        if data_fraction < 1.0:
+            for split in tokenized_datasets:
+                n_samples = int(len(tokenized_datasets[split]) * data_fraction)
+                if n_samples < len(tokenized_datasets[split]):
+                    tokenized_datasets[split] = tokenized_datasets[split].select(range(n_samples))
+                    logger.info(
+                        f"Split '{split}' sampled to {n_samples} samples (fraction={data_fraction})"
+                    )
+
+        tokenized_datasets.set_format("torch")
+    else:
+        logger.info("Using pre-tokenized dataset passed to train()")
 
     # Print dataset sizes
     if "train" in tokenized_datasets:
@@ -595,7 +600,11 @@ def train(config):
     )
 
     # Prepare callbacks
-    callbacks = [DriveUploadCallback(upload_interval_steps=1000), ProgressBarFormatCallback()]
+    callbacks = [ProgressBarFormatCallback()]
+    if config.get("max_steps", -1) == -1:
+        callbacks.append(DriveUploadCallback(upload_interval_steps=1000))
+    if extra_callbacks:
+        callbacks.extend(extra_callbacks)
 
     trainer = CustomTrainer(
         model=model,

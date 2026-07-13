@@ -9,7 +9,7 @@ cd /d "%~dp0"
 set MODEL_SIZE=150M
 set DATA_PATH=C:\Users\saiha\My_Service\programing\LLM\Novel_LLM\DataPreprocessing\data\dataset.jsonl
 set OUTPUT=configs/hparams_150M.yaml
-set N_TRIALS=20
+set N_TRIALS=100
 set VRAM_GB=
 set SEQ_LEN=1024
 
