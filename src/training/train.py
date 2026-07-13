@@ -16,8 +16,8 @@ sys.path.append(BASE_DIR)
 # カレントディレクトリをプロジェクトルートに変更して相対パスのズレを防止
 os.chdir(BASE_DIR)
 
-from src.config import load_config, resolve_config_path  # noqa: E402
-from src.train_model import train  # noqa: E402
+from src.training.config import load_config, resolve_config_path  # noqa: E402
+from src.training.train_model import train  # noqa: E402
 
 if __name__ == "__main__":
     config_arg = sys.argv[1] if len(sys.argv) > 1 else None

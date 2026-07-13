@@ -25,15 +25,15 @@ from transformers import (
     TrainingArguments,
 )
 
-from src.config import load_config
-from src.drive_uploader import DriveUploadCallback
-from src.env_snapshot import capture_env_snapshot
-from src.logger import log_exceptions, logger
-from src.model_utils import (
+from src.training.config import load_config
+from src.training.drive_uploader import DriveUploadCallback
+from src.common.env_snapshot import capture_env_snapshot
+from src.common.logger import log_exceptions, logger
+from src.training.model_utils import (
     create_model_config,
 )
-from src.set_seed import set_seed
-from src.train_model import ProgressBarFormatCallback
+from src.common.set_seed import set_seed
+from src.training.train_model import ProgressBarFormatCallback
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")

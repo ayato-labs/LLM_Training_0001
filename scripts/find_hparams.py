@@ -15,11 +15,11 @@ import yaml
 from datasets import load_dataset
 from transformers import PreTrainedTokenizerFast
 
-from src.config import _detect_vram as detect_vram
-from src.hpo_manager import create_search_space, objective
-from src.logger import log_exceptions, log_function_call, logger
-from src.step_law import compute_hpo_for_target
-from src.train_model import TokenizerWrapper, get_optimal_num_proc
+from src.training.config import _detect_vram as detect_vram
+from src.hpo.hpo_manager import create_search_space, objective
+from src.common.logger import log_exceptions, log_function_call, logger
+from src.hpo.step_law import compute_hpo_for_target
+from src.training.train_model import TokenizerWrapper, get_optimal_num_proc
 
 
 def parse_args():
@@ -209,6 +209,7 @@ def main():
                 interval_steps=5,
             )
         )
+        study.set_user_attr("n_trials", args.n_trials)
         logger.info("Starting Optuna optimization")
         study.optimize(
             lambda trial: objective(trial, arch, tokenized_dataset, args.seq_len, vram, step_law_hpo),

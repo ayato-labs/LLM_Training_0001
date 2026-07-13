@@ -53,7 +53,7 @@ if not "%MAX_STEPS%"=="" set OVERRIDES=%OVERRIDES% max_steps=%MAX_STEPS%
 if not "%DATA_FRACTION%"=="" set OVERRIDES=%OVERRIDES% data_fraction=%DATA_FRACTION%
 if not "%RESUME%"=="" set OVERRIDES=%OVERRIDES% %RESUME%
 
-uv run --active python -m src.main %OVERRIDES%
+uv run --active python -m src.training.main %OVERRIDES%
 
 if errorlevel 1 (
     echo.

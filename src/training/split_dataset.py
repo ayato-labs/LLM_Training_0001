@@ -15,7 +15,7 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
-from src.logger import logger
+from src.common.logger import logger
 
 
 def split_dataset(

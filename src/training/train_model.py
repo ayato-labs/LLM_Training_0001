@@ -24,7 +24,7 @@ from transformers import (
 )
 from tqdm import tqdm
 
-from src.logger import logger
+from src.common.logger import logger
 
 
 # ============================================================
@@ -214,7 +214,7 @@ class DriveUploadCallback(TrainerCallback):
         if self._initialized:
             return
         try:
-            from src.drive_uploader import (
+            from src.training.drive_uploader import (
                 get_drive_service,
                 get_or_create_drive_folder,
             )
@@ -245,7 +245,7 @@ class DriveUploadCallback(TrainerCallback):
                 str(Path("models/output") / f"checkpoint-{step}"), "zip", str(checkpoint_path)
             )
 
-            from src.drive_uploader import upload_file_to_drive
+            from src.training.drive_uploader import upload_file_to_drive
 
             upload_file_to_drive(self.drive_service, zip_path, self.root_folder_id)
 
@@ -385,7 +385,7 @@ def train(config, tokenized_datasets=None, extra_callbacks=None):
     seed = config.get("seed", 42)
 
     # --- Seed fixing (ADR-017) ---
-    from src.set_seed import set_seed
+    from src.common.set_seed import set_seed
 
     set_seed(seed, deterministic=True)
 
@@ -396,7 +396,7 @@ def train(config, tokenized_datasets=None, extra_callbacks=None):
     db_fingerprint = compute_db_fingerprint(db_path_str)
 
     # --- Environment snapshot (traceability) ---
-    from src.env_snapshot import capture_env_snapshot
+    from src.common.env_snapshot import capture_env_snapshot
 
     env_snapshot = capture_env_snapshot()
     logger.info(

@@ -13,7 +13,7 @@ import random
 import numpy as np
 import torch
 
-from src.logger import logger
+from src.common.logger import logger
 
 
 def set_seed(seed: int = 42, deterministic: bool = True) -> int:
