@@ -36,7 +36,7 @@ from src.common.set_seed import set_seed
 from src.training.train_model import ProgressBarFormatCallback
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="config")
+@hydra.main(version_base=None, config_path="../../configs", config_name="config")
 @log_exceptions
 def main(cfg: DictConfig) -> None:
     config = load_config(cfg)
@@ -81,7 +81,8 @@ def main(cfg: DictConfig) -> None:
     )
 
     logger.info("*** Starting Training ***")
-    trainer.train()
+    resume_checkpoint = config.get("resume_from_checkpoint")
+    trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     trainer.save_model(config["output_dir"])
     tokenizer.save_pretrained(config["output_dir"])

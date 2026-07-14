@@ -7,6 +7,8 @@ defaults:
 seed: 42
 precision: "bf16"
 output_dir: "models/output"
+resume_from_checkpoint: null
+
 
 # データ
 data_path: "data/dataset.jsonl"
