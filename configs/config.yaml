@@ -20,7 +20,7 @@ training:
   seq_len: 1024
   max_steps: -1
   num_epochs: 3
-  save_steps: 1000
+  save_steps: 50
   eval_steps: 1000
   logging_steps: 10
   drive_upload_interval: 1000
