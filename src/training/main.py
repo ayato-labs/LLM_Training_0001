@@ -23,6 +23,7 @@ from transformers import (
     LlamaForCausalLM,
     Trainer,
     TrainingArguments,
+    TrainerCallback,
 )
 
 from src.training.config import load_config
@@ -34,6 +35,37 @@ from src.training.model_utils import (
 )
 from src.common.set_seed import set_seed
 from src.training.train_model import ProgressBarFormatCallback
+import hashlib
+import json
+import datetime
+
+def compute_file_hash(filepath: str) -> str:
+    path = Path(filepath)
+    if not path.exists():
+        return ""
+    sha256 = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(8192):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+class HashSaveCallback(TrainerCallback):
+    def __init__(self, config_hash: str, data_hash: str):
+        self.config_hash = config_hash
+        self.data_hash = data_hash
+
+    def on_save(self, args, state, control, **kwargs):
+        checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+        if checkpoint_dir.exists():
+            hash_file = checkpoint_dir / "hashes.json"
+            with open(hash_file, "w") as f:
+                json.dump({
+                    "config_hash": self.config_hash,
+                    "data_hash": self.data_hash,
+                    "timestamp": datetime.datetime.now().isoformat()
+                }, f, indent=2)
+            logger.info(f"Saved config and data hashes to {hash_file}")
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -41,6 +73,47 @@ from src.training.train_model import ProgressBarFormatCallback
 def main(cfg: DictConfig) -> None:
     config = load_config(cfg)
     logger.info(f"Config resolved: {config}")
+
+    # Config and data path hashing
+    config_path = Path("configs/config.yaml")
+    data_path = Path(config["data_path"])
+    current_config_hash = compute_file_hash(config_path)
+    current_data_hash = compute_file_hash(data_path)
+
+    resume_checkpoint = config.get("resume_from_checkpoint")
+    if resume_checkpoint:
+        if Path(resume_checkpoint).name == "checkpoint-latest":
+            from src.training.drive_uploader import get_checkpoints
+            checkpoints = get_checkpoints()
+            if checkpoints:
+                resume_checkpoint = str(checkpoints[-1][1])
+                logger.info(f"Resolved checkpoint-latest to: {resume_checkpoint}")
+            else:
+                resume_checkpoint = None
+                logger.warning("No checkpoint found to resume from. Starting from scratch.")
+
+        if resume_checkpoint:
+            checkpoint_path = Path(resume_checkpoint)
+            hash_file = checkpoint_path / "hashes.json"
+            if hash_file.exists():
+                try:
+                    with open(hash_file, "r") as f:
+                        saved_hashes = json.load(f)
+                    saved_config_hash = saved_hashes.get("config_hash")
+                    saved_data_hash = saved_hashes.get("data_hash")
+                    
+                    if saved_config_hash != current_config_hash or saved_data_hash != current_data_hash:
+                        logger.error("Configuration or training dataset has changed since the checkpoint was saved!")
+                        logger.error(f"Saved Config Hash: {saved_config_hash} | Current Config Hash: {current_config_hash}")
+                        logger.error(f"Saved Data Hash: {saved_data_hash} | Current Data Hash: {current_data_hash}")
+                        raise ValueError("Cannot resume training: config.yaml or training dataset does not match the checkpoint.")
+                    else:
+                        logger.info("Configuration and dataset hashes match. Verification successful.")
+                except Exception as e:
+                    logger.error(f"Failed to verify checkpoint hashes: {e}")
+                    raise
+            else:
+                logger.warning(f"No hashes.json found in checkpoint {resume_checkpoint}. Proceeding without verification.")
 
     env_snap = capture_env_snapshot()
     logger.debug(f"Env snapshot: {env_snap}")
@@ -69,6 +142,7 @@ def main(cfg: DictConfig) -> None:
     callbacks = [
         DriveUploadCallback(upload_interval_steps=config["drive_upload_interval"]),
         ProgressBarFormatCallback(),
+        HashSaveCallback(config_hash=current_config_hash, data_hash=current_data_hash),
     ]
 
     trainer = Trainer(
@@ -81,7 +155,6 @@ def main(cfg: DictConfig) -> None:
     )
 
     logger.info("*** Starting Training ***")
-    resume_checkpoint = config.get("resume_from_checkpoint")
     trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     trainer.save_model(config["output_dir"])
