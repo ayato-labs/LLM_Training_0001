@@ -522,6 +522,7 @@ class DriveUploadCallback(TrainerCallback):
         try:
             service, folder_id = self._get_service()
             if service is None:
+                print("[DriveUpload] Warning: Google Drive service not available (credentials or dependencies missing). Skipping backup.")
                 return
 
             import os
@@ -555,9 +556,15 @@ class DriveUploadCallback(TrainerCallback):
 
             print(f"[DriveUpload] Uploaded checkpoint-{step}.zip (ID: {response['id']})")
 
+            # Mark as uploaded
+            (checkpoint_dir / ".uploaded").touch()
+
             # Cleanup zip
             if zip_path.exists():
                 os.remove(zip_path)
+
+            # Cleanup old checkpoints locally
+            cleanup_old_checkpoints(keep=LOCAL_CHECKPOINT_KEEP)
 
         except Exception as e:
             print(f"[DriveUpload] Warning: {e}")
