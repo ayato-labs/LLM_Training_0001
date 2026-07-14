@@ -1,6 +1,5 @@
 @echo off
-@REM 再開時の実行コマンド
-@REM バッチファイルを実行する際に --resume オプションを付与します。
+@REM restart command
 @REM cmd /c run_train.bat --resume
 REM ============================================================
 REM Training Launcher for LLM Training
