@@ -19,6 +19,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from src.common.logger import logger
 
 try:
     from google.auth.transport.requests import Request
@@ -229,10 +230,10 @@ def cleanup_old_checkpoints(keep=LOCAL_CHECKPOINT_KEEP):
     for _step, path in to_remove:
         uploaded_flag = path / ".uploaded"
         if uploaded_flag.exists():
-            print(f"Cleaning up old checkpoint: {path.name}")
+            logger.info(f"Cleaning up old checkpoint: {path.name}")
             shutil.rmtree(path)
         else:
-            print(f"Skipping cleanup of {path.name} (not uploaded yet)")
+            logger.debug(f"Skipping cleanup of {path.name} (not uploaded yet)")
 
 
 def cleanup_old_logs(max_log_files=10):
@@ -522,7 +523,7 @@ class DriveUploadCallback(TrainerCallback):
         try:
             service, folder_id = self._get_service()
             if service is None:
-                print("[DriveUpload] Warning: Google Drive service not available (credentials or dependencies missing). Skipping backup.")
+                logger.warning("Google Drive service not available (credentials or dependencies missing). Skipping backup.")
                 return
 
             import os
@@ -538,7 +539,7 @@ class DriveUploadCallback(TrainerCallback):
             if zip_path.exists() and not force:
                 return
 
-            print(f"[DriveUpload] Compressing checkpoint-{step}...")
+            logger.info(f"Compressing checkpoint-{step}...")
             shutil.make_archive(str(output_dir / f"checkpoint-{step}"), "zip", str(checkpoint_dir))
 
             # Upload
@@ -552,9 +553,9 @@ class DriveUploadCallback(TrainerCallback):
             while response is None:
                 status, response = request.next_chunk()
                 if status:
-                    print(f"[DriveUpload] {int(status.progress() * 100)}%")
+                    logger.info(f"Uploading checkpoint-{step}.zip: {int(status.progress() * 100)}%")
 
-            print(f"[DriveUpload] Uploaded checkpoint-{step}.zip (ID: {response['id']})")
+            logger.info(f"Uploaded checkpoint-{step}.zip (ID: {response['id']})")
 
             # Mark as uploaded
             (checkpoint_dir / ".uploaded").touch()
@@ -567,7 +568,7 @@ class DriveUploadCallback(TrainerCallback):
             cleanup_old_checkpoints(keep=LOCAL_CHECKPOINT_KEEP)
 
         except Exception as e:
-            print(f"[DriveUpload] Warning: {e}")
+            logger.warning(f"Error in DriveUploadCallback: {e}")
 
 
 if __name__ == "__main__":
