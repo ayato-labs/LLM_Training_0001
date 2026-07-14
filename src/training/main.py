@@ -38,6 +38,28 @@ from src.training.train_model import ProgressBarFormatCallback
 import hashlib
 import json
 import datetime
+import os
+import psutil
+
+class TokenizerWrapper:
+    def __init__(self, tokenizer, seq_len: int):
+        self.tokenizer = tokenizer
+        self.seq_len = seq_len
+
+    def __call__(self, examples):
+        return self.tokenizer(
+            examples["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=self.seq_len,
+        )
+
+def get_optimal_num_proc() -> int:
+    cpu_cores = os.cpu_count() or 1
+    available_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+    mem_based_cores = int(available_mem_gb // 1.5)
+    return min(max(1, cpu_cores - 1), max(1, mem_based_cores))
+
 
 def compute_file_hash(filepath: str) -> str:
     path = Path(filepath)
@@ -171,15 +193,11 @@ def load_and_tokenize_datasets(config: dict, tokenizer):
     ds = load_dataset("json", data_files=data_files)
     remove_columns = [c for c in ds["train"].column_names if c in {"text", "metadata"}]
 
-    def tokenize_fn(examples):
-        return tokenizer(
-            examples["text"],
-            padding="max_length",
-            truncation=True,
-            max_length=config["seq_len"],
-        )
+    tokenize_fn = TokenizerWrapper(tokenizer, config["seq_len"])
+    num_proc = get_optimal_num_proc()
+    logger.info(f"Tokenizing dataset with num_proc={num_proc} (calculated dynamically from available RAM and CPUs)")
 
-    ds = ds.map(tokenize_fn, batched=True, remove_columns=remove_columns)
+    ds = ds.map(tokenize_fn, batched=True, remove_columns=remove_columns, num_proc=num_proc)
 
     if config.get("data_fraction", 1.0) < 1.0:
         for split in ds:
