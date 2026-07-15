@@ -57,6 +57,13 @@ class TokenizerWrapper:
 
 def get_optimal_num_proc() -> int:
     """CPU論理コアと利用可能なメモリを検出し最適なnum_procを計算。"""
+    import sys
+    if sys.platform == "win32":
+        logger.info(
+            "Resource Auto-Adjustment: Windows detected. Forcing num_proc=None to avoid WinError 87 pipe writing limitations."
+        )
+        return None
+
     cpu_cores = os.cpu_count() or 1
     try:
         available_mem_gb = psutil.virtual_memory().available / (1024**3)
@@ -70,6 +77,7 @@ def get_optimal_num_proc() -> int:
         f"Resource Auto-Adjustment: Cores={cpu_cores}, Available RAM={available_mem_gb:.1f}GB -> num_proc={optimal_cores}"
     )
     return optimal_cores
+
 
 
 def compute_file_hash(filepath: str) -> str:
@@ -142,5 +150,3 @@ def compute_db_fingerprint(db_path: str) -> dict:
         "novel_count": novel_count,
         "mtime": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
     }
-
-
