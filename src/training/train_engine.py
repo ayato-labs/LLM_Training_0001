@@ -31,20 +31,28 @@ from src.training.callbacks import (
 
 def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     """
-    Unified training orchestration flow.
+    統一された学習オーケストレーションフロー。
+    
+    Args:
+        config (dict): 学習設定パラメータを含む辞書。
+        tokenized_datasets (dict, optional): トークン化済みのデータセット辞書（学習/検証）。省略時はロード及びトークン化を行う。
+        extra_callbacks (list, optional): 追加のTrainerCallbackリスト。
     """
+    # 1. 乱数シードの設定（再現性確保のため決定論的挙動を強制）
     seed = config.get("seed", 42)
     set_seed(seed, deterministic=True)
 
-    # Env snapshot & dataset fingerprint
+    # 2. 実行環境スナップショットの取得とロギング
     env_snapshot = capture_env_snapshot()
     logger.debug(f"Env snapshot: {env_snapshot}")
 
+    # 3. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
     config_path = Path("configs/config.yaml")
     data_path_str = config.get("data_path", "data/dataset.jsonl")
     current_config_hash = compute_file_hash(str(config_path))
     current_data_hash = compute_file_hash(data_path_str)
 
+    # 4. データセットおよびデータベースのフィンガープリントを取得
     data_fingerprint = compute_dataset_fingerprint(data_path_str)
     db_path_str = config.get("db_path", "../Novel_Data_Collection/novels.db")
     db_fingerprint = compute_db_fingerprint(db_path_str)
@@ -59,8 +67,10 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         },
     )
 
-    # Resume from checkpoint resolution & validation
+    # 5. チェックポイントからの再開（Resume）処理の解決
     resume_checkpoint = config.get("resume_from_checkpoint") or config.get("resume")
+    
+    # "checkpoint-latest" が指定された場合、または True の場合は最新のチェックポイントを自動探索
     if resume_checkpoint is True or (isinstance(resume_checkpoint, str) and "checkpoint-latest" in resume_checkpoint):
         from src.training.drive_uploader import get_checkpoints
         checkpoints = get_checkpoints()
@@ -71,6 +81,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
             resume_checkpoint = None
             logger.warning("No checkpoint found to resume from. Starting from scratch.")
 
+    # 6. チェックポイントデータの整合性検証（ハッシュ値による構成変更チェック）
     if isinstance(resume_checkpoint, str) and Path(resume_checkpoint).exists():
         checkpoint_path = Path(resume_checkpoint)
         hash_file = checkpoint_path / "hashes.json"
@@ -81,6 +92,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
                 saved_config_hash = saved_hashes.get("config_hash")
                 saved_data_hash = saved_hashes.get("data_hash")
                 
+                # チェックポイント保存時と現在の設定・データが異なる場合はエラーとして学習を中断する
                 if saved_config_hash != current_config_hash or saved_data_hash != current_data_hash:
                     logger.error("Configuration or training dataset has changed since the checkpoint was saved!")
                     logger.error(f"Saved Config Hash: {saved_config_hash} | Current Config Hash: {current_config_hash}")
@@ -97,7 +109,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         if not isinstance(resume_checkpoint, str):
             resume_checkpoint = None
 
-    # Tokenizer loading
+    # 7. トークナイザーの読み込み（高速なRust実装版を優先）
     tokenizer_path = Path(config.get("tokenizer_path", "data/tokenizer.json"))
     if tokenizer_path.suffix == ".json" and tokenizer_path.exists():
         tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path))
@@ -105,28 +117,34 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
 
+    # 特殊トークンの明示的な設定
     tokenizer.unk_token = "<unk>"
     tokenizer.bos_token = "<s>"
     tokenizer.eos_token = "</s>"
     tokenizer.pad_token = "<pad>"
 
-    # Dataset loading & tokenization
+    # 8. データセットのロードとトークン化処理（前処理が渡されていない場合のみ実施）
     if tokenized_datasets is None:
         logger.info("Starting dataset loading...")
         data_files = {"train": data_path_str}
         if config.get("val_data_path"):
             data_files["validation"] = config["val_data_path"]
 
+        # JSONLファイルからデータセットをロード
         ds = load_dataset("json", data_files=data_files)
         remove_columns = [c for c in ds["train"].column_names if c in {"text", "metadata"}]
 
         seq_len = config.get("seq_len", 1024)
         tokenize_fn = TokenizerWrapper(tokenizer, seq_len)
+        
+        # 利用可能なCPUコア数とメモリ空き容量から、最適な並列プロセス数を動的に算出
         num_proc = get_optimal_num_proc()
         logger.info(f"Tokenizing dataset with num_proc={num_proc} (calculated dynamically from available RAM and CPUs)")
 
+        # マルチプロセスでのトークン化マップ処理の実行
         ds = ds.map(tokenize_fn, batched=True, remove_columns=remove_columns, num_proc=num_proc)
 
+        # デバッグや軽量テスト用途のデータ一部抽出 (data_fraction < 1.0 の場合)
         data_fraction = config.get("data_fraction", 1.0)
         if data_fraction < 1.0:
             for split in ds:
@@ -139,15 +157,18 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         train_ds = ds["train"]
         eval_ds = ds.get("validation")
     else:
+        # 外部から提供されたトークン化済みデータを設定
         train_ds = tokenized_datasets["train"]
         eval_ds = tokenized_datasets.get("validation")
 
-    # Model creation
+    # 9. モデルの設定と初期化 (Llamaアーキテクチャ)
     model_config = create_model_config(config, tokenizer)
     model = LlamaForCausalLM(model_config)
+    
+    # トークナイザーの語彙数に合わせて埋め込み層のサイズを調整
     model.resize_token_embeddings(len(tokenizer))
 
-    # TrainingArguments construction
+    # 10. TrainingArguments (学習パラメータ) の構築
     precision = config.get("precision", "bf16")
     output_dir = config.get("output_dir", "models/output")
     hpo_config = config.get("hpo", config)
@@ -158,9 +179,12 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     per_device_batch = config.get("per_device_batch_size", 1)
     grad_accum_steps = config.get("grad_accum_steps", 1)
     
+    # HPO(ハイパーパラメータ最適化)設定が含まれており、バッチサイズ自動決定が必要な場合の処理
     if "batch_size_seqs" in hpo_config and "per_device_batch_size" not in config:
         target_total_batch_seqs = hpo_config.get("batch_size_seqs", 16)
         vram_limit = config.get("vram_limit_gb", 4.0)
+        
+        # 利用可能なVRAM容量に応じて、OOMを防止するためのデバイスあたりバッチサイズと勾配累積ステップ数を自動決定
         if vram_limit <= 4.5:
             max_batch = 1
         elif vram_limit <= 8.5:
@@ -170,15 +194,16 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         per_device_batch = min(target_total_batch_seqs, max_batch)
         grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
 
+    # Hugging Face TrainingArguments の初期化
     args = TrainingArguments(
         output_dir=output_dir,
         learning_rate=hpo_config.get("max_lr_2d", 3e-4),
         per_device_train_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum_steps,
-        gradient_checkpointing=True,
+        gradient_checkpointing=True,                       # メモリ節約のため勾配チェックポインティングを有効化
         max_steps=max_steps,
         num_train_epochs=num_epochs,
-        lr_scheduler_type="cosine",
+        lr_scheduler_type="cosine",                        # コサイン学習率スケジューラを採用
         warmup_ratio=hpo_config.get("warmup_ratio", 0.03),
         weight_decay=hpo_config.get("weight_decay", 0.1),
         adam_beta2=hpo_config.get("beta2", 0.95),
@@ -190,53 +215,61 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         eval_strategy="steps" if eval_ds is not None else "no",
         eval_steps=config.get("eval_steps", 1000) if eval_ds is not None else None,
         logging_steps=config.get("logging_steps", 10),
-        report_to=["tensorboard"],
+        report_to=["tensorboard"],                          # TensorBoardによる学習監視の有効化
         load_best_model_at_end=eval_ds is not None,
         metric_for_best_model="eval_loss" if eval_ds is not None else None,
         greater_is_better=False,
         seed=seed,
-        remove_unused_columns=False,
+        remove_unused_columns=False,                        # カスタムデータコレーター利用時のカラム自動削除防止
     )
 
-    # Callbacks configuration
+    # 11. コールバックの設定
+    # Google Driveへのバックアップ実行コールバック（設定に応じた同期間隔）
     drive_cb = DriveUploadCallback(upload_interval_steps=config.get("drive_upload_interval", 1000))
     callbacks = [
-        ProgressBarFormatCallback(),
-        HashSaveCallback(config_hash=current_config_hash, data_hash=current_data_hash),
-        DetailedLoggingCallback(log_every_n_steps=1),
+        ProgressBarFormatCallback(),                       # 進捗バーの表示をカスタムフォーマット化
+        HashSaveCallback(config_hash=current_config_hash, data_hash=current_data_hash),  # hashes.jsonの自動作成
+        DetailedLoggingCallback(log_every_n_steps=1),       # 詳細なステップ別メトリクスのログ出力
     ]
 
+    # メインの通常学習時（max_steps == -1）、または HPO側でドライブアップロードが明示的に許可されている場合に有効化
     if max_steps == -1 or config.get("enable_drive_upload_hpo", False):
         callbacks.append(drive_cb)
 
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
 
+    # 12. カスタムTrainerインスタンスの生成
     trainer = CustomTrainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
+        data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False), # 因果言語モデル用にmlm=False
         additional_config=config,
         callbacks=callbacks,
     )
 
+    # 詳細ログ出力コールバックにTrainerオブジェクトの参照を渡す
     for cb in callbacks:
         if isinstance(cb, DetailedLoggingCallback):
             cb.trainer = trainer
 
+    # 13. 学習プロセスの実行
     logger.info("*** Starting Unified Training Pipeline ***")
     train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
 
+    # 通常学習の場合、最終結果メトリクスをJSONファイルに保存
     if max_steps == -1:
         with open("last_run_result.json", "w", encoding="utf-8") as f:
             json.dump(train_result.metrics, f)
 
+    # 14. 学習済みモデル・トークナイザーの保存処理
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
     logger.info(f"Model saved to {output_dir}")
 
+    # Google Driveバックアップが有効な場合、最終状態を強制的にアップロード同期
     if drive_cb in callbacks:
         drive_cb.force_final_upload(trainer.state.global_step)
 
