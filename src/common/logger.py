@@ -8,27 +8,27 @@ from typing import Any
 
 from loguru import logger
 
-# Create logs directory if not exists
+# ログディレクトリがなければ作成
 log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
 
-# Configure logger
+# ロガー設定のリセット
 logger.remove()
 
-# Console output (human readable) - synchronous for real-time output
+# コンソール出力（人間可読） - リアルタイム出力のため同期実行
 logger.add(
     sys.stderr,
     format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
     level="INFO",
-    enqueue=False,  # synchronous for real-time console output
+    enqueue=False,  # 同期実行でリアルタイム出力
     backtrace=True,
     diagnose=True,
 )
 
 
-# Structured JSON file output (for machine parsing / traceability)
+# 構造化JSONファイル出力（機械解析・トレーサビリティ用）
 def json_serializer(record: dict[str, Any]) -> str:
-    """Custom JSON serializer with additional fields."""
+    """追加フィールド付きカスタムJSONシリアライザ。"""
     log_entry = {
         "timestamp": record["time"].isoformat(),
         "level": record["level"].name,
@@ -41,10 +41,10 @@ def json_serializer(record: dict[str, Any]) -> str:
         "thread_id": record["thread"].id,
         "thread_name": record["thread"].name,
     }
-    # Add extra fields if present
+    # 追加フィールドがあればマージ
     if "extra" in record:
         log_entry.update(record["extra"])
-    # Add exception info if present
+    # 例外情報があれば追加
     if record["exception"]:
         log_entry["exception"] = {
             "type": record["exception"].type.__name__ if record["exception"].type else None,
@@ -56,7 +56,7 @@ def json_serializer(record: dict[str, Any]) -> str:
     return json.dumps(log_entry, ensure_ascii=False)
 
 
-# Structured JSON file output (for machine parsing / traceability)
+# 構造化JSONファイル出力（機械解析・トレーサビリティ用）
 logger.add(
     "logs/app.json",
     serialize=json_serializer,
@@ -67,7 +67,7 @@ logger.add(
     compression="gz",
 )
 
-# Timestamped log file (one per run) - human readable
+# タイムスタンプ付きログファイル（実行ごとに1つ） - 人間可読
 _run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 logger.add(
     f"logs/run_{_run_timestamp}.log",
@@ -80,7 +80,7 @@ logger.add(
     diagnose=True,
 )
 
-# Error-only log file
+# エラー専用ログファイル
 logger.add(
     f"logs/errors_{_run_timestamp}.log",
     format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}\n{exception}",
@@ -94,7 +94,7 @@ logger.add(
 
 
 def log_exceptions(func):
-    """Decorator to log exceptions with full traceback."""
+    """完全なトレースバック付きで例外をログ出力するデコレータ。"""
 
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -108,7 +108,7 @@ def log_exceptions(func):
 
 
 def log_function_call(log_args: bool = False, log_result: bool = False, level: str = "DEBUG"):
-    """Decorator to log function entry/exit with optional args/result."""
+    """引数・戻り値のオプション付きで関数のエントリ/イグジットをログ出力するデコレータ。"""
 
     def decorator(func):
         @wraps(func)
@@ -136,7 +136,7 @@ def log_function_call(log_args: bool = False, log_result: bool = False, level: s
 
 
 class LogContext:
-    """Context manager for adding contextual information to logs."""
+    """ログに文脈情報を追加するコンテキストマネージャ。"""
 
     def __init__(self, **context):
         self.context = context
@@ -152,5 +152,5 @@ class LogContext:
 
 
 def get_logger(name: str | None = None):
-    """Get a logger instance with optional name binding."""
+    """オプションの名前バインディング付きでロガーインスタンスを取得。"""
     return logger.bind(module=name) if name else logger

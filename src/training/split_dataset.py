@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Dataset Split Script: Novel-Unit Split
-=======================================
-Splits dataset by unique novel titles to prevent data leakage between
-training and validation sets.
+データセット分割スクリプト：小説単位分割
+======================================
+学習データと検証データの間のデータ漏洩を防ぐため、
+ユニークな小説タイトル별로データセットを分割。
 
-Each novel's chapters are kept together in either train or val set.
-Split ratio: 99% train / 1% val (configurable).
+各小説の全章は学習セットまたは検証セットのいずれかにまとめて配置。
+分割比率: 99% 学習 / 1% 検証（設定可能）。
 """
 
 import argparse
@@ -25,7 +25,7 @@ def split_dataset(
     val_ratio: float = 0.01,
     seed: int = 42,
 ) -> dict:
-    """Split dataset by novel title."""
+    """小説タイトル별로データセットを分割。"""
     try:
         title_to_lines = defaultdict(list)
 
@@ -49,6 +49,7 @@ def split_dataset(
         random.seed(seed)
         random.shuffle(titles)
 
+        # 検証用小説数
         val_count = max(1, int(len(titles) * val_ratio))
         val_titles = set(titles[:val_count])
         train_titles = set(titles[val_count:])
@@ -58,6 +59,7 @@ def split_dataset(
         train_chunks = 0
         val_chunks = 0
 
+        # 出力ファイルに書き出し
         with (
             open(train_output, "w", encoding="utf-8") as f_train,
             open(val_output, "w", encoding="utf-8") as f_val,

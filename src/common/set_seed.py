@@ -1,10 +1,10 @@
 """
-Random seed management for deterministic training.
-ADR-017: Complete reproducibility via fixed seeds.
+乱数シード管理：決定論的学習のため
+ADR-017: 固定シードによる完全な再現性確保
 
 Usage:
     from src.set_seed import set_seed
-    set_seed(42)  # must be called before model initialization
+    set_seed(42)  # モデル初期化前に必ず呼ぶ
 """
 
 import os
@@ -18,16 +18,16 @@ from src.common.logger import logger
 
 def set_seed(seed: int = 42, deterministic: bool = True) -> int:
     """
-    Fix all random seeds and optionally enable deterministic algorithms.
+    すべての乱数シードを固定し、オプションで決定論的アルゴリズムを有効化。
 
     Args:
-        seed: The seed value to use.
-        deterministic: If True, enables torch.use_deterministic_algorithms(True)
-                       and cudnn.benchmark=False for full reproducibility.
-                       May cause ~10-20% performance degradation.
+        seed: 使用するシード値。
+        deterministic: True の場合、torch.use_deterministic_algorithms(True)
+                       と cudnn.benchmark=False を設定し完全な再現性を確保。
+                       約 10-20% の性能低下の可能性あり。
 
     Returns:
-        The seed value used (for logging).
+        使用したシード値（ログ用）。
     """
     try:
         random.seed(seed)

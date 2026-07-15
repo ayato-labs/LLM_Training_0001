@@ -28,47 +28,47 @@ from src.common.logger import logger
 
 
 # ============================================================
-# Custom tqdm progress bar format callback
+# カスタムtqdm進捗バーカスタマイズコールバック
 # ============================================================
 class ProgressBarFormatCallback(TrainerCallback):
     """
-    Custom callback to customize tqdm progress bar format.
-    Shows average iteration time instead of estimated remaining time.
+    tqdm進捗バーの書式をカスタマイズするコールバック。
+    推定残り時間の代わりに平均イテレーション時間を表示。
     """
-    
+
     def __init__(self):
         self.iteration_times = []
         self.last_time = None
-    
+
     def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        """Initialize timing at start of training."""
+        """学習開始時にタイミングを初期化。"""
         self.iteration_times = []
         self.last_time = time.time()
-    
+
     def on_step_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        """Record iteration start time."""
+        """イテレーション開始時間を記録。"""
         self.last_time = time.time()
-    
+
     def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        """Record iteration end time and update progress bar postfix with avg time."""
+        """イテレーション終了時間を記録し、進捗バーに平均時間を更新。"""
         if self.last_time is not None:
             iter_time = time.time() - self.last_time
             self.iteration_times.append(iter_time)
-            # Keep only last 100 iterations for rolling average
+            # 移動平均用に直近100回のイテレーションのみを保持する
             if len(self.iteration_times) > 100:
                 self.iteration_times.pop(0)
             self.last_time = None
-            
-            # Calculate average iteration time
+
+            # 平均イテレーション時間を計算
             if self.iteration_times:
                 avg_time = sum(self.iteration_times) / len(self.iteration_times)
-                # Update progress bar postfix if available
+                # 利用可能なら進捗バーポストフィックスを更新
                 if 'pbar' in kwargs:
                     kwargs['pbar'].set_postfix_str(f"avg: {avg_time:.2f}s/it")
 
 
 class TokenizerWrapper:
-    """Wrapper to support Windows multiprocessing without pickling issues."""
+    """Windowsマルチプロセッシングのピクリング問題をサポートするためのラッパー。"""
 
     def __init__(self, tokenizer, seq_len):
         self.tokenizer = tokenizer
@@ -81,12 +81,12 @@ class TokenizerWrapper:
 
 
 def get_optimal_num_proc() -> int:
-    """Detect CPU logical cores and available memory to compute optimal num_proc."""
+    """CPU論理コアと利用可能なメモリを検出し最適なnum_procを計算。"""
     cpu_cores = os.cpu_count() or 1
     try:
         available_mem_gb = psutil.virtual_memory().available / (1024**3)
     except Exception:
-        available_mem_gb = 8.0  # Fallback to 8GB if detection fails
+        available_mem_gb = 8.0  # 検出失敗時のフォールバック
 
     # 1プロセスあたり1.5GBを見積もる
     mem_based_cores = int(available_mem_gb // 1.5)
@@ -101,10 +101,10 @@ logger.info(f"CUDA available: {torch.cuda.is_available()}")
 
 
 # ============================================================
-# Dataset fingerprinting (traceability)
+# データセットフィンガープリンティング（トレーサビリティ）
 # ============================================================
 def compute_file_hash(file_path: str, algorithm: str = "sha256") -> str:
-    """Compute hash of a file for traceability."""
+    """トレーサビリティのためファイルのハッシュを計算。"""
     h = hashlib.new(algorithm)
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
@@ -114,15 +114,15 @@ def compute_file_hash(file_path: str, algorithm: str = "sha256") -> str:
 
 def compute_dataset_fingerprint(dataset_path: str) -> dict:
     """
-    Compute a comprehensive fingerprint of the training dataset.
-    Returns dict with hash, row count, file size, and modification time.
+    学習データセットの包括的なフィンガープリントを計算。
+    ハッシュ、行数、ファイルサイズ、更新日時を含むdictを返す。
     """
     path = Path(dataset_path)
     if not path.exists():
         return {"error": f"File not found: {dataset_path}"}
 
     stat = path.stat()
-    # Line count for JSONL
+    # JSONLの行数
     line_count = 0
     with open(path, encoding="utf-8") as f:
         for _ in f:
@@ -138,7 +138,7 @@ def compute_dataset_fingerprint(dataset_path: str) -> dict:
 
 
 def compute_db_fingerprint(db_path: str) -> dict:
-    """Compute fingerprint of the source SQLite database."""
+    """ソースSQLiteデータベースのフィンガープリントを計算。"""
     path = Path(db_path)
     if not path.exists():
         return {"error": f"Database not found: {db_path}"}
@@ -169,17 +169,17 @@ def compute_db_fingerprint(db_path: str) -> dict:
 
 
 # ============================================================
-# Config normalization: accept internal dict directly
+# 設定正規化：内部dictを直接受け付ける
 # ============================================================
 def normalize_config(raw) -> dict:
     """
-    Accept an internal config dict (from src/config.py) and return
-    a flat dictionary with standardized keys.
+    内部config dict（src/config.pyから）を受け取り、
+    標準化されたキーを持つフラットなdictを返す。
     """
     if not isinstance(raw, dict):
         raise TypeError(f"Unsupported config type: {type(raw)}")
 
-    # Already normalized (has model_params and hpo)
+    # 既に正規化済み（model_paramsとhpoを持つ）
     if "model_params" in raw and "hpo" in raw:
         return raw
 
@@ -187,6 +187,7 @@ def normalize_config(raw) -> dict:
 
 
 def get_git_revision_hash():
+    """Gitのリビジョンハッシュを取得。"""
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
     except Exception:
@@ -194,12 +195,12 @@ def get_git_revision_hash():
 
 
 # ============================================================
-# Google Drive Checkpoint Upload Callback
+# Google Driveチェックポイントアップロードコールバック
 # ============================================================
 class DriveUploadCallback(TrainerCallback):
     """
-    Callback to upload checkpoints to Google Drive after saving.
-    Integrates with drive_uploader.py logic.
+    保存後にチェックポイントをGoogle Driveにアップロードするコールバック。
+    drive_uploader.pyのロジックと統合。
     """
 
     def __init__(self, upload_interval_steps: int = 1000):
@@ -210,7 +211,7 @@ class DriveUploadCallback(TrainerCallback):
         self._initialized = False
 
     def _init_drive(self):
-        """Lazy initialize Google Drive service."""
+        """Google Driveサービスの遅延初期化。"""
         if self._initialized:
             return
         try:
@@ -230,7 +231,7 @@ class DriveUploadCallback(TrainerCallback):
             self._initialized = False
 
     def _compress_and_upload(self, checkpoint_path: Path, step: int):
-        """Compress checkpoint folder and upload to Drive."""
+        """チェックポイントフォルダを圧縮してDriveにアップロード。"""
         if not self._initialized:
             self._init_drive()
             if not self._initialized:
@@ -249,10 +250,10 @@ class DriveUploadCallback(TrainerCallback):
 
             upload_file_to_drive(self.drive_service, zip_path, self.root_folder_id)
 
-            # Mark as uploaded
+            # アップロード済みとしてマーク
             (checkpoint_path / ".uploaded").touch()
 
-            # Clean up zip
+            # zipクリーンアップ
             if zip_path.exists():
                 os.remove(zip_path)
 
@@ -264,12 +265,12 @@ class DriveUploadCallback(TrainerCallback):
     def on_save(
         self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
-        """Called after checkpoint save."""
-        # Check if we should upload (every upload_interval_steps)
+        """チェックポイント保存後に呼び出し。"""
+        # アップロードすべきか確認（upload_interval_stepsごと）
         if state.global_step % self.upload_interval_steps != 0:
             return
 
-        # Avoid duplicate uploads
+        # 重複アップロードを回避
         if state.global_step <= self.last_uploaded_step:
             return
 
@@ -289,7 +290,7 @@ class DriveUploadCallback(TrainerCallback):
     def on_train_end(
         self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
-        """Upload final checkpoint on training end."""
+        """学習終了時に最終チェックポイントをアップロード。"""
         checkpoint_dirs = sorted(
             Path(args.output_dir).glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[1])
         )
@@ -305,7 +306,7 @@ class DriveUploadCallback(TrainerCallback):
 
 
 # ============================================================
-# CustomTrainer with Muon/AdamW split
+# Muon/AdamW分割付きカスタムTrainer
 # ============================================================
 class CustomTrainer(Trainer):
     def __init__(self, *args, additional_config=None, **kwargs):
@@ -313,6 +314,7 @@ class CustomTrainer(Trainer):
         self.additional_config = additional_config
 
     def create_optimizer(self):
+        """オプティマイザを作成（2DパラメータはMuon、1DはAdamW）。"""
         if self.optimizer is not None:
             return self.optimizer
 
@@ -326,11 +328,13 @@ class CustomTrainer(Trainer):
         hpo_config.get("beta2", 0.95)
         hpo_config.get("grad_clip", 1.0)
 
+        # 2Dパラメータ（行列）と1Dパラメータ（embeddings, biases, layernorms）に分類
         params_2d = []
         params_1d = []
         for n, p in model.named_parameters():
             if not p.requires_grad:
                 continue
+            # 2次元未満、またはembed/norm/bias/lm_headを含む場合は1Dとする
             if len(p.shape) < 2 or "embed" in n or "norm" in n or "bias" in n or "lm_head" in n:
                 params_1d.append(p)
             else:
@@ -371,14 +375,14 @@ class CustomTrainer(Trainer):
 
 
 # ============================================================
-# Main training function
+# メイン学習関数
 # ============================================================
 def train(config, tokenized_datasets=None, extra_callbacks=None):
     """
     Args:
-        config: dict from src.config.load_config()
-        tokenized_datasets: optional pre-tokenized DatasetDict
-        extra_callbacks: optional list of TrainerCallback
+        config: src.config.load_config()からのdict
+        tokenized_datasets: オプションの前処理済みDatasetDict
+        extra_callbacks: オプションのTrainerCallbackリスト
     """
     config = normalize_config(config)
     git_hash = get_git_revision_hash()

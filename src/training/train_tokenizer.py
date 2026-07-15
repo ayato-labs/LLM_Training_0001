@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Train SentencePiece BPE tokenizer for Japanese novels.
-ADR-021: Domain-specific 64k vocab + end_of_story token.
+日本語小説向けSentencePiece BPEトークナイザの学習。
+ADR-021: ドメイン固有64k語彙 + end_of_storyトークン。
 """
 
 import argparse
@@ -31,7 +31,7 @@ VOCAB_SIZE = 64000
 
 
 def extract_corpus_text(corpus_path: Path, output_path: Path) -> int:
-    """Extract text from corpus.jsonl for SentencePiece training."""
+    """SentencePiece学習用にcorpus.jsonlからテキストを抽出。"""
     count = 0
     with (
         open(corpus_path, encoding="utf-8") as f_in,
@@ -47,7 +47,7 @@ def extract_corpus_text(corpus_path: Path, output_path: Path) -> int:
 
 
 def train_sentencepiece(corpus_txt: Path, model_prefix: Path):
-    """Train SentencePiece BPE model."""
+    """SentencePiece BPEモデルを学習。"""
     special_symbols = ",".join(SPECIAL_TOKENS)
 
     spm.SentencePieceTrainer.train(
@@ -69,19 +69,19 @@ def train_sentencepiece(corpus_txt: Path, model_prefix: Path):
 
 
 def convert_to_hf_tokenizer(model_path: Path, output_path: Path):
-    """Convert SentencePiece model to HuggingFace tokenizer.json.
+    """SentencePieceモデルをHuggingFace tokenizer.jsonに変換。
 
-    Uses the tokenizers library to build tokenizer.json properly:
-    - Vocab from SP model (IDs 0-63999)
-    - Special tokens in vocab at their SP positions (not appended)
-    - Metaspace pre-tokenizer with ▁ prefix
-    - No added_tokens (everything in base vocab)
+    tokenizersライブラリを使用してtokenizer.jsonを適切に構築：
+    - SPモデルからの語彙（ID 0-63999）
+    - 特殊トークンはSPの位置に配置（追加ではない）
+    - ▁プレフィックスのMetaspace前処理
+    - added_tokensなし（すべて基本語彙）
     """
     import sentencepiece as spm
     from tokenizers import decoders, models, pre_tokenizers
     from tokenizers.normalizers import NFKC
 
-    # Load SP vocab
+    # SP語彙の読み込み
     sp = spm.SentencePieceProcessor()
     sp.load(str(model_path) + ".model")
 
@@ -95,7 +95,7 @@ def convert_to_hf_tokenizer(model_path: Path, output_path: Path):
         f"eos={vocab.get('</s>')}, pad={vocab.get('<pad>')}"
     )
 
-    # Build tokenizer with tokenizers library
+    # tokenizersライブラリでトークナイザを構築
     tokenizer = Tokenizer(
         models.BPE(
             vocab=vocab,
@@ -121,11 +121,11 @@ def convert_to_hf_tokenizer(model_path: Path, output_path: Path):
         split=True,
     )
 
-    # Save without added_tokens - all tokens in vocab
+    # added_tokensなしで保存 - すべて語彙内
     tokenizer.save(str(output_path), pretty=True)
     print(f"HuggingFace tokenizer.json saved to {output_path}")
 
-    # Verify: load with HF and check special token IDs
+    # 検証: HFで読み込んで特殊トークンIDを確認
     from transformers import PreTrainedTokenizerFast
 
     hf_tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(output_path))

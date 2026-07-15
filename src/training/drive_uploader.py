@@ -1,13 +1,13 @@
 """
-Google Drive Checkpoint & Artifact Archiver Daemon
+Google Drive チェックポイント＆アーティファクトアーカイブデーモン
 ---------------------------------------------------
-Extends the original uploader with:
-- DVC cache backup (deduplicated object storage)
-- Evaluation report backup
-- ADR document backup
-- Local storage auto-cleanup policy
+オリジナルアップローダを拡張：
+- DVCキャッシュバックアップ（重複排除オブジェクトストレージ）
+- 評価レポートバックアップ
+- ADRドキュメントバックアップ
+- ローカルストレージ自動クリーンアップポリシー
 
-ADR-019: Storage optimization via cloud-first strategy.
+ADR-019: クラウドファースト戦略によるストレージ最適化。
 """
 
 import contextlib
@@ -32,40 +32,40 @@ except ImportError:
     HAS_GOOGLE_DRIVE = False
 
 # ============================================================
-# Configuration
+# 設定
 # ============================================================
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 OUTPUT_DIR = Path("models/output")
 DRIVE_FOLDER_NAME = "Novel_LLM_Checkpoints"
-POLL_INTERVAL = 30  # seconds
-MIN_FOLDER_AGE = 60  # seconds before processing a checkpoint
+POLL_INTERVAL = 30  # 秒
+MIN_FOLDER_AGE = 60  # チェックポイント処理までの最小経過秒数
 
-# Directories to backup as zips
+# zipとしてバックアップするディレクトリ
 LOG_DIRS = [
     ("mlruns", "mlruns_backup"),
     ("models/output/runs", "tensorboard_backup"),
 ]
 
-# Additional artifacts to backup (source, drive_label)
+# 追加バックアップ対象（ソース、ラベル）
 ARTIFACT_DIRS = [
     ("docs/ADR", "adr_backup"),
     ("logs", "logs_backup"),
 ]
 
-# DVC cache: only backup .dvc/cache if it exists and has content
+# DVCキャッシュ：.dvc/cacheが存在し内容がある場合のみバックアップ
 DVC_CACHE_DIR = Path(".dvc/cache")
 
-# Final model output directory
+# 最終モデル出力ディレクトリ
 FINAL_MODEL_DIR = Path("models/output")
 FINAL_MODEL_DRIVE_FOLDER = "Novel_LLM_Models"
 
-# Local cleanup: keep only N latest checkpoints locally
+# ローカルクリーンアップ：最新のN個のチェックポイントのみを保持
 LOCAL_CHECKPOINT_KEEP = 2
 
 
 def get_drive_service():
-    """OAuth 2.0 authentication using client_secret_*.json."""
+    """client_secret_*.jsonを使用したOAuth 2.0認証。"""
     creds = None
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
@@ -93,7 +93,7 @@ def get_drive_service():
 
 
 def get_or_create_drive_folder(service, folder_name, parent_id=None):
-    """Get or create a folder on Google Drive."""
+    """Google Drive上にフォルダを取得または作成。"""
     query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     if parent_id:
         query += f" and '{parent_id}' in parents"
