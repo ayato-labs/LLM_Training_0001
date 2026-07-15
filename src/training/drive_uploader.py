@@ -203,25 +203,26 @@ def backup_dvc_cache(service, folder_id):
     compress_and_upload(service, DVC_CACHE_DIR, folder_id, "dvc_cache_backup")
 
 
-def get_checkpoints():
+def get_checkpoints(output_dir=None):
     """List valid checkpoint directories sorted by step number."""
-    if not OUTPUT_DIR.exists():
+    target_dir = Path(output_dir) if output_dir else OUTPUT_DIR
+    if not target_dir.exists():
         return []
 
     checkpoints = []
-    for item in OUTPUT_DIR.iterdir():
+    for item in target_dir.iterdir():
         if item.is_dir() and re.match(r"^checkpoint-\d+$", item.name):
             step = int(item.name.split("-")[1])
             checkpoints.append((step, item))
     return sorted(checkpoints, key=lambda x: x[0])
 
 
-def cleanup_old_checkpoints(keep=LOCAL_CHECKPOINT_KEEP):
+def cleanup_old_checkpoints(keep=LOCAL_CHECKPOINT_KEEP, output_dir=None):
     """
     Remove old checkpoint directories locally, keeping only the latest `keep` checkpoints.
     This is the primary mechanism for reducing local storage pressure.
     """
-    checkpoints = get_checkpoints()
+    checkpoints = get_checkpoints(output_dir=output_dir)
     if len(checkpoints) <= keep:
         return
 
@@ -487,7 +488,7 @@ class DriveUploadCallback(TrainerCallback):
                 else:
                     secret_files = glob.glob("client_secret_*.json") + glob.glob("credentials.json")
                     if not secret_files:
-                        return None
+                        return None, None
                     flow = InstalledAppFlow.from_client_secrets_file(secret_files[0], scopes)
                     creds = flow.run_local_server(port=0)
                 with open("token.json", "w") as token:
@@ -511,15 +512,15 @@ class DriveUploadCallback(TrainerCallback):
 
     def on_step_end(self, args, state, control, **kwargs):
         if state.global_step % self.upload_interval_steps == 0 and state.global_step > 0:
-            self._upload_checkpoint(state.global_step)
+            self._upload_checkpoint(state.global_step, output_dir=args.output_dir)
 
     def on_train_end(self, args, state, control, **kwargs):
-        self._upload_checkpoint(state.global_step, force=True)
+        self._upload_checkpoint(state.global_step, output_dir=args.output_dir, force=True)
 
-    def force_final_upload(self, global_step: int):
-        self._upload_checkpoint(global_step, force=True)
+    def force_final_upload(self, global_step: int, output_dir: str = None):
+        self._upload_checkpoint(global_step, output_dir=output_dir, force=True)
 
-    def _upload_checkpoint(self, step: int, force: bool = False):
+    def _upload_checkpoint(self, step: int, output_dir: str = None, force: bool = False):
         try:
             service, folder_id = self._get_service()
             if service is None:
@@ -530,17 +531,17 @@ class DriveUploadCallback(TrainerCallback):
             import shutil
             from pathlib import Path
 
-            output_dir = Path("models/output")
-            checkpoint_dir = output_dir / f"checkpoint-{step}"
+            target_output_dir = Path(output_dir) if output_dir else OUTPUT_DIR
+            checkpoint_dir = target_output_dir / f"checkpoint-{step}"
             if not checkpoint_dir.exists():
                 return
 
-            zip_path = output_dir / f"checkpoint-{step}.zip"
+            zip_path = target_output_dir / f"checkpoint-{step}.zip"
             if zip_path.exists() and not force:
                 return
 
             logger.info(f"Compressing checkpoint-{step}...")
-            shutil.make_archive(str(output_dir / f"checkpoint-{step}"), "zip", str(checkpoint_dir))
+            shutil.make_archive(str(target_output_dir / f"checkpoint-{step}"), "zip", str(checkpoint_dir))
 
             # Upload
             from googleapiclient.http import MediaFileUpload
@@ -565,7 +566,7 @@ class DriveUploadCallback(TrainerCallback):
                 os.remove(zip_path)
 
             # Cleanup old checkpoints locally
-            cleanup_old_checkpoints(keep=LOCAL_CHECKPOINT_KEEP)
+            cleanup_old_checkpoints(keep=LOCAL_CHECKPOINT_KEEP, output_dir=str(target_output_dir))
 
         except Exception as e:
             logger.warning(f"Error in DriveUploadCallback: {e}")
