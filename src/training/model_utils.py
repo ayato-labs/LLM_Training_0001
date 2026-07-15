@@ -91,3 +91,56 @@ def detect_vram() -> float:
         pass
     return 4.0
 
+
+def compute_dataset_fingerprint(dataset_path: str) -> dict:
+    path = Path(dataset_path)
+    if not path.exists():
+        return {"error": f"File not found: {dataset_path}"}
+
+    import datetime
+    stat = path.stat()
+    line_count = 0
+    with open(path, encoding="utf-8") as f:
+        for _ in f:
+            line_count += 1
+
+    return {
+        "path": str(path.resolve()),
+        "sha256": compute_file_hash(str(path)),
+        "size_bytes": stat.st_size,
+        "line_count": line_count,
+        "mtime": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+    }
+
+
+def compute_db_fingerprint(db_path: str) -> dict:
+    path = Path(db_path)
+    if not path.exists():
+        return {"error": f"Database not found: {db_path}"}
+
+    import sqlite3
+    import datetime
+
+    stat = path.stat()
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM chapters")
+        chapter_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM novels")
+        novel_count = cursor.fetchone()[0]
+        conn.close()
+    except Exception:
+        chapter_count = -1
+        novel_count = -1
+
+    return {
+        "path": str(path.resolve()),
+        "sha256": compute_file_hash(str(path)),
+        "size_bytes": stat.st_size,
+        "chapter_count": chapter_count,
+        "novel_count": novel_count,
+        "mtime": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+    }
+
+
