@@ -39,7 +39,7 @@ def parse_args():
     p.add_argument(
         "--output", required=True, help="Output YAML path (e.g., configs/hparams_150M.yaml)"
     )
-    p.add_argument("--n-trials", type=int, default=100, help="Optuna trials")
+    p.add_argument("--n-trials", type=int, default=150, help="Optuna trials (5D: 150推奨)")
     p.add_argument("--vram-gb", type=float, help="Override VRAM detection")
     p.add_argument("--seq-len", type=int, default=1024, help="Sequence length")
     return p.parse_args()
@@ -236,7 +236,7 @@ def main():
         study.optimize(
             lambda trial: objective(trial, proxy_arch, tokenized_dataset, args.seq_len, vram, step_law_hpo),
             n_trials=args.n_trials,
-            timeout=28800,  # 8 hours timeout
+            timeout=86400,  # 24時間 (安全弁。フル本番は数日)
         )
         logger.info("Optuna optimization completed")
     except Exception as e:
