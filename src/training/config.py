@@ -65,7 +65,6 @@ def _normalize_config(raw: dict) -> dict:
         "save_steps": t.get("save_steps", 1000),
         "eval_steps": t.get("eval_steps", 1000),
         "logging_steps": t.get("logging_steps", 10),
-        "drive_upload_interval": t.get("drive_upload_interval", 1000),
     }
 
     # トップレベルマージ

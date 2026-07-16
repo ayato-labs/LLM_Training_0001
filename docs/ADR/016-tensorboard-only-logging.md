@@ -51,7 +51,6 @@ def capture_env_snapshot() -> dict:
 
 - 既存 `mlruns/` ディレクトリは **読み取り専用アーカイブ** として保持
 - 新規学習は `models/output/runs/` (TensorBoard) のみ生成
-- `DriveUploadCallback` は `models/output/` 全体をアップロード（TBログ含む）
 
 ## 結果
 
@@ -65,7 +64,7 @@ def capture_env_snapshot() -> dict:
 - **実験比較UI**: MLflowの「Run比較テーブル」が失われる
   - 代替: TensorBoardの「Scalars」タブで複数Run選択比較、または `tensorboard.dev` アップロード
 - **モデルレジストリ**: MLflow Model Registry機能なし
-  - 代替: Google Drive版管理 + `trainer_state.json` ベストステップ記録で運用
+  - 代替: `trainer_state.json` ベストステップ記録で運用
 
 ## 検証
 

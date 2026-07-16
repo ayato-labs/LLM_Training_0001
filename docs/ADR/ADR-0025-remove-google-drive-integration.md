@@ -1,6 +1,6 @@
 # ADR-0025-remove-google-drive-integration: Removing Google Drive Integration from the Training Pipeline
 
-- **Status:** Accepted
+- **Status:** Accepted (Implementation Complete)
 - **Date:** 2026-07-16
 - **Deciders:** Solo Developer
 
@@ -17,13 +17,13 @@ According to our core principle **"引き算のエンジニアリング" (Subtra
 
 ## Decision
 
-We will remove the Google Drive upload callback entirely from the training loop, delegating checkpoint pruning to Hugging Face standard logic and migrating Drive uploads to decoupled tools:
+We will remove the Google Drive upload callback entirely from the training loop, delegating checkpoint pruning to Hugging Face standard logic:
 
 1. **Delete Drive Callback**: Remove `DriveUploadCallback` from [callbacks.py](file:///c:/Users/saiha/My_Service/programing/LLM/Novel_LLM/LLM_Training/src/training/callbacks.py).
 2. **Configure Native Pruning**: Set `save_total_limit` in [train_engine.py](file:///c:/Users/saiha/My_Service/programing/LLM/Novel_LLM/LLM_Training/src/training/train_engine.py) to automatically restrict local checkpoints.
 3. **Relocate Checkpoint Helpers**: Move local checkpoint resolution helpers (`get_checkpoints`, `cleanup_old_checkpoints`) to [model_utils.py](file:///c:/Users/saiha/My_Service/programing/LLM/Novel_LLM/LLM_Training/src/training/model_utils.py).
-4. **Move Daemon to Scripts**: Move the old uploader daemon to [drive_uploader.py](file:///c:/Users/saiha/My_Service/programing/LLM/Novel_LLM/LLM_Training/scripts/drive_uploader.py) to allow asynchronous, manual backups.
-5. **Decommission original**: Delete `src/training/drive_uploader.py`.
+4. **Remove config references**: Remove `drive_upload_interval` from [config.yaml](file:///c:/Users/saiha/My_Service/programing/LLM/Novel_LLM/LLM_Training/configs/config.yaml) and [config.py](file:///c:/Users/saiha/My_Service/programing/LLM/Novel_LLM/LLM_Training/src/training/config.py).
+5. **Clean up documentation**: Update all documentation files to remove Google Drive references.
 
 ## Consequences
 
@@ -33,4 +33,4 @@ We will remove the Google Drive upload callback entirely from the training loop,
 - **Standardization**: Uses Hugging Face `Trainer` native `save_total_limit`.
 
 ### Cons
-- Checkpoints are not automatically backed up to Google Drive during training runs unless the external uploader script is started as a separate daemon.
+- None. The Google Drive daemon script (`scripts/drive_uploader.py`) remains available for manual, asynchronous backups if needed.

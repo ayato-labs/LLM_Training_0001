@@ -21,7 +21,7 @@ We will merge the two pipelines into a single, unified training structure:
 
 1. **Extract Shared Utilities**: Move `TokenizerWrapper`, `get_optimal_num_proc()`, `compute_file_hash()`, and `detect_vram()` to a shared utilities module `src/training/model_utils.py`.
 2. **Implement Unified `train_engine.py`**: Design a core `src/training/train_engine.py` which contains:
-   - All standard callbacks (`ProgressBarFormatCallback`, `HashSaveCallback`, `DetailedLoggingCallback`, and `DriveUploadCallback`).
+   - All standard callbacks (`ProgressBarFormatCallback`, `HashSaveCallback`, `DetailedLoggingCallback`).
    - `CustomTrainer` with automatic split optimizer configuration supporting both Muon and AdamW.
    - A unified `train(config, tokenized_datasets=None, extra_callbacks=None)` function that accepts normalized configurations (supporting both Hydra-resolved and HPO raw dictionaries) and executes the training loop.
 3. **Refactor Entrypoints**:

@@ -28,10 +28,11 @@ class OptunaPruningCallback(TrainerCallback):
 
 def create_search_space(step_law_hpo: dict, vram_gb: float) -> dict:
     """Step Law結果を中心とした探索空間定義 (4次元)"""
-    lr_center = step_law_hpo["max_lr_2d"]
+    lr_2d_center = step_law_hpo["max_lr_2d"]
+    lr_1d_center = step_law_hpo["max_lr_1d"]
     return {
-        "max_lr_2d": (lr_center * 0.5, lr_center * 2.0, "log"),
-        "max_lr_1d": (lr_center * 5, lr_center * 20, "log"),
+        "max_lr_2d": (lr_2d_center * 0.5, lr_2d_center * 2.0, "log"),
+        "max_lr_1d": (lr_1d_center * 0.5, lr_1d_center * 2.0, "log"),
         "batch_size_seqs": [8, 16, 32],
         "weight_decay": (0.01, 0.3, ""),
     }
@@ -78,7 +79,7 @@ def objective(
             "num_attention_heads": arch["heads"],
             "num_key_value_heads": arch["kv_heads"],
             "intermediate_size": arch["ffn"],
-            "rope_theta": 10000.0,
+            "rope_theta": arch.get("rope_theta", 500000.0),
             "vocab_size": 64000,
         },
         "hpo": hpo,

@@ -1,7 +1,7 @@
 # ADR-032: Google Drive アップロードを Trainer Callback へ統合
 
 **日付**: 2026-07-12  
-**ステータス**: Accepted  
+**ステータス**: Superseded by ADR-0025 (Google Drive Integration Removed)  
 **決定者**: Solo Developer
 
 ## コンテキスト
@@ -72,3 +72,7 @@ trainer = Trainer(..., callbacks=callbacks)
 ## 検証
 - `max_steps=1` で Callback 登録・初期化正常確認済み
 - 実アップロードは認証ファイル配置後に手動検証予定
+
+---
+
+**注意**: このADRは ADR-0025 により廃止されました。Google Drive連携は学習パイプラインから完全に削除されました。

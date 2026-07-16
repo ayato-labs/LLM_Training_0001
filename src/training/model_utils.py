@@ -26,6 +26,8 @@ def create_model_config(config: dict, tokenizer) -> LlamaConfig:
         eos_token_id=tokenizer.eos_token_id,
         use_cache=False,  # training用
         attn_implementation=attn_implementation,
+        max_position_embeddings=config.get("seq_len", 1024),
+        initializer_range=mp.get("initializer_range", 0.02),
     )
 
 

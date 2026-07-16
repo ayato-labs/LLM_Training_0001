@@ -25,9 +25,15 @@ from src.training.model_utils import TokenizerWrapper, get_optimal_num_proc
 def parse_args():
     p = argparse.ArgumentParser(description="Offline HPO for LLM Training")
     p.add_argument(
-        "--model-size",
+        "--proxy-model-size",
         choices=["50M", "150M", "3B", "7B"],
-        help="Target model size (optional, overrides config.yaml architecture if specified)",
+        default="150M",
+        help="Model size to run HPO proxy search on (defaults to 150M)",
+    )
+    p.add_argument(
+        "--target-model-size",
+        choices=["50M", "150M", "3B", "7B"],
+        help="Final target model size (defaults to proxy size if not specified)",
     )
     p.add_argument("--data-path", required=True, help="Path to training dataset (JSONL)")
     p.add_argument(
@@ -42,29 +48,31 @@ def parse_args():
 @log_function_call(log_args=True)
 def get_base_config(model_size: str = None) -> dict:
     """ベース設定構築、または configs/config.yaml から動的に取得"""
-    # 1. まず config.yaml からのロードを試みる
-    try:
-        from omegaconf import OmegaConf
+    # 1. model_size が明示的に指定されていない場合のみ config.yaml からのロードを試みる
+    if model_size is None:
+        try:
+            from omegaconf import OmegaConf
 
-        config_path = Path(__file__).resolve().parent.parent / "configs" / "config.yaml"
-        if config_path.exists():
-            cfg = OmegaConf.load(config_path)
-            model = cfg.get("model", {})
-            llama = model.get("llama", {})
-            if llama:
-                logger.info("Loaded architecture settings from configs/config.yaml")
-                return {
-                    "n_params": model.get("target_params", 150_000_000),
-                    "hidden": llama.get("hidden_size", 768),
-                    "layers": llama.get("num_hidden_layers", 12),
-                    "heads": llama.get("num_attention_heads", 12),
-                    "kv_heads": llama.get("num_key_value_heads", 3),
-                    "ffn": llama.get("intermediate_size", 3072),
-                }
-    except Exception as e:
-        logger.warning(
-            f"Could not load architecture from config.yaml: {e}. Falling back to default list."
-        )
+            config_path = Path(__file__).resolve().parent.parent / "configs" / "config.yaml"
+            if config_path.exists():
+                cfg = OmegaConf.load(config_path)
+                model = cfg.get("model", {})
+                llama = model.get("llama", {})
+                if llama:
+                    logger.info("Loaded architecture settings from configs/config.yaml")
+                    return {
+                        "n_params": model.get("target_params", 150_000_000),
+                        "hidden": llama.get("hidden_size", 768),
+                        "layers": llama.get("num_hidden_layers", 12),
+                        "heads": llama.get("num_attention_heads", 12),
+                        "kv_heads": llama.get("num_key_value_heads", 3),
+                        "ffn": llama.get("intermediate_size", 3072),
+                        "rope_theta": llama.get("rope_theta", 500000.0),
+                    }
+        except Exception as e:
+            logger.warning(
+                f"Could not load architecture from config.yaml: {e}. Falling back to default list."
+            )
 
     # 2. 指定された model_size、またはデフォルトのフォールバック
     size_key = model_size or "150M"
@@ -76,6 +84,7 @@ def get_base_config(model_size: str = None) -> dict:
             "heads": 10,
             "kv_heads": 10,
             "ffn": 2560,
+            "rope_theta": 500000.0,
         },
         "150M": {
             "n_params": 150_000_000,
@@ -84,6 +93,7 @@ def get_base_config(model_size: str = None) -> dict:
             "heads": 12,
             "kv_heads": 3,
             "ffn": 3072,
+            "rope_theta": 500000.0,
         },
         "3B": {
             "n_params": 3_000_000_000,
@@ -92,6 +102,7 @@ def get_base_config(model_size: str = None) -> dict:
             "heads": 20,
             "kv_heads": 20,
             "ffn": 10240,
+            "rope_theta": 500000.0,
         },
         "7B": {
             "n_params": 7_000_000_000,
@@ -100,6 +111,7 @@ def get_base_config(model_size: str = None) -> dict:
             "heads": 32,
             "kv_heads": 32,
             "ffn": 11008,
+            "rope_theta": 500000.0,
         },
     }
     try:
@@ -133,14 +145,20 @@ def main():
     logger.info("Starting HPO search", extra={"args": vars(args)})
 
     # 1. ベース設定構築
-    arch = get_base_config(args.model_size)
+    proxy_size = args.proxy_model_size
+    target_size = args.target_model_size or proxy_size
+
+    proxy_arch = get_base_config(proxy_size)
+    target_arch = get_base_config(target_size)
+
     n_tokens = estimate_tokens(args.data_path)
     vram = args.vram_gb or detect_vram()
 
     logger.info(
         "HPO Search initialized",
         extra={
-            "model_size": args.model_size,
+            "proxy_model_size": proxy_size,
+            "target_model_size": target_size,
             "tokens": n_tokens,
             "vram": vram,
             "trials": args.n_trials,
@@ -185,12 +203,12 @@ def main():
         logger.exception(f"Error pre-tokenizing dataset: {e}")
         raise
 
-    # 3. Step Law で初期値・探索空間取得
+    # 3. Step Law で初期値・探索空間取得 (プロキシモデルに基づき算出)
     try:
         step_law_hpo = compute_hpo_for_target(
-            n_params=arch["n_params"], n_tokens=n_tokens, seq_len=args.seq_len
+            n_params=proxy_arch["n_params"], n_tokens=n_tokens, seq_len=args.seq_len
         )
-        logger.debug(f"Step Law HPO result: {step_law_hpo}")
+        logger.debug(f"Proxy Step Law HPO result: {step_law_hpo}")
     except Exception as e:
         logger.exception(f"Error computing Step Law HPO: {e}")
         raise
@@ -212,7 +230,7 @@ def main():
         study.set_user_attr("n_trials", args.n_trials)
         logger.info("Starting Optuna optimization")
         study.optimize(
-            lambda trial: objective(trial, arch, tokenized_dataset, args.seq_len, vram, step_law_hpo),
+            lambda trial: objective(trial, proxy_arch, tokenized_dataset, args.seq_len, vram, step_law_hpo),
             n_trials=args.n_trials,
             timeout=28800,  # 8 hours timeout
         )
@@ -223,18 +241,33 @@ def main():
 
     best = study.best_params
     logger.info(
-        "Best parameters found", extra={"best_params": best, "best_value": study.best_value}
+        "Best proxy parameters found", extra={"best_params": best, "best_value": study.best_value}
     )
 
-    # 5. 派生パラメータ計算（main.pyで再計算不要な値も含める）
+    # 5. 派生パラメータ計算とスケーリング転移の実施
     try:
-        per_device = min(best["batch_size_seqs"], 1 if vram <= 4.5 else (4 if vram <= 8.5 else 8))
-        grad_accum = max(1, best["batch_size_seqs"] // per_device)
+        # プロキシモデルからターゲットモデルへの学習率スケーリング転移 (N_target / N_proxy)^(-0.713)
+        n_proxy = proxy_arch["n_params"]
+        n_target = target_arch["n_params"]
+        scaling_ratio = (n_target / n_proxy) ** -0.713
+        logger.info(f"Applying Step Law scaling ratio from {proxy_size}({n_proxy}) to {target_size}({n_target}): {scaling_ratio:.6f}")
 
-        # Include fixed parameters in the output configuration
+        scaled_best = {}
+        for k, v in best.items():
+            if k in ["max_lr_2d", "max_lr_1d"]:
+                scaled_best[k] = round(float(v * scaling_ratio), 6)
+            else:
+                scaled_best[k] = v
+
+        # ターゲット用のデバイスあたりバッチサイズと勾配累積ステップ数算出
+        target_batch_seqs = scaled_best.get("batch_size_seqs", 16)
+        per_device = min(target_batch_seqs, 1 if vram <= 4.5 else (4 if vram <= 8.5 else 8))
+        grad_accum = max(1, target_batch_seqs // per_device)
+
+        # Include fixed parameters in the final output configuration
         output = {
             "training": {
-                **best,
+                **scaled_best,
                 "warmup_ratio": 0.03,
                 "beta2": 0.95,
                 "grad_clip": 1.0,
@@ -243,7 +276,7 @@ def main():
             }
         }
     except Exception as e:
-        logger.exception(f"Error calculating derived parameters: {e}")
+        logger.exception(f"Error calculating scaled derived parameters: {e}")
         raise
 
     # 6. YAML出力

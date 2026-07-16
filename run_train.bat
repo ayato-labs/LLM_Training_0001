@@ -70,7 +70,6 @@ echo.
 echo ============================================================
 echo [SUCCESS] Training completed.
 echo Model saved to: models/output/
-echo Checkpoints auto-uploaded to Google Drive (if configured)
 echo ============================================================
 goto :eof
 

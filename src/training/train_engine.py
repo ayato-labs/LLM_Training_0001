@@ -255,6 +255,8 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         use_liger_kernel=config.get("use_liger_kernel", False),
         dataloader_pin_memory=config.get("dataloader_pin_memory", True),
         dataloader_num_workers=config.get("dataloader_num_workers", 0),
+        torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
+        dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2),
     )
 
     # 11. コールバックの設定

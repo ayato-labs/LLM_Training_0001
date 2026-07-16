@@ -36,7 +36,7 @@ if not exist "%DATA_PATH%" (
 )
 
 REM Run HPO search in one line
-"%~dp0.venv\Scripts\python.exe" -m scripts.find_hparams --model-size %MODEL_SIZE% --data-path "%DATA_PATH%" --output "%OUTPUT%" --n-trials %N_TRIALS% %VRAM_GB_FLAG% --seq-len %SEQ_LEN%
+"%~dp0.venv\Scripts\python.exe" -m scripts.find_hparams --proxy-model-size %MODEL_SIZE% --target-model-size %MODEL_SIZE% --data-path "%DATA_PATH%" --output "%OUTPUT%" --n-trials %N_TRIALS% %VRAM_GB_FLAG% --seq-len %SEQ_LEN%
 
 if errorlevel 1 (
     echo.

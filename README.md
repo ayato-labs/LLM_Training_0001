@@ -99,8 +99,7 @@ LLM_Training/
 │   │   └── exporter.py        # SQLite→JSONL変換
 │   └── utils/
 │       ├── set_seed.py        # 乱数シード固定
-│       ├── env_snapshot.py    # 環境スナップショット
-│       └── drive_uploader.py  # Google Driveバックアップデーモン
+│       └── env_snapshot.py    # 環境スナップショット
 ├── docs/
 │   └── ADR/                   # Architectural Decision Records
 │       ├── ADR-013〜022.md    # 技術的意思決定記録
@@ -122,7 +121,6 @@ LLM_Training/
 | 乱数シード固定 | `set_seed()` | ADR-016 |
 | 環境記録 | `env_snapshot.py` | ADR-017 |
 | 実験追跡 | MLflow | ADR-018 |
-| ストレージ最適化 | `drive_uploader.py` | ADR-019 |
 | 評価プロトコル | 統計分析 + レポート生成 | ADR-020 |
 | 再現性保証 | `reproduce.py` | ADR-021 |
 | 推論出力記録 | JSON + MLflow artifact | ADR-022 |

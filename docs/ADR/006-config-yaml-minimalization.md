@@ -92,7 +92,6 @@ training:
   save_steps: 1000
   eval_steps: 1000
   logging_steps: 10
-  drive_upload_interval: 1000
 
 model:
   target_params: 150_000_000

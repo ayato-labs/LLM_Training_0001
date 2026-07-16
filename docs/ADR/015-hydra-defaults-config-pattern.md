@@ -52,7 +52,6 @@ training:
   save_steps: 1000
   eval_steps: 1000
   logging_steps: 10
-  drive_upload_interval: 1000
 
 # アーキテクチャ（スケール変更時のみ書き換え）
 model:
