@@ -16,24 +16,27 @@ set RESUME=
 REM Parse arguments
 :parse
 if "%1"=="" goto :run
-if "%1"=="--max-steps" (
-    shift
-    set MAX_STEPS=%1
-    shift
-    goto :parse
-)
-if "%1"=="--data-fraction" (
-    shift
-    set DATA_FRACTION=%1
-    shift
-    goto :parse
-)
-if "%1"=="--resume" (
-    set RESUME=resume_from_checkpoint=models/output/checkpoint-latest
-    shift
-    goto :parse
-)
+if "%1"=="--max-steps" goto :handle_max_steps
+if "%1"=="--data-fraction" goto :handle_data_fraction
+if "%1"=="--resume" goto :handle_resume
 if "%1"=="-h" goto :help
+shift
+goto :parse
+
+:handle_max_steps
+shift
+set MAX_STEPS=%1
+shift
+goto :parse
+
+:handle_data_fraction
+shift
+set DATA_FRACTION=%1
+shift
+goto :parse
+
+:handle_resume
+set RESUME=resume_from_checkpoint=models/output/checkpoint-latest
 shift
 goto :parse
 
@@ -51,8 +54,8 @@ echo.
 
 REM Execute training
 set OVERRIDES=
-if not "%MAX_STEPS%"=="" set OVERRIDES=%OVERRIDES% max_steps=%MAX_STEPS%
-if not "%DATA_FRACTION%"=="" set OVERRIDES=%OVERRIDES% data_fraction=%DATA_FRACTION%
+if not "%MAX_STEPS%"=="" set OVERRIDES=%OVERRIDES% training.max_steps=%MAX_STEPS%
+if not "%DATA_FRACTION%"=="" set OVERRIDES=%OVERRIDES% +data_fraction=%DATA_FRACTION%
 if not "%RESUME%"=="" set OVERRIDES=%OVERRIDES% %RESUME%
 
 uv run --active python -m src.training.main %OVERRIDES%

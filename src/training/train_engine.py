@@ -6,6 +6,7 @@ from transformers import (
     DataCollatorForLanguageModeling,
     LlamaForCausalLM,
     PreTrainedTokenizerFast,
+    Trainer,
     TrainingArguments,
 )
 
@@ -20,7 +21,6 @@ from src.training.model_utils import (
     compute_dataset_fingerprint,
     compute_db_fingerprint,
 )
-from src.training.trainer import CustomTrainer
 from src.training.callbacks import (
     ProgressBarFormatCallback,
     HashSaveCallback,
@@ -239,14 +239,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
 
-    # 12. カスタムTrainerインスタンスの生成
-    trainer = CustomTrainer(
+    # 12. Trainerインスタンスの生成
+    trainer = Trainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False), # 因果言語モデル用にmlm=False
-        additional_config=config,
         callbacks=callbacks,
     )
 
