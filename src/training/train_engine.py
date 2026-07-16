@@ -24,7 +24,6 @@ from src.training.model_utils import (
 from src.training.callbacks import (
     ProgressBarFormatCallback,
     HashSaveCallback,
-    DriveUploadCallback,
     DetailedLoggingCallback,
 )
 
@@ -72,7 +71,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     
     # "checkpoint-latest" が指定された場合、または True の場合は最新のチェックポイントを自動探索
     if resume_checkpoint is True or (isinstance(resume_checkpoint, str) and "checkpoint-latest" in resume_checkpoint):
-        from src.training.drive_uploader import get_checkpoints
+        from src.training.model_utils import get_checkpoints
         checkpoints = get_checkpoints()
         if checkpoints:
             resume_checkpoint = str(checkpoints[-1][1])
@@ -212,6 +211,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         fp16=(precision == "fp16"),
         save_strategy="steps",
         save_steps=config.get("save_steps", 1000),
+        save_total_limit=config.get("save_total_limit", 2), # ローカルチェックポイント保持数制限
         eval_strategy="steps" if eval_ds is not None else "no",
         eval_steps=config.get("eval_steps", 1000) if eval_ds is not None else None,
         logging_steps=config.get("logging_steps", 10),
@@ -224,17 +224,11 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     )
 
     # 11. コールバックの設定
-    # Google Driveへのバックアップ実行コールバック（設定に応じた同期間隔）
-    drive_cb = DriveUploadCallback(upload_interval_steps=config.get("drive_upload_interval", 1000))
     callbacks = [
         ProgressBarFormatCallback(),                       # 進捗バーの表示をカスタムフォーマット化
         HashSaveCallback(config_hash=current_config_hash, data_hash=current_data_hash),  # hashes.jsonの自動作成
-        DetailedLoggingCallback(log_every_n_steps=1),       # 詳細なステップ別メトリクスのログ出力
+        DetailedLoggingCallback(log_every_n_steps=config.get("logging_steps", 10)),       # 詳細なステップ別メトリクスのログ出力
     ]
-
-    # メインの通常学習時（max_steps == -1）、または HPO側でドライブアップロードが明示的に許可されている場合に有効化
-    if max_steps == -1 or config.get("enable_drive_upload_hpo", False):
-        callbacks.append(drive_cb)
 
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
@@ -267,9 +261,5 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
     logger.info(f"Model saved to {output_dir}")
-
-    # Google Driveバックアップが有効な場合、最終状態を強制的にアップロード同期
-    if drive_cb in callbacks:
-        drive_cb.force_final_upload(trainer.state.global_step)
 
     return train_result.training_loss

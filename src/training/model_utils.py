@@ -150,3 +150,31 @@ def compute_db_fingerprint(db_path: str) -> dict:
         "novel_count": novel_count,
         "mtime": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
     }
+
+
+def get_checkpoints(output_dir=None):
+    """ステップ番号でソートされた有効なチェックポイントディレクトリを一覧表示。"""
+    import re
+    target_dir = Path(output_dir) if output_dir else Path("models/output")
+    if not target_dir.exists():
+        return []
+
+    checkpoints = []
+    for item in target_dir.iterdir():
+        if item.is_dir() and re.match(r"^checkpoint-\d+$", item.name):
+            step = int(item.name.split("-")[1])
+            checkpoints.append((step, item))
+    return sorted(checkpoints, key=lambda x: x[0])
+
+
+def cleanup_old_checkpoints(keep=2, output_dir=None):
+    """ローカルの古いチェックポイントディレクトリを削除し、最新の`keep`個のみを保持。"""
+    import shutil
+    checkpoints = get_checkpoints(output_dir=output_dir)
+    if len(checkpoints) <= keep:
+        return
+
+    to_remove = checkpoints[:-keep]
+    for _step, path in to_remove:
+        logger.info(f"Cleaning up old checkpoint: {path.name}")
+        shutil.rmtree(path)
