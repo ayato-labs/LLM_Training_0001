@@ -27,6 +27,9 @@ def load_config(cfg: DictConfig) -> dict:
     # 出力ディレクトリ解決
     normalized["output_dir"] = str(Path(normalized.get("output_dir", "models/output")).resolve())
 
+    # 整合性チェック: config.yaml と hparams_*.yaml のアーキテクチャ一致確認
+    _validate_config_consistency(normalized)
+
     return normalized
 
 
@@ -76,6 +79,64 @@ def _normalize_config(raw: dict) -> dict:
         "hpo": training,  # 互換性のため hpo キーも残す
         **training,  # フラットにも展開（TrainingArguments直渡し用）
     }
+
+
+def _validate_config_consistency(config: dict) -> None:
+    """config.yaml と hparams の整合性チェック"""
+    from src.common.logger import logger
+
+    # 使用される hparams ファイル名を特定 (config.yaml の defaults から)
+    defaults = config.get("defaults", [])
+    hparams_name = None
+    for d in defaults:
+        if isinstance(d, dict) and list(d.keys())[0].startswith("hparams_"):
+            hparams_name = list(d.keys())[0]
+            break
+        elif isinstance(d, str) and d.startswith("hparams_"):
+            hparams_name = d
+            break
+
+    if not hparams_name:
+        logger.warning("No hparams_* found in config.yaml defaults, skipping consistency check")
+        return
+
+    # 期待されるターゲットパラメータ数 (config.yaml の model.target_params)
+    expected_n_params = config.get("model", {}).get("target_params", 150_000_000)
+
+    # hparams ファイル名からモデルサイズを推定 (hparams_150M -> 150M)
+    import re
+    match = re.search(r"hparams_(\d+(?:\.\d+)?[MBK]?)", hparams_name)
+    if not match:
+        logger.debug(f"Could not parse model size from hparams name: {hparams_name}")
+        return
+
+    size_str = match.group(1)
+    # 簡易的なパース (150M -> 150_000_000)
+    size_map = {
+        "50M": 50_000_000,
+        "150M": 150_000_000,
+        "3B": 3_000_000_000,
+        "7B": 7_000_000_000,
+    }
+    expected_from_hparams = size_map.get(size_str)
+    if not expected_from_hparams:
+        logger.debug(f"Unknown model size in hparams: {size_str}")
+        return
+
+    # 不一致チェック (10% 許容)
+    if expected_n_params != expected_from_hparams:
+        ratio = expected_n_params / expected_from_hparams
+        if ratio < 0.9 or ratio > 1.1:
+            logger.warning(
+                f"Config consistency check: model.target_params ({expected_n_params:,}) "
+                f"does not match hparams implied size ({expected_from_hparams:,}) "
+                f"from {hparams_name}. Ratio: {ratio:.2f}"
+            )
+            logger.warning("Consider running HPO with --sync-config or manually updating config.yaml")
+        else:
+            logger.debug(f"Config consistency OK: target_params={expected_n_params:,} matches hparams {hparams_name}")
+    else:
+        logger.debug(f"Config consistency OK: target_params={expected_n_params:,} matches hparams {hparams_name}")
 
 
 def _detect_vram() -> float:

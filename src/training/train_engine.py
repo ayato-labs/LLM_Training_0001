@@ -24,7 +24,6 @@ from src.training.model_utils import (
     compute_db_fingerprint,
 )
 from src.training.callbacks import (
-    ProgressBarFormatCallback,
     HashSaveCallback,
     DetailedLoggingCallback,
 )
@@ -268,11 +267,11 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         dataloader_num_workers=config.get("dataloader_num_workers", 0),
         torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
         dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2) if config.get("dataloader_num_workers", 0) > 0 else None,
+        disable_tqdm=True,                                  # tqdm進捗バー無効化（独自ログのみ使用）
     )
 
     # 11. コールバックの設定
     callbacks = [
-        ProgressBarFormatCallback(),                       # 進捗バーの表示をカスタムフォーマット化
         HashSaveCallback(config_hash=current_config_hash, data_hash=current_data_hash),  # hashes.jsonの自動作成
         DetailedLoggingCallback(log_every_n_steps=config.get("logging_steps", 10)),       # 詳細なステップ別メトリクスのログ出力
     ]

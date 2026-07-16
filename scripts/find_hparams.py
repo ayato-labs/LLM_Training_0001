@@ -35,13 +35,23 @@ def parse_args():
         choices=["50M", "150M", "3B", "7B"],
         help="Final target model size (defaults to proxy size if not specified)",
     )
+    p.add_argument(
+        "--target-vram-gb",
+        type=float,
+        help="Target model VRAM (GB) for batch size calculation (defaults to proxy VRAM)",
+    )
     p.add_argument("--data-path", required=True, help="Path to training dataset (JSONL)")
     p.add_argument(
         "--output", required=True, help="Output YAML path (e.g., configs/hparams_150M.yaml)"
     )
     p.add_argument("--n-trials", type=int, default=150, help="Optuna trials (5D: 150推奨)")
-    p.add_argument("--vram-gb", type=float, help="Override VRAM detection")
+    p.add_argument("--vram-gb", type=float, help="Override VRAM detection for proxy")
     p.add_argument("--seq-len", type=int, default=1024, help="Sequence length")
+    p.add_argument(
+        "--sync-config",
+        action="store_true",
+        help="Also update configs/config.yaml with target architecture (for target_model_size != proxy)",
+    )
     return p.parse_args()
 
 
@@ -139,6 +149,43 @@ def estimate_tokens(data_path: str) -> int:
         raise
 
 
+def sync_config_yaml(target_arch: dict, target_size: str, hparams_output: str) -> None:
+    """config.yaml をターゲットアーキテクチャに同期する"""
+    from omegaconf import OmegaConf
+
+    config_path = Path(__file__).resolve().parent.parent / "configs" / "config.yaml"
+    if not config_path.exists():
+        logger.warning(f"config.yaml not found at {config_path}, skipping sync")
+        return
+
+    cfg = OmegaConf.load(config_path)
+
+    # model.target_params 更新
+    cfg.model.target_params = target_arch["n_params"]
+
+    # llama アーキテクチャ更新
+    cfg.model.llama.hidden_size = target_arch["hidden"]
+    cfg.model.llama.num_hidden_layers = target_arch["layers"]
+    cfg.model.llama.num_attention_heads = target_arch["heads"]
+    cfg.model.llama.num_key_value_heads = target_arch["kv_heads"]
+    cfg.model.llama.intermediate_size = target_arch["ffn"]
+    cfg.model.llama.rope_theta = target_arch.get("rope_theta", 500000.0)
+
+    # hparams ファイル名も更新 (config.yaml の defaults には hparams_<size>.yaml を期待)
+    hparams_name = f"hparams_{target_size}"
+    if cfg.defaults and isinstance(cfg.defaults[0], dict):
+        # 既存の defaults が dict 形式の場合はキーを更新
+        if list(cfg.defaults[0].keys())[0] == "hparams_150M":
+            cfg.defaults[0] = {hparams_name: ""}
+    elif cfg.defaults and isinstance(cfg.defaults[0], str):
+        # 文字列形式の場合
+        if cfg.defaults[0].startswith("hparams_"):
+            cfg.defaults[0] = hparams_name
+
+    OmegaConf.save(cfg, config_path)
+    logger.info(f"Updated config.yaml for {target_size}: target_params={target_arch['n_params']}, hparams={hparams_name}")
+
+
 @log_exceptions
 def main():
     args = parse_args()
@@ -152,7 +199,8 @@ def main():
     target_arch = get_base_config(target_size)
 
     n_tokens = estimate_tokens(args.data_path)
-    vram = args.vram_gb or detect_vram()
+    proxy_vram = args.vram_gb or detect_vram()
+    target_vram = args.target_vram_gb or proxy_vram
 
     logger.info(
         "HPO Search initialized",
@@ -160,7 +208,8 @@ def main():
             "proxy_model_size": proxy_size,
             "target_model_size": target_size,
             "tokens": n_tokens,
-            "vram": vram,
+            "proxy_vram": proxy_vram,
+            "target_vram": target_vram,
             "trials": args.n_trials,
         },
     )
@@ -219,7 +268,7 @@ def main():
 
     # 4. Optuna Study with MedianPruner
     try:
-        search_space = create_search_space(step_law_hpo, vram, n_params=proxy_arch["n_params"])
+        search_space = create_search_space(step_law_hpo, proxy_vram, n_params=proxy_arch["n_params"])
         logger.debug(f"Search space: {search_space}")
 
         study = optuna.create_study(
@@ -234,7 +283,7 @@ def main():
         study.set_user_attr("n_trials", args.n_trials)
         logger.info("Starting Optuna optimization")
         study.optimize(
-            lambda trial: objective(trial, proxy_arch, tokenized_dataset, args.seq_len, vram, step_law_hpo),
+            lambda trial: objective(trial, proxy_arch, tokenized_dataset, args.seq_len, proxy_vram, step_law_hpo),
             n_trials=args.n_trials,
             timeout=86400,  # 24時間 (安全弁。フル本番は数日)
         )
@@ -263,16 +312,17 @@ def main():
             else:
                 scaled_best[k] = v
 
-        # ターゲット用のデバイスあたりバッチサイズと勾配累積ステップ数算出
+        # ターゲット用のデバイスあたりバッチサイズと勾配累積ステップ数算出 (ターゲットVRAM基準)
         target_batch_seqs = scaled_best.get("batch_size_seqs", 16)
-        per_device = min(target_batch_seqs, 1 if vram <= 4.5 else (4 if vram <= 8.5 else 8))
+        per_device = min(target_batch_seqs, 1 if target_vram <= 4.5 else (4 if target_vram <= 8.5 else 8))
         grad_accum = max(1, target_batch_seqs // per_device)
 
         # Include fixed parameters in the final output configuration
+        # warmup_ratio は HPO 結果を尊重（探索されていない場合のみフォールバック）
         output = {
             "training": {
                 **scaled_best,
-                "warmup_ratio": 0.03,
+                "warmup_ratio": scaled_best.get("warmup_ratio", 0.03),
                 "beta2": 0.95,
                 "grad_clip": 1.0,
                 "per_device_batch_size": per_device,
@@ -292,6 +342,14 @@ def main():
     except Exception as e:
         logger.exception(f"Error saving configuration to {args.output}: {e}")
         raise
+
+    # 7. config.yaml 同期 (--sync-config 指定時)
+    if args.sync_config:
+        try:
+            sync_config_yaml(target_arch, target_size, args.output)
+            logger.info(f"Synced configs/config.yaml with {target_size} architecture")
+        except Exception as e:
+            logger.warning(f"Failed to sync config.yaml: {e}")
 
 
 if __name__ == "__main__":
