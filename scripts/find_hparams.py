@@ -19,7 +19,7 @@ from src.training.config import _detect_vram as detect_vram
 from src.hpo.hpo_manager import create_search_space, objective
 from src.common.logger import log_exceptions, log_function_call, logger
 from src.hpo.step_law import compute_hpo_for_target
-from src.training.train_model import TokenizerWrapper, get_optimal_num_proc
+from src.training.model_utils import TokenizerWrapper, get_optimal_num_proc
 
 
 def parse_args():

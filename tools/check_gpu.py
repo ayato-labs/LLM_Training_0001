@@ -1,3 +1,4 @@
+# GPU環境の確認スクリプト
 import sys
 
 import torch
@@ -10,5 +11,5 @@ if torch.cuda.is_available():
     print(f"CUDA device count: {torch.cuda.device_count()}")
 else:
     print("CUDA is NOT available. Checking torch/cuda installation...")
-    # Add extra debug info
+    # 追加のデバッグ情報
     print(f"Is CUDA compiled: {torch.version.cuda is not None}")

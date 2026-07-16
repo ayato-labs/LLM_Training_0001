@@ -7,15 +7,14 @@ import torch
 
 from src.common.logger import logger
 
-# Note: Since train_model.py still exists, we reuse train from there.
-# If this is not correct, we need to adapt it. Assuming train() can accept config dict.
-from src.training.train_model import train as proxy_train
+# Use the unified training engine
+from src.training.train_engine import train as proxy_train
 
 
 from transformers import TrainerCallback
 
 class OptunaPruningCallback(TrainerCallback):
-    """Callback to prune trials in Optuna based on intermediate loss value."""
+    """Optunaの途中損失値に基づいてトライアルをプルーンするコールバック。"""
     def __init__(self, trial: optuna.Trial):
         self.trial = trial
 
@@ -46,7 +45,7 @@ def objective(
     vram_gb: float,
     step_law_hpo: dict,
 ) -> float:
-    """Proxy training objective (short run, small data fraction, 50 steps)"""
+    """プロキシ学習目的関数（短時間実行、小データ割合、50ステップ）。"""
 
     # Print visible progress banner
     total_trials = trial.study.user_attrs.get("n_trials", "?")
@@ -89,6 +88,8 @@ def objective(
         "precision": "bf16",
         "vram_limit_gb": vram_gb,
         "seed": 42,
+        "tokenizer_path": "data/tokenizer.json",
+        "output_dir": "models/output",
     }
 
     try:
