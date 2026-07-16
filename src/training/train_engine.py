@@ -16,6 +16,7 @@ from src.common.env_snapshot import capture_env_snapshot
 from src.training.model_utils import (
     create_model_config,
     TokenizerWrapper,
+    PackedDatasetWrapper,
     get_optimal_num_proc,
     compute_file_hash,
     compute_dataset_fingerprint,
@@ -133,8 +134,9 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         ds = load_dataset("json", data_files=data_files)
         remove_columns = [c for c in ds["train"].column_names if c in {"text", "metadata"}]
 
+        packing = config.get("packing", False)
         seq_len = config.get("seq_len", 1024)
-        tokenize_fn = TokenizerWrapper(tokenizer, seq_len)
+        tokenize_fn = TokenizerWrapper(tokenizer, seq_len, padding=not packing)
         
         # 利用可能なCPUコア数とメモリ空き容量から、最適な並列プロセス数を動的に算出
         num_proc = get_optimal_num_proc()
@@ -142,6 +144,16 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
         # マルチプロセスでのトークン化マップ処理の実行
         ds = ds.map(tokenize_fn, batched=True, remove_columns=remove_columns, num_proc=num_proc)
+
+        # Sequence Packingの適用
+        if packing:
+            logger.info("Packing dataset enabled. Eliminating pad tokens...")
+            packed_ds = {}
+            for split in ds:
+                wrapper = PackedDatasetWrapper(ds[split], seq_len, tokenizer.eos_token_id)
+                packed_ds[split] = wrapper()
+            from datasets import DatasetDict
+            ds = DatasetDict(packed_ds)
 
         # デバッグや軽量テスト用途のデータ一部抽出 (data_fraction < 1.0 の場合)
         data_fraction = config.get("data_fraction", 1.0)
@@ -221,6 +233,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         greater_is_better=False,
         seed=seed,
         remove_unused_columns=False,                        # カスタムデータコレーター利用時のカラム自動削除防止
+        optim=config.get("optim", "adamw_torch_fused"),
     )
 
     # 11. コールバックの設定

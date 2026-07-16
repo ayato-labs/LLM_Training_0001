@@ -11,6 +11,8 @@ def create_model_config(config: dict, tokenizer) -> LlamaConfig:
     # hidden_size を heads の倍数に調整
     adjusted_hidden = (hidden // heads) * heads
 
+    attn_implementation = config.get("attn_implementation") or mp.get("attn_implementation", "flash_attention_2")
+
     return LlamaConfig(
         vocab_size=mp["vocab_size"],
         hidden_size=adjusted_hidden,
@@ -23,12 +25,65 @@ def create_model_config(config: dict, tokenizer) -> LlamaConfig:
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         use_cache=False,  # training用
+        attn_implementation=attn_implementation,
     )
 
 
 def estimate_model_size(model) -> int:
     """モデルパラメータ数推定（埋め込み込み）"""
     return sum(p.numel() for p in model.parameters())
+
+
+class PackedDatasetWrapper:
+    """Sequence packing wrapper to eliminate padding tokens by concatenating texts with EOS and chunking."""
+    
+    def __init__(self, dataset, seq_len: int, eos_token_id: int):
+        self.dataset = dataset
+        self.seq_len = seq_len
+        self.eos_token_id = eos_token_id
+
+    def __call__(self):
+        def pack_function(examples):
+            input_ids = examples["input_ids"]
+            attention_mask = examples.get("attention_mask", None)
+            
+            packed_input_ids = []
+            packed_attention_masks = []
+            
+            current_ids = []
+            current_mask = []
+            
+            for i in range(len(input_ids)):
+                ids = input_ids[i]
+                mask = attention_mask[i] if attention_mask is not None else [1] * len(ids)
+                
+                # Append EOS token if it's not already at the end
+                if len(ids) == 0 or ids[-1] != self.eos_token_id:
+                    ids = ids + [self.eos_token_id]
+                    mask = mask + [1]
+                
+                current_ids.extend(ids)
+                current_mask.extend(mask)
+                
+                while len(current_ids) >= self.seq_len:
+                    packed_input_ids.append(current_ids[:self.seq_len])
+                    packed_attention_masks.append(current_mask[:self.seq_len])
+                    current_ids = current_ids[self.seq_len:]
+                    current_mask = current_mask[self.seq_len:]
+            
+            result = {
+                "input_ids": packed_input_ids,
+                "attention_mask": packed_attention_masks,
+            }
+            return result
+
+        packed_ds = self.dataset.map(
+            pack_function,
+            batched=True,
+            remove_columns=self.dataset.column_names,
+            desc=f"Packing dataset to seq_len={self.seq_len}",
+        )
+        return packed_ds
 
 
 import os
@@ -42,17 +97,24 @@ from src.common.logger import logger
 class TokenizerWrapper:
     """Windowsマルチプロセッシングのピクリング問題をサポートするためのラッパー。"""
 
-    def __init__(self, tokenizer, seq_len: int):
+    def __init__(self, tokenizer, seq_len: int, padding: bool = True):
         self.tokenizer = tokenizer
         self.seq_len = seq_len
+        self.padding = padding
 
     def __call__(self, examples):
-        return self.tokenizer(
-            examples["text"],
-            padding="max_length",
-            truncation=True,
-            max_length=self.seq_len,
-        )
+        if self.padding:
+            return self.tokenizer(
+                examples["text"],
+                padding="max_length",
+                truncation=True,
+                max_length=self.seq_len,
+            )
+        else:
+            return self.tokenizer(
+                examples["text"],
+                truncation=False,
+            )
 
 
 def get_optimal_num_proc() -> int:
