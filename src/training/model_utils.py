@@ -11,7 +11,7 @@ def create_model_config(config: dict, tokenizer) -> LlamaConfig:
     # hidden_size を heads の倍数に調整
     adjusted_hidden = (hidden // heads) * heads
 
-    attn_implementation = config.get("attn_implementation") or mp.get("attn_implementation", "flash_attention_2")
+    attn_implementation = config.get("attn_implementation") or mp.get("attn_implementation", "sdpa")
 
     return LlamaConfig(
         vocab_size=mp["vocab_size"],
@@ -90,10 +90,15 @@ class PackedDatasetWrapper:
 
 
 import os
+import sys
 import psutil
 import hashlib
+import concurrent.futures
 from pathlib import Path
+from typing import Callable, List, Optional
+
 import torch
+from datasets import Dataset
 from src.common.logger import logger
 
 
@@ -120,20 +125,129 @@ class TokenizerWrapper:
             )
 
 
+class ThreadPoolTokenizer:
+    """Windows対応スレッド並列トークナイザー。
+    
+    concurrent.futures.ThreadPoolExecutor を使用して multiprocessig の
+    pickling 問題を回避しつつ、トークナイズ処理を並列化する。
+    
+    Args:
+        tokenizer: HuggingFaceトークナイザー
+        seq_len: シーケンス長
+        padding: パディングするか
+        max_workers: スレッド数上限 (None=自動検出)
+        batch_size: バッチサイズ
+    """
+
+    def __init__(
+        self,
+        tokenizer,
+        seq_len: int,
+        padding: bool = True,
+        max_workers: Optional[int] = None,
+        batch_size: int = 1000,
+    ):
+        self.tokenizer = tokenizer
+        self.seq_len = seq_len
+        self.padding = padding
+        self.batch_size = batch_size
+
+        if max_workers is None:
+            cpu_cores = os.cpu_count() or 4
+            try:
+                mem_gb = psutil.virtual_memory().available / (1024**3)
+            except Exception:
+                mem_gb = 8.0
+            # スレッドはプロセスより軽量なので 0.5GB/thread で計算
+            mem_based = max(1, int(mem_gb // 0.5))
+            max_workers = min(max(1, cpu_cores - 1), mem_based)
+        
+        self.max_workers = max_workers
+        logger.info(f"ThreadPoolTokenizer: workers={max_workers}, batch_size={batch_size}")
+
+    def _tokenize_batch(self, batch_texts: List[str]) -> dict:
+        """単一バッチのトークナイズ"""
+        if self.padding:
+            return self.tokenizer(
+                batch_texts,
+                padding="max_length",
+                truncation=True,
+                max_length=self.seq_len,
+            )
+        else:
+            return self.tokenizer(
+                batch_texts,
+                truncation=False,
+            )
+
+    def __call__(self, examples: dict) -> dict:
+        """datasets.map() 呼び出し互換のcall interface"""
+        texts = examples["text"]
+        n_samples = len(texts)
+
+        if n_samples == 0:
+            return {"input_ids": [], "attention_mask": [], "labels": []}
+
+        # バッチ分割
+        batches = [
+            texts[i : i + self.batch_size]
+            for i in range(0, n_samples, self.batch_size)
+        ]
+        total_batches = len(batches)
+
+        # ThreadPoolExecutor で並列処理
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.max_workers,
+            thread_name_prefix="tok",
+        ) as executor:
+            futures = {
+                executor.submit(self._tokenize_batch, batch): idx
+                for idx, batch in enumerate(batches)
+            }
+            results = [None] * total_batches
+            for future in concurrent.futures.as_completed(futures):
+                batch_idx = futures[future]
+                try:
+                    results[batch_idx] = future.result()
+                except Exception as e:
+                    logger.error(f"Batch {batch_idx} failed: {e}")
+                    raise
+
+        # 結果マージ
+        merged = {k: [] for k in results[0]}
+        for r in results:
+            for k, v in r.items():
+                merged[k].extend(v)
+
+        return merged
+
+
 def get_optimal_num_proc() -> int:
-    """CPU論理コアと利用可能なメモリを検出し最適なnum_procを計算。"""
-    import sys
+    """CPU論理コアと利用可能なメモリを検出し最適な並列度を計算。
+    
+    Returns:
+        Linux/macOS: プロセス数 (multiprocessing 用)
+        Windows: スレッド数 (ThreadPoolTokenizer 用)
+    """
     if sys.platform == "win32":
+        cpu_cores = os.cpu_count() or 4
+        try:
+            available_mem_gb = psutil.virtual_memory().available / (1024**3)
+        except Exception:
+            available_mem_gb = 8.0
+        # スレッドは軽量なので 0.5GB/thread で計算
+        mem_based = max(1, int(available_mem_gb // 0.5))
+        optimal = min(max(1, cpu_cores - 1), mem_based)
         logger.info(
-            "Resource Auto-Adjustment: Windows detected. Forcing num_proc=None to avoid WinError 87 pipe writing limitations."
+            f"Windows ThreadPool: Cores={cpu_cores}, RAM={available_mem_gb:.1f}GB -> threads={optimal}"
         )
-        return None
+        return optimal
 
     cpu_cores = os.cpu_count() or 1
     try:
         available_mem_gb = psutil.virtual_memory().available / (1024**3)
     except Exception:
-        available_mem_gb = 8.0  # 検出失敗時のフォールバック
+        available_mem_gb = 8.0
 
     # 1プロセスあたり1.5GBを見積もる
     mem_based_cores = int(available_mem_gb // 1.5)
@@ -142,6 +256,58 @@ def get_optimal_num_proc() -> int:
         f"Resource Auto-Adjustment: Cores={cpu_cores}, Available RAM={available_mem_gb:.1f}GB -> num_proc={optimal_cores}"
     )
     return optimal_cores
+
+
+def parallel_tokenize(
+    dataset: Dataset,
+    tokenizer,
+    seq_len: int,
+    padding: bool = True,
+    remove_columns: Optional[List[str]] = None,
+    max_workers: Optional[int] = None,
+    batch_size: int = 1000,
+) -> Dataset:
+    """プラットフォーム自動判定で並列トークナイズを実行。
+    
+    Windows: ThreadPoolTokenizer (スレッドプール並列)
+    Linux/macOS: TokenizerWrapper + multiprocessing (プロセス並列)
+    
+    Args:
+        dataset: 入力 Dataset
+        tokenizer: HuggingFace トークナイザー
+        seq_len: シーケンス長
+        padding: パディングするか
+        remove_columns: 削除するカラム
+        max_workers: 並列度 (None=自動検出)
+        batch_size: バッチサイズ (Windows のみ有効)
+        
+    Returns:
+        トークン化済み Dataset
+    """
+    if sys.platform == "win32":
+        logger.info("Using ThreadPoolTokenizer (Windows parallel mode)")
+        tokenizer_fn = ThreadPoolTokenizer(
+            tokenizer, seq_len, padding, max_workers, batch_size
+        )
+        tokenized = dataset.map(
+            tokenizer_fn,
+            batched=True,
+            remove_columns=remove_columns,
+            num_proc=None,
+        )
+    else:
+        if max_workers is None:
+            max_workers = get_optimal_num_proc()
+        logger.info(f"Using multiprocessing (num_proc={max_workers})")
+        tokenizer_fn = TokenizerWrapper(tokenizer, seq_len, padding)
+        tokenized = dataset.map(
+            tokenizer_fn,
+            batched=True,
+            num_proc=max_workers,
+            remove_columns=remove_columns,
+        )
+
+    return tokenized
 
 
 

@@ -19,7 +19,7 @@ from src.training.config import _detect_vram as detect_vram
 from src.hpo.hpo_manager import create_search_space, objective
 from src.common.logger import log_exceptions, log_function_call, logger
 from src.hpo.step_law import compute_hpo_for_target
-from src.training.model_utils import TokenizerWrapper, get_optimal_num_proc
+from src.training.model_utils import parallel_tokenize, get_optimal_num_proc
 
 
 def parse_args():
@@ -175,17 +175,21 @@ def main():
         tokenizer.pad_token = "<pad>"
 
         dataset = load_dataset("json", data_files=str(args.data_path))
-        num_proc = get_optimal_num_proc()
-        tokenize_function = TokenizerWrapper(tokenizer, args.seq_len)
         all_cols = dataset["train"].column_names
         cols_to_remove = [c for c in all_cols if c not in ["input_ids", "attention_mask", "labels"]]
 
-        tokenized_dataset = dataset.map(
-            tokenize_function,
-            batched=True,
-            num_proc=num_proc,
+        # プラットフォーム自動判定で並列トークナイズ (Windows: ThreadPool, Linux: multiprocessing)
+        num_proc = get_optimal_num_proc()
+        logger.info(f"Tokenizing dataset with parallelism={num_proc}")
+
+        tokenized_dataset = parallel_tokenize(
+            dataset,
+            tokenizer,
+            seq_len=args.seq_len,
+            padding=True,
             remove_columns=cols_to_remove,
-            keep_in_memory=True,
+            max_workers=num_proc,
+            batch_size=1000,
         )
 
         # Apply data_fraction = 0.001 (0.1%) for HPO pilot run speed
@@ -215,14 +219,14 @@ def main():
 
     # 4. Optuna Study with MedianPruner
     try:
-        search_space = create_search_space(step_law_hpo, vram)
+        search_space = create_search_space(step_law_hpo, vram, n_params=proxy_arch["n_params"])
         logger.debug(f"Search space: {search_space}")
 
         study = optuna.create_study(
             direction="minimize",
             sampler=optuna.samplers.TPESampler(seed=42),
             pruner=optuna.pruners.MedianPruner(
-                n_startup_trials=10,
+                n_startup_trials=5,
                 n_warmup_steps=15,
                 interval_steps=5,
             )

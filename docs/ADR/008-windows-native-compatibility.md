@@ -63,3 +63,5 @@ import mlflow
 - ADR-022: 設定最小化 / プロキシモデル動的スケーリング
 - ADR-024: パイロット自動化 (本実装で導入)
 - ADR-025: スケーリング則ベース HPO拡張 (探索空間の多次元化・効率化)
+- ADR-0031: Windows ThreadPool-based Parallel Tokenization (トークナイズ並列化)
+- ADR-0032: FlashAttention-2 → SDPA への移行 (Windows互換性確保)

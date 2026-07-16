@@ -1,0 +1,64 @@
+# ADR-0034: モデルサイズ依存の動的探索空間 (Dynamic Search Space)
+
+- **Status:** Accepted
+- **Date:** 2026-07-17
+- **Deciders:** Solo Developer (5人専門家パネルの助言に基づく)
+
+## Context
+
+探索空間が5次元に拡大(A DR-0033)したため、各次元の探索範囲を絞り込む必要性が生じた。
+
+### 専門家パネルの合意
+| # | ペルソナ | 核心助言 |
+|---|----------|----------|
+| 1 | Scaling Law Purist | LR範囲を大幅に絞れ (Step Law信頼度高) |
+| 2 | 実戦HPOエンジニア | 5D×100試行は十分。n_startup_trialsを減らせ |
+| 3 | LLM事前学習実践者 | weight_decayを0.05-0.2に絞れ |
+| 4 | 計算資源制約派研究者 | 余白はLR±30%, WD±50%, warmup±50%に留めろ |
+| 5 | 理論派AutoML研究者 | 信頼区間ベースで可変範囲にせよ |
+
+## Decision
+
+### 1. モデルサイズに応じた探索範囲の動的調整
+
+```python
+if n_params < 100M:
+    lr_low, lr_high = 0.6, 1.7      # ±40~70%
+    wd_low, wd_high = 0.03, 0.25
+elif n_params < 500M:
+    lr_low, lr_high = 0.7, 1.5      # ±30~50%
+    wd_low, wd_high = 0.04, 0.22
+elif n_params < 2B:
+    lr_low, lr_high = 0.75, 1.4     # ±25~40%
+    wd_low, wd_high = 0.05, 0.20
+else:  # ≥2B
+    lr_low, lr_high = 0.8, 1.3      # ±20~30%
+    wd_low, wd_high = 0.06, 0.18
+```
+
+### 2. 理由
+- **小モデル** (<100M): Step Law誤差が大きく、探索範囲を広めに維持
+- **中モデル** (100M-500M): 平衡点。標準的な範囲
+- **大モデル** (500M-2B): Step Law信頼度が高く、絞り込み可能
+- **超大モデル** (≥2B): 計算コスト高。範囲を最も狭くして早期収束
+
+### 3. n_startup_trials の削減 (10 → 5)
+- TPEオプティマイザは5次元でも有効
+- MedianPrunerが早期にプルーンするため、初期探索は最小限で十分
+
+## Consequences
+
+### Pros
+- **探索空間体積**: 大モデルで約60%削減
+- **必要試行数**: 100 → 70-80試行で同等カバレッジ
+- **実行時間**: 約20-30%短縮 (pruning効果込み)
+- **ロールバック容易**: 関数内のif分岐のみで変更可能
+
+### Cons
+- モデルサイズの判定ロジックが追加された
+- 小モデルでは従来より範囲が狭くなる可能性 (ただしStep Law誤差を考慮して許容)
+
+## 参照
+- ADR-0021: HPO Efficiency and Pruning
+- ADR-0033: warmup_ratio → warmup_steps migration
+- 概念的要件定義書: §4.1 責任分離マトリクス

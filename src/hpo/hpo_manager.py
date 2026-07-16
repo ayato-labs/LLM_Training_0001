@@ -26,15 +26,35 @@ class OptunaPruningCallback(TrainerCallback):
                 raise optuna.TrialPruned()
 
 
-def create_search_space(step_law_hpo: dict, vram_gb: float) -> dict:
-    """Step Law結果を中心とした探索空間定義 (4次元)"""
+def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_000_000) -> dict:
+    """Step Law結果を中心とした探索空間定義 (5次元、モデルサイズ依存の動的範囲)
+
+    小モデルほどStep Law誤差が大きく→範囲を広めに
+    大モデルほどStep Law信頼度が高く→範囲を絞り込む
+    """
     lr_2d_center = step_law_hpo["max_lr_2d"]
     lr_1d_center = step_law_hpo["max_lr_1d"]
+
+    # モデルサイズに応じたLR探索範囲の倍率 (小→大で狭くなる)
+    if n_params < 100_000_000:          # <100M
+        lr_low, lr_high = 0.6, 1.7     # ±40~70%
+        wd_low, wd_high = 0.03, 0.25
+    elif n_params < 500_000_000:        # 100M-500M
+        lr_low, lr_high = 0.7, 1.5     # ±30~50%
+        wd_low, wd_high = 0.04, 0.22
+    elif n_params < 2_000_000_000:      # 500M-2B
+        lr_low, lr_high = 0.75, 1.4    # ±25~40%
+        wd_low, wd_high = 0.05, 0.20
+    else:                               # ≥2B
+        lr_low, lr_high = 0.8, 1.3     # ±20~30%
+        wd_low, wd_high = 0.06, 0.18
+
     return {
-        "max_lr_2d": (lr_2d_center * 0.5, lr_2d_center * 2.0, "log"),
-        "max_lr_1d": (lr_1d_center * 0.5, lr_1d_center * 2.0, "log"),
+        "max_lr_2d": (lr_2d_center * lr_low, lr_2d_center * lr_high, "log"),
+        "max_lr_1d": (lr_1d_center * lr_low, lr_1d_center * lr_high, "log"),
         "batch_size_seqs": [8, 16, 32],
-        "weight_decay": (0.01, 0.3, ""),
+        "weight_decay": (wd_low, wd_high, ""),
+        "warmup_ratio": (0.01, 0.1, ""),  # 1%〜10% の範囲で探索 (据え置き)
     }
 
 
@@ -54,9 +74,9 @@ def objective(
     logger.info(f"  [HPO Progress] Trial {trial.number + 1} / {total_trials} started...")
     logger.info("=" * 60)
 
-    # Sample hyperparams (4D)
+    # Sample hyperparams (5D)
     hpo = {}
-    space = create_search_space(step_law_hpo, vram_gb)
+    space = create_search_space(step_law_hpo, vram_gb, n_params=arch["n_params"])
     for param, spec in space.items():
         if isinstance(spec, list):
             hpo[param] = trial.suggest_categorical(param, spec)
@@ -66,7 +86,6 @@ def objective(
             hpo[param] = trial.suggest_float(param, spec[0], spec[1])
 
     # Fixed values for fixed dimensions
-    hpo["warmup_ratio"] = 0.03
     hpo["beta2"] = 0.95
     hpo["grad_clip"] = 1.0
 
@@ -116,7 +135,35 @@ def objective(
         # HPO試行終了時にストレージを圧迫する中間生成物・モデルを完全に消去
         import shutil
         import gc
+        import time
+        import stat
         from pathlib import Path
+
+        def _handle_remove_readonly(func, path, exc):
+            """Windows読み取り専用ファイル対応"""
+            import os
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+
+        def _cleanup_with_retry(output_path: Path, max_retries: int = 3):
+            """リトライ付きクリーンアップ (Windowsファイルロック対応)"""
+            for attempt in range(max_retries):
+                try:
+                    gc.collect()
+                    time.sleep(0.5 * (attempt + 1))  # ファイルロック解放待ち
+                    for item in output_path.iterdir():
+                        try:
+                            if item.is_dir():
+                                shutil.rmtree(item, onerror=_handle_remove_readonly)
+                            else:
+                                item.unlink()
+                        except Exception:
+                            pass  # 個別ファイル削除失敗は無視
+                    return  # 成功
+                except Exception:
+                    if attempt < max_retries - 1:
+                        continue
+                    # 最大リトライ回数到達後は無視
 
         # Windowsのファイルロックを解放するために明示的にガベージコレクションを実行
         gc.collect()
@@ -124,12 +171,4 @@ def objective(
         output_dir = Path("models/output")
         if output_dir.exists():
             logger.info(f"Cleaning up HPO trial output files in {output_dir}")
-            # ディレクトリの中身を個別に削除（一部ファイルがロックされていても他を消去できるようにする）
-            for item in output_dir.iterdir():
-                try:
-                    if item.is_dir():
-                        shutil.rmtree(item)
-                    else:
-                        item.unlink()
-                except Exception as e:
-                    logger.warning(f"Failed to delete {item}: {e}")
+            _cleanup_with_retry(output_dir)

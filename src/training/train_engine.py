@@ -16,7 +16,7 @@ from src.common.set_seed import set_seed
 from src.common.env_snapshot import capture_env_snapshot
 from src.training.model_utils import (
     create_model_config,
-    TokenizerWrapper,
+    parallel_tokenize,
     PackedDatasetWrapper,
     get_optimal_num_proc,
     compute_file_hash,
@@ -143,14 +143,20 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
         packing = config.get("packing", False)
         seq_len = config.get("seq_len", 1024)
-        tokenize_fn = TokenizerWrapper(tokenizer, seq_len, padding=not packing)
-        
-        # 利用可能なCPUコア数とメモリ空き容量から、最適な並列プロセス数を動的に算出
-        num_proc = get_optimal_num_proc()
-        logger.info(f"Tokenizing dataset with num_proc={num_proc} (calculated dynamically from available RAM and CPUs)")
 
-        # マルチプロセスでのトークン化マップ処理の実行
-        ds = ds.map(tokenize_fn, batched=True, remove_columns=remove_columns, num_proc=num_proc)
+        # プラットフォーム自動判定で並列トークナイズ (Windows: ThreadPool, Linux: multiprocessing)
+        num_proc = get_optimal_num_proc()
+        logger.info(f"Tokenizing dataset with parallelism={num_proc}")
+
+        ds = parallel_tokenize(
+            ds,
+            tokenizer,
+            seq_len=seq_len,
+            padding=not packing,
+            remove_columns=remove_columns,
+            max_workers=num_proc,
+            batch_size=config.get("tokenization", {}).get("batch_size", 1000),
+        )
 
         # Sequence Packingの適用
         if packing:
@@ -222,6 +228,11 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         )
 
     # Hugging Face TrainingArguments の初期化
+    # warmup_ratio → warmup_steps 変換 (Transformers v5.2 で warmup_ratio 廃止予定)
+    warmup_steps = hpo_config.get("warmup_steps", 0)
+    if warmup_steps == 0 and max_steps > 0:
+        warmup_steps = int(max_steps * hpo_config.get("warmup_ratio", 0.03))
+
     args = TrainingArguments(
         output_dir=output_dir,
         learning_rate=hpo_config.get("max_lr_2d", 3e-4),
@@ -232,7 +243,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         max_steps=max_steps,
         num_train_epochs=num_epochs,
         lr_scheduler_type="cosine",                        # コサイン学習率スケジューラを採用
-        warmup_ratio=hpo_config.get("warmup_ratio", 0.03),
+        warmup_steps=warmup_steps,
         weight_decay=hpo_config.get("weight_decay", 0.1),
         adam_beta2=hpo_config.get("beta2", 0.95),
         max_grad_norm=hpo_config.get("grad_clip", 1.0),
@@ -256,7 +267,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         dataloader_pin_memory=config.get("dataloader_pin_memory", True),
         dataloader_num_workers=config.get("dataloader_num_workers", 0),
         torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
-        dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2),
+        dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2) if config.get("dataloader_num_workers", 0) > 0 else None,
     )
 
     # 11. コールバックの設定

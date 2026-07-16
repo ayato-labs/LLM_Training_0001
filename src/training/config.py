@@ -45,6 +45,7 @@ def _normalize_config(raw: dict) -> dict:
         "intermediate_size": llama.get("intermediate_size", 3072),
         "rope_theta": llama.get("rope_theta", 10000.0),
         "vocab_size": llama.get("vocab_size", 64000),
+        "attn_implementation": llama.get("attn_implementation", "sdpa"),
     }
 
     # training 抽出（hparams_*.yaml で上書きされる前提）
@@ -65,6 +66,7 @@ def _normalize_config(raw: dict) -> dict:
         "save_steps": t.get("save_steps", 1000),
         "eval_steps": t.get("eval_steps", 1000),
         "logging_steps": t.get("logging_steps", 10),
+        "warmup_steps": t.get("warmup_steps", 0),
     }
 
     # トップレベルマージ

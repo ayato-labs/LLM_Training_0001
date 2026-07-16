@@ -67,7 +67,5 @@ def compute_hpo_for_target(
         "min_lr": 1e-5,  # ★ 固定（Step Law 推奨）
         "batch_size_tokens": batch_tokens,
         "batch_size_seqs": batch_seqs,
-        "stable_lr_ratio": 0.55,  # IMU-1: stable LR = peak × 0.55
-        "stable_lr_2d": round(muon_lr * 0.55, 6),
-        "warmup_ratio": 0.03,  # Step Law / Muon recommended warmup ratio
+        "warmup_steps": 2,  # Step Law / Muon recommended warmup (max_steps に依存するため固定値)
     }

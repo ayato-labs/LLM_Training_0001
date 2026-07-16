@@ -1,6 +1,6 @@
 """Calculate search space dimensions for HPO analysis."""
-from src.step_law import compute_hpo_for_target
-from src.hpo_manager import create_search_space
+from src.hpo.step_law import compute_hpo_for_target
+from src.hpo.hpo_manager import create_search_space
 
 # Replicate the actual run parameters
 n_params = 150_000_000
@@ -12,7 +12,7 @@ print("=== Step Law Initial Values ===")
 for k, v in step_law_hpo.items():
     print(f"  {k}: {v}")
 
-space = create_search_space(step_law_hpo, 4.0)
+space = create_search_space(step_law_hpo, 4.0, n_params=n_params)
 print("\n=== Search Space ===")
 for k, v in space.items():
     if isinstance(v, list):

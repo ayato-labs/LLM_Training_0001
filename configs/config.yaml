@@ -31,6 +31,12 @@ training:
   torch_empty_cache_steps: 100
   dataloader_prefetch_factor: 2
 
+# トークナイズ並列化設定 (Windows ThreadPool / Linux multiprocessing)
+tokenization:
+  windows_max_workers: null    # null=自動検出、数値で固定
+  windows_batch_size: 1000     # Windows ThreadPool バッチサイズ
+  fallback_single_thread: true # 失敗時フォールバック有効
+
 # モデルアーキテクチャ（スケール変更時のみ書き換え）
 model:
   target_params: 150_000_000
@@ -42,3 +48,4 @@ model:
     intermediate_size: 3072
     rope_theta: 500000.0
     vocab_size: 64000
+    attn_implementation: "sdpa"  # sdpa: PyTorch標準 (Windows/Linux互換)、flash_attention_2: Linux専用
