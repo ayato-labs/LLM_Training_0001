@@ -28,6 +28,7 @@ training:
   use_liger_kernel: false
   dataloader_pin_memory: true
   dataloader_num_workers: 0
+  allow_tf32: true
 
 # モデルアーキテクチャ（スケール変更時のみ書き換え）
 model:

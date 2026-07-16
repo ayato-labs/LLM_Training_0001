@@ -90,6 +90,11 @@ class DetailedLoggingCallback(TrainerCallback):
                 allocated = torch.cuda.memory_allocated() / 1024**3
                 total = torch.cuda.get_device_properties(0).total_memory / 1024**3
                 gpu_info = f" | GPU: {allocated:.2f}/{total:.1f}GB"
+                if total > 0 and (allocated / total) > 0.95:
+                    logger.warning(
+                        f"High VRAM usage detected: {allocated:.2f}/{total:.1f}GB ({allocated/total*100:.1f}%). "
+                        "CPU offloading or Unified Memory paging may be active, which can severely degrade training speed."
+                    )
 
             if loss is not None:
                 logger.info(

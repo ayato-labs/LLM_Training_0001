@@ -74,6 +74,7 @@ class PackedDatasetWrapper:
             result = {
                 "input_ids": packed_input_ids,
                 "attention_mask": packed_attention_masks,
+                "labels": [list(ids) for ids in packed_input_ids],
             }
             return result
 

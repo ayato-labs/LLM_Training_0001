@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import torch
 
 from datasets import load_dataset
 from transformers import (
@@ -41,6 +42,12 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 1. 乱数シードの設定（再現性確保のため決定論的挙動を強制）
     seed = config.get("seed", 42)
     set_seed(seed, deterministic=True)
+
+    # 1.5 TF32 (TensorFloat-32) の有効化（Ampere世代以降のGPUでの行列演算高速化）
+    if config.get("allow_tf32", True) and torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        logger.info("TensorFloat-32 (TF32) enabled for matmul and cudnn.")
 
     # 2. 実行環境スナップショットの取得とロギング
     env_snapshot = capture_env_snapshot()
@@ -205,6 +212,15 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         per_device_batch = min(target_total_batch_seqs, max_batch)
         grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
 
+    # Pagedオプティマイザが選択されている場合、性能低下の可能性を警告
+    optim_selected = config.get("optim", "adamw_torch_fused")
+    if "paged" in optim_selected:
+        logger.warning(
+            f"Paged optimizer '{optim_selected}' is selected. "
+            "If GPU VRAM limits are exceeded, optimizer states will be paged to CPU system memory, "
+            "which will severely degrade training speed."
+        )
+
     # Hugging Face TrainingArguments の初期化
     args = TrainingArguments(
         output_dir=output_dir,
@@ -252,12 +268,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         callbacks.extend(extra_callbacks)
 
     # 12. Trainerインスタンスの生成
+    from transformers import default_data_collator
     trainer = Trainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False), # 因果言語モデル用にmlm=False
+        data_collator=default_data_collator if config.get("packing", False) else DataCollatorForLanguageModeling(tokenizer, mlm=False),
         callbacks=callbacks,
     )
 
