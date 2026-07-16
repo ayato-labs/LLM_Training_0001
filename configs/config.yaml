@@ -24,6 +24,10 @@ training:
   eval_steps: 1000
   logging_steps: 10
   drive_upload_interval: 1000
+  torch_compile: false
+  use_liger_kernel: false
+  dataloader_pin_memory: true
+  dataloader_num_workers: 0
 
 # モデルアーキテクチャ（スケール変更時のみ書き換え）
 model:
@@ -34,5 +38,5 @@ model:
     num_attention_heads: 12
     num_key_value_heads: 3
     intermediate_size: 3072
-    rope_theta: 10000.0
+    rope_theta: 500000.0
     vocab_size: 64000

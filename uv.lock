@@ -1490,6 +1490,19 @@ wheels = [
 ]
 
 [[package]]
+name = "liger-kernel"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
+    { name = "triton", marker = "sys_platform != 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/41/d6/85f032b40fc30c969e817f9f3527f987b508171b46d9958befd0868855fd/liger_kernel-0.8.0.tar.gz", hash = "sha256:f98b94faf018814a0757e7b72bb8ebaaf12a78782cd09b157732acca2791e72c", size = 3989670 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/6b/eb29b56f128a819e2cded552e293212c57daa949481206b82490b207deac/liger_kernel-0.8.0-py3-none-any.whl", hash = "sha256:e1f03eeb4ba6a6a413d585dacf92c4c15d164bab5844fa4ead2fede6bcac469c", size = 403120 },
+]
+
+[[package]]
 name = "llm-training"
 version = "0.1.0"
 source = { editable = "." }
@@ -1501,6 +1514,7 @@ dependencies = [
     { name = "google-auth" },
     { name = "google-auth-oauthlib" },
     { name = "hydra-core" },
+    { name = "liger-kernel", marker = "sys_platform != 'win32'" },
     { name = "loguru" },
     { name = "omegaconf" },
     { name = "optuna" },
@@ -1530,6 +1544,7 @@ requires-dist = [
     { name = "google-auth", specifier = ">=2.20.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.0.0" },
     { name = "hydra-core", specifier = ">=1.3.0" },
+    { name = "liger-kernel", marker = "sys_platform != 'win32'", specifier = ">=0.3.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "optuna", specifier = ">=3.0.0" },

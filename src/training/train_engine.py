@@ -212,6 +212,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         per_device_train_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum_steps,
         gradient_checkpointing=True,                       # メモリ節約のため勾配チェックポインティングを有効化
+        gradient_checkpointing_kwargs={"use_reentrant": False}, # 安定性とコンパイラ互換性のための非再帰方式
         max_steps=max_steps,
         num_train_epochs=num_epochs,
         lr_scheduler_type="cosine",                        # コサイン学習率スケジューラを採用
@@ -234,6 +235,10 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         seed=seed,
         remove_unused_columns=False,                        # カスタムデータコレーター利用時のカラム自動削除防止
         optim=config.get("optim", "adamw_torch_fused"),
+        torch_compile=config.get("torch_compile", False),
+        use_liger_kernel=config.get("use_liger_kernel", False),
+        dataloader_pin_memory=config.get("dataloader_pin_memory", True),
+        dataloader_num_workers=config.get("dataloader_num_workers", 0),
     )
 
     # 11. コールバックの設定
