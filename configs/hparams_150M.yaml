@@ -1,9 +1,9 @@
 training:
-  max_lr_2d: 0.01952751996251798
-  max_lr_1d: 0.0993466646981657
+  max_lr_2d: 0.007098
+  max_lr_1d: 0.003158
   batch_size_seqs: 32
-  weight_decay: 0.22320302667110486
-  warmup_ratio: 0.03
+  weight_decay: 0.16761530258401208
+  warmup_ratio: 0.07324319008432502
   beta2: 0.95
   grad_clip: 1.0
   per_device_batch_size: 1
