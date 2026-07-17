@@ -13,7 +13,6 @@ from transformers import (
 
 from src.common.logger import logger
 from src.common.set_seed import set_seed
-from src.common.env_snapshot import capture_env_snapshot
 from src.training.model_utils import (
     create_model_config,
     parallel_tokenize,
@@ -48,11 +47,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         torch.backends.cudnn.allow_tf32 = True
         logger.info("TensorFloat-32 (TF32) enabled for matmul and cudnn.")
 
-    # 2. 実行環境スナップショットの取得とロギング
-    env_snapshot = capture_env_snapshot()
-    logger.debug(f"Env snapshot: {env_snapshot}")
-
-    # 3. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
+    # 2. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
     config_path = Path("configs/config.yaml")
     data_path_str = config.get("data_path", "data/dataset.jsonl")
     current_config_hash = compute_file_hash(str(config_path))
@@ -289,6 +284,10 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         data_collator=default_data_collator if config.get("packing", False) else DataCollatorForLanguageModeling(tokenizer, mlm=False),
         callbacks=callbacks,
     )
+
+    # 既定のPrinterCallback（disable_tqdm=True時に標準出力へ辞書をprintする）を削除して重複ログを防止
+    from transformers.trainer_callback import PrinterCallback
+    trainer.remove_callback(PrinterCallback)
 
     # 詳細ログ出力コールバックにTrainerオブジェクトの参照を渡す
     for cb in callbacks:
