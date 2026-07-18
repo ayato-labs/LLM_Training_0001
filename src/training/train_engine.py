@@ -76,6 +76,9 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         tokenized_datasets (dict, optional): トークン化済みのデータセット辞書（学習/検証）。省略時はロード及びトークン化を行う。
         extra_callbacks (list, optional): 追加のTrainerCallbackリスト。
     """
+    # 0. 解決されたハイパーパラメータ/設定値の全出力
+    logger.info(f"Resolved Configuration:\n{json.dumps(config, indent=2, ensure_ascii=False)}")
+
     # 1. 乱数シードの設定（再現性確保のため決定論的挙動を強制）
     seed = config.get("seed", 42)
     set_seed(seed, deterministic=True)
