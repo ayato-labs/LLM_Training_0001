@@ -15,11 +15,11 @@ import yaml
 from datasets import load_dataset
 from transformers import PreTrainedTokenizerFast
 
-from src.training.config import _detect_vram as detect_vram
-from src.hpo.hpo_manager import create_search_space, objective
 from src.common.logger import log_exceptions, log_function_call, logger
+from src.hpo.hpo_manager import create_search_space, objective
 from src.hpo.step_law import compute_hpo_for_target
-from src.training.model_utils import parallel_tokenize, get_optimal_num_proc
+from src.training.config import _detect_vram as detect_vram
+from src.training.model_utils import get_optimal_num_proc, parallel_tokenize
 
 
 def parse_args():
@@ -177,13 +177,15 @@ def sync_config_yaml(target_arch: dict, target_size: str, hparams_output: str) -
         # 既存の defaults が dict 形式の場合はキーを更新
         if list(cfg.defaults[0].keys())[0] == "hparams_150M":
             cfg.defaults[0] = {hparams_name: ""}
-    elif cfg.defaults and isinstance(cfg.defaults[0], str):
-        # 文字列形式の場合
-        if cfg.defaults[0].startswith("hparams_"):
-            cfg.defaults[0] = hparams_name
+    elif (
+        cfg.defaults and isinstance(cfg.defaults[0], str) and cfg.defaults[0].startswith("hparams_")
+    ):
+        cfg.defaults[0] = hparams_name
 
     OmegaConf.save(cfg, config_path)
-    logger.info(f"Updated config.yaml for {target_size}: target_params={target_arch['n_params']}, hparams={hparams_name}")
+    logger.info(
+        f"Updated config.yaml for {target_size}: target_params={target_arch['n_params']}, hparams={hparams_name}"
+    )
 
 
 @log_exceptions
@@ -268,7 +270,9 @@ def main():
 
     # 4. Optuna Study with MedianPruner
     try:
-        search_space = create_search_space(step_law_hpo, proxy_vram, n_params=proxy_arch["n_params"])
+        search_space = create_search_space(
+            step_law_hpo, proxy_vram, n_params=proxy_arch["n_params"]
+        )
         logger.debug(f"Search space: {search_space}")
 
         study = optuna.create_study(
@@ -278,12 +282,14 @@ def main():
                 n_startup_trials=5,
                 n_warmup_steps=15,
                 interval_steps=5,
-            )
+            ),
         )
         study.set_user_attr("n_trials", args.n_trials)
         logger.info("Starting Optuna optimization")
         study.optimize(
-            lambda trial: objective(trial, proxy_arch, tokenized_dataset, args.seq_len, proxy_vram, step_law_hpo),
+            lambda trial: objective(
+                trial, proxy_arch, tokenized_dataset, args.seq_len, proxy_vram, step_law_hpo
+            ),
             n_trials=args.n_trials,
             timeout=86400,  # 24時間 (安全弁。フル本番は数日)
         )
@@ -303,7 +309,9 @@ def main():
         n_proxy = proxy_arch["n_params"]
         n_target = target_arch["n_params"]
         scaling_ratio = (n_target / n_proxy) ** -0.713
-        logger.info(f"Applying Step Law scaling ratio from {proxy_size}({n_proxy}) to {target_size}({n_target}): {scaling_ratio:.6f}")
+        logger.info(
+            f"Applying Step Law scaling ratio from {proxy_size}({n_proxy}) to {target_size}({n_target}): {scaling_ratio:.6f}"
+        )
 
         scaled_best = {}
         for k, v in best.items():
@@ -314,7 +322,9 @@ def main():
 
         # ターゲット用のデバイスあたりバッチサイズと勾配累積ステップ数算出 (ターゲットVRAM基準)
         target_batch_seqs = scaled_best.get("batch_size_seqs", 16)
-        per_device = min(target_batch_seqs, 1 if target_vram <= 4.5 else (4 if target_vram <= 8.5 else 8))
+        per_device = min(
+            target_batch_seqs, 1 if target_vram <= 4.5 else (4 if target_vram <= 8.5 else 8)
+        )
         grad_accum = max(1, target_batch_seqs // per_device)
 
         # Include fixed parameters in the final output configuration

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
-import torch
 
+import torch
 from datasets import load_dataset
 from transformers import (
     DataCollatorForLanguageModeling,
@@ -13,25 +13,25 @@ from transformers import (
 
 from src.common.logger import logger
 from src.common.set_seed import set_seed
+from src.training.callbacks import (
+    DetailedLoggingCallback,
+    HashSaveCallback,
+)
 from src.training.model_utils import (
-    create_model_config,
-    parallel_tokenize,
     PackedDatasetWrapper,
-    get_optimal_num_proc,
-    compute_file_hash,
     compute_dataset_fingerprint,
     compute_db_fingerprint,
-)
-from src.training.callbacks import (
-    HashSaveCallback,
-    DetailedLoggingCallback,
+    compute_file_hash,
+    create_model_config,
+    get_optimal_num_proc,
+    parallel_tokenize,
 )
 
 
 def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     """
     統一された学習オーケストレーションフロー。
-    
+
     Args:
         config (dict): 学習設定パラメータを含む辞書。
         tokenized_datasets (dict, optional): トークン化済みのデータセット辞書（学習/検証）。省略時はロード及びトークン化を行う。
@@ -70,10 +70,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     # 5. チェックポイントからの再開（Resume）処理の解決
     resume_checkpoint = config.get("resume_from_checkpoint") or config.get("resume")
-    
+
     # "checkpoint-latest" が指定された場合、または True の場合は最新のチェックポイントを自動探索
-    if resume_checkpoint is True or (isinstance(resume_checkpoint, str) and "checkpoint-latest" in resume_checkpoint):
+    if resume_checkpoint is True or (
+        isinstance(resume_checkpoint, str) and "checkpoint-latest" in resume_checkpoint
+    ):
         from src.training.model_utils import get_checkpoints
+
         checkpoints = get_checkpoints(sort_by="mtime")
         if checkpoints:
             resume_checkpoint = str(checkpoints[-1][1])
@@ -88,24 +91,34 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         hash_file = checkpoint_path / "hashes.json"
         if hash_file.exists():
             try:
-                with open(hash_file, "r") as f:
+                with open(hash_file) as f:
                     saved_hashes = json.load(f)
                 saved_config_hash = saved_hashes.get("config_hash")
                 saved_data_hash = saved_hashes.get("data_hash")
-                
+
                 # チェックポイント保存時と現在の設定・データが異なる場合はエラーとして学習を中断する
                 if saved_config_hash != current_config_hash or saved_data_hash != current_data_hash:
-                    logger.error("Configuration or training dataset has changed since the checkpoint was saved!")
-                    logger.error(f"Saved Config Hash: {saved_config_hash} | Current Config Hash: {current_config_hash}")
-                    logger.error(f"Saved Data Hash: {saved_data_hash} | Current Data Hash: {current_data_hash}")
-                    raise ValueError("Cannot resume training: config.yaml or training dataset does not match the checkpoint.")
+                    logger.error(
+                        "Configuration or training dataset has changed since the checkpoint was saved!"
+                    )
+                    logger.error(
+                        f"Saved Config Hash: {saved_config_hash} | Current Config Hash: {current_config_hash}"
+                    )
+                    logger.error(
+                        f"Saved Data Hash: {saved_data_hash} | Current Data Hash: {current_data_hash}"
+                    )
+                    raise ValueError(
+                        "Cannot resume training: config.yaml or training dataset does not match the checkpoint."
+                    )
                 else:
                     logger.info("Configuration and dataset hashes match. Verification successful.")
             except Exception as e:
                 logger.error(f"Failed to verify checkpoint hashes: {e}")
                 raise
         else:
-            logger.warning(f"No hashes.json found in checkpoint {resume_checkpoint}. Proceeding without verification.")
+            logger.warning(
+                f"No hashes.json found in checkpoint {resume_checkpoint}. Proceeding without verification."
+            )
     else:
         if not isinstance(resume_checkpoint, str):
             resume_checkpoint = None
@@ -116,6 +129,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path))
     else:
         from transformers import AutoTokenizer
+
         tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
 
     # 特殊トークンの明示的な設定
@@ -160,6 +174,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
                 wrapper = PackedDatasetWrapper(ds[split], seq_len, tokenizer.eos_token_id)
                 packed_ds[split] = wrapper()
             from datasets import DatasetDict
+
             ds = DatasetDict(packed_ds)
 
         # デバッグや軽量テスト用途のデータ一部抽出 (data_fraction < 1.0 の場合)
@@ -182,7 +197,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 9. モデルの設定と初期化 (Llamaアーキテクチャ)
     model_config = create_model_config(config, tokenizer)
     model = LlamaForCausalLM(model_config)
-    
+
     # トークナイザーの語彙数に合わせて埋め込み層のサイズを調整
     model.resize_token_embeddings(len(tokenizer))
 
@@ -196,12 +211,12 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     per_device_batch = config.get("per_device_batch_size", 1)
     grad_accum_steps = config.get("grad_accum_steps", 1)
-    
+
     # HPO(ハイパーパラメータ最適化)設定が含まれており、バッチサイズ自動決定が必要な場合の処理
     if "batch_size_seqs" in hpo_config and "per_device_batch_size" not in config:
         target_total_batch_seqs = hpo_config.get("batch_size_seqs", 16)
         vram_limit = config.get("vram_limit_gb", 4.0)
-        
+
         # 利用可能なVRAM容量に応じて、OOMを防止するためのデバイスあたりバッチサイズと勾配累積ステップ数を自動決定
         if vram_limit <= 4.5:
             max_batch = 1
@@ -232,11 +247,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         learning_rate=hpo_config.get("max_lr_2d", 3e-4),
         per_device_train_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum_steps,
-        gradient_checkpointing=True,                       # メモリ節約のため勾配チェックポインティングを有効化
-        gradient_checkpointing_kwargs={"use_reentrant": False}, # 安定性とコンパイラ互換性のための非再帰方式
+        gradient_checkpointing=True,  # メモリ節約のため勾配チェックポインティングを有効化
+        gradient_checkpointing_kwargs={
+            "use_reentrant": False
+        },  # 安定性とコンパイラ互換性のための非再帰方式
         max_steps=max_steps,
         num_train_epochs=num_epochs,
-        lr_scheduler_type="cosine",                        # コサイン学習率スケジューラを採用
+        lr_scheduler_type="cosine",  # コサイン学習率スケジューラを採用
         warmup_steps=warmup_steps,
         weight_decay=hpo_config.get("weight_decay", 0.1),
         adam_beta2=hpo_config.get("beta2", 0.95),
@@ -245,30 +262,36 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         fp16=(precision == "fp16"),
         save_strategy="steps",
         save_steps=config.get("save_steps", 1000),
-        save_total_limit=config.get("save_total_limit", 2), # ローカルチェックポイント保持数制限
+        save_total_limit=config.get("save_total_limit", 2),  # ローカルチェックポイント保持数制限
         eval_strategy="steps" if eval_ds is not None else "no",
         eval_steps=config.get("eval_steps", 1000) if eval_ds is not None else None,
         logging_steps=config.get("logging_steps", 10),
-        report_to=["tensorboard"],                          # TensorBoardによる学習監視の有効化
+        report_to=["tensorboard"],  # TensorBoardによる学習監視の有効化
         load_best_model_at_end=eval_ds is not None,
         metric_for_best_model="eval_loss" if eval_ds is not None else None,
         greater_is_better=False,
         seed=seed,
-        remove_unused_columns=False,                        # カスタムデータコレーター利用時のカラム自動削除防止
+        remove_unused_columns=False,  # カスタムデータコレーター利用時のカラム自動削除防止
         optim=config.get("optim", "adamw_torch_fused"),
         torch_compile=config.get("torch_compile", False),
         use_liger_kernel=config.get("use_liger_kernel", False),
         dataloader_pin_memory=config.get("dataloader_pin_memory", True),
         dataloader_num_workers=config.get("dataloader_num_workers", 0),
         torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
-        dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2) if config.get("dataloader_num_workers", 0) > 0 else None,
-        disable_tqdm=True,                                  # tqdm進捗バー無効化（独自ログのみ使用）
+        dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2)
+        if config.get("dataloader_num_workers", 0) > 0
+        else None,
+        disable_tqdm=True,  # tqdm進捗バー無効化（独自ログのみ使用）
     )
 
     # 11. コールバックの設定
     callbacks = [
-        HashSaveCallback(config_hash=current_config_hash, data_hash=current_data_hash),  # hashes.jsonの自動作成
-        DetailedLoggingCallback(log_every_n_steps=config.get("logging_steps", 10)),       # 詳細なステップ別メトリクスのログ出力
+        HashSaveCallback(
+            config_hash=current_config_hash, data_hash=current_data_hash
+        ),  # hashes.jsonの自動作成
+        DetailedLoggingCallback(
+            log_every_n_steps=config.get("logging_steps", 10)
+        ),  # 詳細なステップ別メトリクスのログ出力
     ]
 
     if extra_callbacks:
@@ -276,17 +299,21 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     # 12. Trainerインスタンスの生成
     from transformers import default_data_collator
+
     trainer = Trainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        data_collator=default_data_collator if config.get("packing", False) else DataCollatorForLanguageModeling(tokenizer, mlm=False),
+        data_collator=default_data_collator
+        if config.get("packing", False)
+        else DataCollatorForLanguageModeling(tokenizer, mlm=False),
         callbacks=callbacks,
     )
 
     # 既定のPrinterCallback（disable_tqdm=True時に標準出力へ辞書をprintする）を削除して重複ログを防止
     from transformers.trainer_callback import PrinterCallback
+
     trainer.remove_callback(PrinterCallback)
 
     # 詳細ログ出力コールバックにTrainerオブジェクトの参照を渡す

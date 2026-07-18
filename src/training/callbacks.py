@@ -1,7 +1,5 @@
 import datetime
 import json
-import os
-import shutil
 import time
 from pathlib import Path
 
@@ -26,14 +24,20 @@ class ProgressBarFormatCallback(TrainerCallback):
         self.iteration_times = []
         self.last_time = None
 
-    def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+    def on_train_begin(
+        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
+    ):
         self.iteration_times = []
         self.last_time = time.time()
 
-    def on_step_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+    def on_step_begin(
+        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
+    ):
         self.last_time = time.time()
 
-    def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+    def on_step_end(
+        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
+    ):
         if self.last_time is not None:
             iter_time = time.time() - self.last_time
             self.iteration_times.append(iter_time)
@@ -43,14 +47,15 @@ class ProgressBarFormatCallback(TrainerCallback):
 
             if self.iteration_times:
                 avg_time = sum(self.iteration_times) / len(self.iteration_times)
-                if 'pbar' in kwargs:
-                    kwargs['pbar'].set_postfix_str(f"avg: {avg_time:.2f}s/it")
+                if "pbar" in kwargs:
+                    kwargs["pbar"].set_postfix_str(f"avg: {avg_time:.2f}s/it")
 
 
 class HashSaveCallback(TrainerCallback):
     """
     保存された各チェックポイントにconfigとデータのハッシュを保存するコールバック。
     """
+
     def __init__(self, config_hash: str, data_hash: str):
         self.config_hash = config_hash
         self.data_hash = data_hash
@@ -60,17 +65,21 @@ class HashSaveCallback(TrainerCallback):
         if checkpoint_dir.exists():
             hash_file = checkpoint_dir / "hashes.json"
             with open(hash_file, "w") as f:
-                json.dump({
-                    "config_hash": self.config_hash,
-                    "data_hash": self.data_hash,
-                    "timestamp": datetime.datetime.now().isoformat()
-                }, f, indent=2)
+                json.dump(
+                    {
+                        "config_hash": self.config_hash,
+                        "data_hash": self.data_hash,
+                        "timestamp": datetime.datetime.now().isoformat(),
+                    },
+                    f,
+                    indent=2,
+                )
             logger.info(f"Saved config and data hashes to {hash_file}")
-
 
 
 class DetailedLoggingCallback(TrainerCallback):
     """詳細ログ出力用コールバック"""
+
     def __init__(self, log_every_n_steps=1):
         self.log_every_n_steps = log_every_n_steps
         self.step_count = 0
@@ -86,7 +95,7 @@ class DetailedLoggingCallback(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
         self.step_count = state.global_step
         current_time = time.time()
-        
+
         if self.step_count % self.log_every_n_steps == 0:
             loss = state.log_history[-1].get("loss") if state.log_history else None
             lr_val = "N/A"
@@ -98,20 +107,20 @@ class DetailedLoggingCallback(TrainerCallback):
             progress_str = f"Step {self.step_count}"
             eta_str = ""
             speed_str = ""
-            
+
             elapsed_time = current_time - self.epoch_start_time
             steps_in_session = self.step_count - self.start_step
             if steps_in_session > 0:
                 steps_per_sec = steps_in_session / elapsed_time
                 speed_str = f" | {1.0 / steps_per_sec:.2f}s/it"
-                
+
                 if total_steps and total_steps > 0:
                     pct = (self.step_count / total_steps) * 100
                     progress_str = f"Step {self.step_count}/{total_steps} ({pct:.1f}%)"
-                    
+
                     remaining_steps = total_steps - self.step_count
                     remaining_time = remaining_steps * (elapsed_time / steps_in_session)
-                    
+
                     # hh:mm:ss 形式にフォーマット
                     hrs, remainder = divmod(int(remaining_time), 3600)
                     mins, secs = divmod(remainder, 60)
@@ -129,7 +138,7 @@ class DetailedLoggingCallback(TrainerCallback):
                 gpu_info = f" | GPU: {allocated:.2f}/{total:.1f}GB"
                 if total > 0 and (allocated / total) > 0.95:
                     logger.warning(
-                        f"High VRAM usage detected: {allocated:.2f}/{total:.1f}GB ({allocated/total*100:.1f}%). "
+                        f"High VRAM usage detected: {allocated:.2f}/{total:.1f}GB ({allocated / total * 100:.1f}%). "
                         "CPU offloading or Unified Memory paging may be active, which can severely degrade training speed."
                     )
 
@@ -144,4 +153,3 @@ class DetailedLoggingCallback(TrainerCallback):
                     f"{gpu_info}"
                 )
         return control
-

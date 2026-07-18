@@ -114,6 +114,7 @@ def _validate_config_consistency(config: dict) -> None:
 
     # hparams ファイル名からモデルサイズを推定 (hparams_150M -> 150M)
     import re
+
     match = re.search(r"hparams_(\d+(?:\.\d+)?[MBK]?)", hparams_name)
     if not match:
         logger.debug(f"Could not parse model size from hparams name: {hparams_name}")
@@ -141,11 +142,17 @@ def _validate_config_consistency(config: dict) -> None:
                 f"does not match hparams implied size ({expected_from_hparams:,}) "
                 f"from {hparams_name}. Ratio: {ratio:.2f}"
             )
-            logger.warning("Consider running HPO with --sync-config or manually updating config.yaml")
+            logger.warning(
+                "Consider running HPO with --sync-config or manually updating config.yaml"
+            )
         else:
-            logger.debug(f"Config consistency OK: target_params={expected_n_params:,} matches hparams {hparams_name}")
+            logger.debug(
+                f"Config consistency OK: target_params={expected_n_params:,} matches hparams {hparams_name}"
+            )
     else:
-        logger.debug(f"Config consistency OK: target_params={expected_n_params:,} matches hparams {hparams_name}")
+        logger.debug(
+            f"Config consistency OK: target_params={expected_n_params:,} matches hparams {hparams_name}"
+        )
 
 
 def _detect_vram() -> float:
