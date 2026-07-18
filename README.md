@@ -20,47 +20,92 @@
 
 ## クイックスタート
 
-### 1. 環境構築
+本プロジェクトは `uv` を使用して環境管理を行います。Windows ネイティブ（検証用）および WSL2/Linux（本番推奨）の双方に対応したランチャースクリプトを用意しています。
 
-```bash
-# リポジトリのクローン
-git clone https://github.com/your-username/Novel_LLM.git
-cd Novel_LLM/LLM_Training
+### 1. 環境構築 (Setup)
 
-# 仮想環境作成
-python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/Mac
+依存関係（CUDA対応PyTorch、liger-kernel、bitsandbytesなど）を一括インストールします。
 
-# 依存関係インストール
-pip install -r requirements.txt
-# または
-pip install -e .
-```
+* **Windows**:
+  ```cmd
+  setup.bat
+  ```
+* **WSL2 / Linux**:
+  ```bash
+  # uv のインストール（未導入の場合のみ）
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  source $HOME/.local/bin/env
 
-### 2. データ準備
+  # 依存関係の同期（仮想環境の自動構築）
+  uv sync
+  ```
 
-```bash
-# DVCからデータを復元
-dvc pull
-# または手動で data/ ディレクトリに配置
-```
+---
 
-### 3. 学習実行
+### 2. 学習実行 (Training)
 
-```bash
-# Hydraモード（推奨）
-python main.py --config-name=config
+150Mモデルの事前学習を実行します。デフォルト設定および HPO 探索済みの最適パラメータが適用されます。
 
-# 設定オーバーライド
-python main.py --config-name=config seed=123 training.seq_len=1024
+* **Windows**:
+  ```cmd
+  # 通常起動
+  run_train.bat
 
-# 複数シード実行
-python main.py --config-name=config -m seed=42,123,456
+  # 学習再開 (最新のチェックポイントからレジューム)
+  run_train.bat --resume
 
-# レジューム
-python main.py --resume
-```
+  # デバッグ用軽量実行 (100ステップ限定)
+  run_train.bat --max-steps 100
+  ```
+* **WSL2 / Linux**:
+  ```bash
+  # 通常起動
+  uv run python -m src.training.main
+
+  # 学習再開 (最新のチェックポイントからレジューム)
+  uv run python -m src.training.main resume_from_checkpoint=true
+
+  # デバッグ用軽量実行 (100ステップ限定)
+  uv run python -m src.training.main training.max_steps=100
+  ```
+
+---
+
+### 3. ハイパーパラメータ探索 (HPO)
+
+代理（プロキシ）モデルを用いて最適な学習率やパラメータを探索し、本番モデルへ Step Law に基づいて自動スケーリング転移します。
+
+* **Windows**:
+  ```cmd
+  run_hpo.bat 150M data/dataset.jsonl configs/hparams_150M.yaml 150 4 1024 --sync-config
+  ```
+* **WSL2 / Linux**:
+  ```bash
+  uv run python -m scripts.find_hparams \
+    --proxy-model-size 150M \
+    --target-model-size 150M \
+    --data-path data/dataset.jsonl \
+    --output configs/hparams_150M.yaml \
+    --n-trials 150 \
+    --seq-len 1024 \
+    --sync-config
+  ```
+
+---
+
+### 4. TensorBoardの起動 (Monitoring)
+
+学習の進捗ロスやハイパーパラメータメトリクスをブラウザで可視化します。
+
+* **Windows**:
+  ```cmd
+  launch_tensorboard.bat
+  ```
+* **WSL2 / Linux**:
+  ```bash
+  uv run tensorboard --logdir=models/output --port=6006
+  ```
+  起動後、ブラウザで [http://localhost:6006](http://localhost:6006) にアクセスします。
 
 ### 4. 評価・比較
 
