@@ -37,6 +37,35 @@ from src.training.model_utils import (
 )
 
 
+def _verify_flash_attention(precision: str) -> None:
+    """SDPA経由でFlashAttentionバックエンドが正常にディスパッチ可能かを明示的に検証する（サイレントフォールバック防止）。"""
+    import torch
+    import torch.nn.functional as F
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    if not torch.cuda.is_available():
+        logger.warning("CUDA is not available. Skipping FlashAttention verification.")
+        return
+
+    dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+    try:
+        # Llamaモデルの標準ヘッド構造を模したテンソルを作成
+        q = torch.randn(1, 12, 1024, 64, dtype=dtype, device="cuda")
+        k = torch.randn(1, 12, 1024, 64, dtype=dtype, device="cuda")
+        v = torch.randn(1, 12, 1024, 64, dtype=dtype, device="cuda")
+
+        # FLASH_ATTENTIONのみを有効化した状態で実行テスト
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            _ = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
+        logger.info(f"Verification SUCCESS: Native FlashAttention backend is active and verified via SDPA (dtype={precision}).")
+    except Exception as e:
+        logger.warning(
+            f"Verification WARNING: FlashAttention backend could not be dispatched via SDPA. "
+            f"PyTorch will silently fall back to slower math kernels. Error: {e}"
+        )
+
+
 def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     """
     統一された学習オーケストレーションフロー。
@@ -55,6 +84,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         logger.info("TensorFloat-32 (TF32) enabled for matmul and cudnn.")
+
+    # 1.6 torch.compile コンパイラ最適化設定 (Graph break の抑制)
+    import torch._dynamo
+    torch._dynamo.config.capture_scalar_outputs = True
+
+    # 1.7 FlashAttention のディスパッチ検証（サイレントフォールバックの防止）
+    _verify_flash_attention(config.get("precision", "bf16"))
 
     # 2. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
     config_path = Path("configs/config.yaml")
