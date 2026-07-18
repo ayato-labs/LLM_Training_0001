@@ -40,6 +40,21 @@ def load_config(cfg: DictConfig) -> dict:
     # 正規化・デフォルト値補完
     normalized = _normalize_config(container)
 
+    # Linux以外の環境（Windowsネイティブ等）では、Triton制約や安定性のためにコンパイルとLiger Kernelを自動無効化
+    import sys
+    if sys.platform != "linux":
+        from src.common.logger import logger
+        if normalized.get("torch_compile"):
+            logger.info("Non-Linux OS detected. Forcing 'torch_compile' to False.")
+            normalized["torch_compile"] = False
+            if "hpo" in normalized:
+                normalized["hpo"]["torch_compile"] = False
+        if normalized.get("use_liger_kernel"):
+            logger.info("Non-Linux OS detected. Forcing 'use_liger_kernel' to False.")
+            normalized["use_liger_kernel"] = False
+            if "hpo" in normalized:
+                normalized["hpo"]["use_liger_kernel"] = False
+
     # VRAM自動検出（上書き可能）
     if "vram_limit_gb" not in normalized or normalized["vram_limit_gb"] is None:
         normalized["vram_limit_gb"] = _detect_vram()

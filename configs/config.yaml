@@ -23,8 +23,8 @@ training:
   save_steps: 500
   eval_steps: 1000
   logging_steps: 10
-  torch_compile: false
-  use_liger_kernel: false
+  torch_compile: true
+  use_liger_kernel: true
   dataloader_pin_memory: true
   dataloader_num_workers: 0
   allow_tf32: true
