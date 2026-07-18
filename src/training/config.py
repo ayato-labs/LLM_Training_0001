@@ -6,6 +6,26 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 
+def _resolve_wsl_paths(config_obj):
+    """Linux(WSL)環境下で、Windows形式の絶対パス（C:/...）を WSL形式（/mnt/c/...）に再帰的に自動解決する。"""
+    import sys
+    import re
+
+    if sys.platform == "win32":
+        return config_obj
+
+    if isinstance(config_obj, dict):
+        return {k: _resolve_wsl_paths(v) for k, v in config_obj.items()}
+    elif isinstance(config_obj, list):
+        return [_resolve_wsl_paths(x) for x in config_obj]
+    elif isinstance(config_obj, str):
+        if re.match(r'^[a-zA-Z]:[/\\]', config_obj):
+            drive = config_obj[0].lower()
+            converted = "/mnt/" + drive + config_obj[2:].replace('\\', '/')
+            return converted
+    return config_obj
+
+
 def load_config(cfg: DictConfig) -> dict:
     """
     Hydra合成済みDictConfigをフラットなdictに変換・検証。
@@ -13,6 +33,9 @@ def load_config(cfg: DictConfig) -> dict:
     """
     # 構造化設定への変換
     container = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+    
+    # WSL環境下でのWindows絶対パスの自動解決
+    container = _resolve_wsl_paths(container)
 
     # 正規化・デフォルト値補完
     normalized = _normalize_config(container)
