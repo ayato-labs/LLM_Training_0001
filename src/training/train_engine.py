@@ -1,8 +1,14 @@
+import os
 import json
 from pathlib import Path
 
 import torch
 from datasets import disable_caching, load_dataset
+
+# Linuxの /tmp (tmpfs RAMディスク) の容量不足による [Errno 28] OOM を回避するため、
+# 一時ディレクトリを十分な空き容量のあるローカルディスク（ext4）上に強制指定
+os.environ["TMPDIR"] = str(Path("models/output/tmp").resolve())
+Path("models/output/tmp").mkdir(parents=True, exist_ok=True)
 
 disable_caching()
 
