@@ -38,7 +38,7 @@ def estimate_model_size(model) -> int:
 
 class PackedDatasetWrapper:
     """Sequence packing wrapper to eliminate padding tokens by concatenating texts with EOS and chunking."""
-    
+
     def __init__(self, dataset, seq_len: int, eos_token_id: int):
         self.dataset = dataset
         self.seq_len = seq_len
@@ -48,31 +48,31 @@ class PackedDatasetWrapper:
         def pack_function(examples):
             input_ids = examples["input_ids"]
             attention_mask = examples.get("attention_mask", None)
-            
+
             packed_input_ids = []
             packed_attention_masks = []
-            
+
             current_ids = []
             current_mask = []
-            
+
             for i in range(len(input_ids)):
                 ids = input_ids[i]
                 mask = attention_mask[i] if attention_mask is not None else [1] * len(ids)
-                
+
                 # Append EOS token if it's not already at the end
                 if len(ids) == 0 or ids[-1] != self.eos_token_id:
                     ids = ids + [self.eos_token_id]
                     mask = mask + [1]
-                
+
                 current_ids.extend(ids)
                 current_mask.extend(mask)
-                
+
                 while len(current_ids) >= self.seq_len:
-                    packed_input_ids.append(current_ids[:self.seq_len])
-                    packed_attention_masks.append(current_mask[:self.seq_len])
-                    current_ids = current_ids[self.seq_len:]
-                    current_mask = current_mask[self.seq_len:]
-            
+                    packed_input_ids.append(current_ids[: self.seq_len])
+                    packed_attention_masks.append(current_mask[: self.seq_len])
+                    current_ids = current_ids[self.seq_len :]
+                    current_mask = current_mask[self.seq_len :]
+
             result = {
                 "input_ids": packed_input_ids,
                 "attention_mask": packed_attention_masks,
@@ -89,16 +89,16 @@ class PackedDatasetWrapper:
         return packed_ds
 
 
+import concurrent.futures
+import hashlib
 import os
 import sys
-import psutil
-import hashlib
-import concurrent.futures
 from pathlib import Path
-from typing import Callable, List, Optional
 
+import psutil
 import torch
 from datasets import Dataset
+
 from src.common.logger import logger
 
 
@@ -127,10 +127,10 @@ class TokenizerWrapper:
 
 class ThreadPoolTokenizer:
     """Windows対応スレッド並列トークナイザー。
-    
+
     concurrent.futures.ThreadPoolExecutor を使用して multiprocessig の
     pickling 問題を回避しつつ、トークナイズ処理を並列化する。
-    
+
     Args:
         tokenizer: HuggingFaceトークナイザー
         seq_len: シーケンス長
@@ -144,7 +144,7 @@ class ThreadPoolTokenizer:
         tokenizer,
         seq_len: int,
         padding: bool = True,
-        max_workers: Optional[int] = None,
+        max_workers: int | None = None,
         batch_size: int = 1000,
     ):
         self.tokenizer = tokenizer
@@ -161,11 +161,11 @@ class ThreadPoolTokenizer:
             # スレッドはプロセスより軽量なので 0.5GB/thread で計算
             mem_based = max(1, int(mem_gb // 0.5))
             max_workers = min(max(1, cpu_cores - 1), mem_based)
-        
+
         self.max_workers = max_workers
         logger.info(f"ThreadPoolTokenizer: workers={max_workers}, batch_size={batch_size}")
 
-    def _tokenize_batch(self, batch_texts: List[str]) -> dict:
+    def _tokenize_batch(self, batch_texts: list[str]) -> dict:
         """単一バッチのトークナイズ"""
         if self.padding:
             return self.tokenizer(
@@ -189,10 +189,7 @@ class ThreadPoolTokenizer:
             return {"input_ids": [], "attention_mask": [], "labels": []}
 
         # バッチ分割
-        batches = [
-            texts[i : i + self.batch_size]
-            for i in range(0, n_samples, self.batch_size)
-        ]
+        batches = [texts[i : i + self.batch_size] for i in range(0, n_samples, self.batch_size)]
         total_batches = len(batches)
 
         # ThreadPoolExecutor で並列処理
@@ -224,7 +221,7 @@ class ThreadPoolTokenizer:
 
 def get_optimal_num_proc() -> int:
     """CPU論理コアと利用可能なメモリを検出し最適な並列度を計算。
-    
+
     Returns:
         Linux/macOS: プロセス数 (multiprocessing 用)
         Windows: スレッド数 (ThreadPoolTokenizer 用)
@@ -263,15 +260,15 @@ def parallel_tokenize(
     tokenizer,
     seq_len: int,
     padding: bool = True,
-    remove_columns: Optional[List[str]] = None,
-    max_workers: Optional[int] = None,
+    remove_columns: list[str] | None = None,
+    max_workers: int | None = None,
     batch_size: int = 1000,
 ) -> Dataset:
     """プラットフォーム自動判定で並列トークナイズを実行。
-    
+
     Windows: ThreadPoolTokenizer (スレッドプール並列)
     Linux/macOS: TokenizerWrapper + multiprocessing (プロセス並列)
-    
+
     Args:
         dataset: 入力 Dataset
         tokenizer: HuggingFace トークナイザー
@@ -280,15 +277,13 @@ def parallel_tokenize(
         remove_columns: 削除するカラム
         max_workers: 並列度 (None=自動検出)
         batch_size: バッチサイズ (Windows のみ有効)
-        
+
     Returns:
         トークン化済み Dataset
     """
     if sys.platform == "win32":
         logger.info("Using ThreadPoolTokenizer (Windows parallel mode)")
-        tokenizer_fn = ThreadPoolTokenizer(
-            tokenizer, seq_len, padding, max_workers, batch_size
-        )
+        tokenizer_fn = ThreadPoolTokenizer(tokenizer, seq_len, padding, max_workers, batch_size)
         tokenized = dataset.map(
             tokenizer_fn,
             batched=True,
@@ -308,7 +303,6 @@ def parallel_tokenize(
         )
 
     return tokenized
-
 
 
 def compute_file_hash(filepath: str) -> str:
@@ -337,6 +331,7 @@ def compute_dataset_fingerprint(dataset_path: str) -> dict:
         return {"error": f"File not found: {dataset_path}"}
 
     import datetime
+
     stat = path.stat()
     line_count = 0
     with open(path, encoding="utf-8") as f:
@@ -357,8 +352,8 @@ def compute_db_fingerprint(db_path: str) -> dict:
     if not path.exists():
         return {"error": f"Database not found: {db_path}"}
 
-    import sqlite3
     import datetime
+    import sqlite3
 
     stat = path.stat()
     try:
@@ -383,9 +378,10 @@ def compute_db_fingerprint(db_path: str) -> dict:
     }
 
 
-def get_checkpoints(output_dir=None):
-    """ステップ番号でソートされた有効なチェックポイントディレクトリを一覧表示。"""
+def get_checkpoints(output_dir=None, sort_by="step"):
+    """有効なチェックポイントディレクトリを一覧表示（デフォルトはステップ番号順、'mtime'指定で更新日時順）。"""
     import re
+
     target_dir = Path(output_dir) if output_dir else Path("models/output")
     if not target_dir.exists():
         return []
@@ -395,12 +391,30 @@ def get_checkpoints(output_dir=None):
         if item.is_dir() and re.match(r"^checkpoint-\d+$", item.name):
             step = int(item.name.split("-")[1])
             checkpoints.append((step, item))
+
+    if sort_by == "mtime":
+
+        def get_mtime(path: Path) -> float:
+            for filename in [
+                "trainer_state.json",
+                "hashes.json",
+                "pytorch_model.bin",
+                "model.safetensors",
+            ]:
+                file_path = path / filename
+                if file_path.exists():
+                    return file_path.stat().st_mtime
+            return path.stat().st_mtime
+
+        return sorted(checkpoints, key=lambda x: get_mtime(x[1]))
+
     return sorted(checkpoints, key=lambda x: x[0])
 
 
 def cleanup_old_checkpoints(keep=2, output_dir=None):
     """ローカルの古いチェックポイントディレクトリを削除し、最新の`keep`個のみを保持。"""
     import shutil
+
     checkpoints = get_checkpoints(output_dir=output_dir)
     if len(checkpoints) <= keep:
         return
@@ -408,4 +422,4 @@ def cleanup_old_checkpoints(keep=2, output_dir=None):
     to_remove = checkpoints[:-keep]
     for _step, path in to_remove:
         logger.info(f"Cleaning up old checkpoint: {path.name}")
-        shutil.rmtree(path)
+        shutil.rmtree(path)

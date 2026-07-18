@@ -19,17 +19,19 @@ tokenizer_path: "data/tokenizer.json"
 training:
   seq_len: 1024
   max_steps: -1
-  num_epochs: 3
-  save_steps: 50
+  num_epochs: 1
+  save_steps: 500
   eval_steps: 1000
   logging_steps: 10
-  torch_compile: false
-  use_liger_kernel: false
+  torch_compile: true
+  use_liger_kernel: true
   dataloader_pin_memory: true
   dataloader_num_workers: 0
   allow_tf32: true
   torch_empty_cache_steps: 100
   dataloader_prefetch_factor: 2
+  packing: true
+  optim: "adamw_bnb_8bit"
 
 # トークナイズ並列化設定 (Windows ThreadPool / Linux multiprocessing)
 tokenization:

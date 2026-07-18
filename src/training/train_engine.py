@@ -1,8 +1,18 @@
+import os
 import json
 from pathlib import Path
-import torch
 
-from datasets import load_dataset
+import torch
+import torch._dynamo
+from datasets import disable_caching, load_dataset
+
+# Linuxの /tmp (tmpfs RAMディスク) の容量不足による [Errno 28] OOM を回避するため、
+# 一時ディレクトリを十分な空き容量のあるローカルディスク（ext4）上に強制指定
+os.environ["TMPDIR"] = str(Path("models/output/tmp").resolve())
+Path("models/output/tmp").mkdir(parents=True, exist_ok=True)
+
+disable_caching()
+
 from transformers import (
     DataCollatorForLanguageModeling,
     LlamaForCausalLM,
@@ -13,31 +23,62 @@ from transformers import (
 
 from src.common.logger import logger
 from src.common.set_seed import set_seed
-from src.common.env_snapshot import capture_env_snapshot
+from src.training.callbacks import (
+    DetailedLoggingCallback,
+    HashSaveCallback,
+)
 from src.training.model_utils import (
-    create_model_config,
-    parallel_tokenize,
     PackedDatasetWrapper,
-    get_optimal_num_proc,
-    compute_file_hash,
     compute_dataset_fingerprint,
     compute_db_fingerprint,
+    compute_file_hash,
+    create_model_config,
+    get_optimal_num_proc,
+    parallel_tokenize,
 )
-from src.training.callbacks import (
-    HashSaveCallback,
-    DetailedLoggingCallback,
-)
+
+
+def _verify_flash_attention(precision: str) -> None:
+    """SDPA経由でFlashAttentionバックエンドが正常にディスパッチ可能かを明示的に検証する（サイレントフォールバック防止）。"""
+    import torch
+    import torch.nn.functional as F
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    if not torch.cuda.is_available():
+        logger.warning("CUDA is not available. Skipping FlashAttention verification.")
+        return
+
+    dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+    try:
+        # Llamaモデルの標準ヘッド構造を模したテンソルを作成
+        q = torch.randn(1, 12, 1024, 64, dtype=dtype, device="cuda")
+        k = torch.randn(1, 12, 1024, 64, dtype=dtype, device="cuda")
+        v = torch.randn(1, 12, 1024, 64, dtype=dtype, device="cuda")
+
+        # FLASH_ATTENTIONのみを有効化した状態で実行テスト
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            _ = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
+        logger.info(f"Verification SUCCESS: Native FlashAttention backend is active and verified via SDPA (dtype={precision}).")
+    except Exception as e:
+        logger.warning(
+            f"Verification WARNING: FlashAttention backend could not be dispatched via SDPA. "
+            f"PyTorch will silently fall back to slower math kernels. Error: {e}"
+        )
 
 
 def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     """
     統一された学習オーケストレーションフロー。
-    
+
     Args:
         config (dict): 学習設定パラメータを含む辞書。
         tokenized_datasets (dict, optional): トークン化済みのデータセット辞書（学習/検証）。省略時はロード及びトークン化を行う。
         extra_callbacks (list, optional): 追加のTrainerCallbackリスト。
     """
+    # 0. 解決されたハイパーパラメータ/設定値の全出力
+    logger.info(f"Resolved Configuration:\n{json.dumps(config, indent=2, ensure_ascii=False)}")
+
     # 1. 乱数シードの設定（再現性確保のため決定論的挙動を強制）
     seed = config.get("seed", 42)
     set_seed(seed, deterministic=True)
@@ -48,11 +89,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         torch.backends.cudnn.allow_tf32 = True
         logger.info("TensorFloat-32 (TF32) enabled for matmul and cudnn.")
 
-    # 2. 実行環境スナップショットの取得とロギング
-    env_snapshot = capture_env_snapshot()
-    logger.debug(f"Env snapshot: {env_snapshot}")
+    # 1.6 torch.compile コンパイラ最適化設定 (Graph break の抑制)
+    torch._dynamo.config.capture_scalar_outputs = True
 
-    # 3. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
+    # 1.7 FlashAttention のディスパッチ検証（サイレントフォールバックの防止）
+    _verify_flash_attention(config.get("precision", "bf16"))
+
+    # 2. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
     config_path = Path("configs/config.yaml")
     data_path_str = config.get("data_path", "data/dataset.jsonl")
     current_config_hash = compute_file_hash(str(config_path))
@@ -75,11 +118,14 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     # 5. チェックポイントからの再開（Resume）処理の解決
     resume_checkpoint = config.get("resume_from_checkpoint") or config.get("resume")
-    
+
     # "checkpoint-latest" が指定された場合、または True の場合は最新のチェックポイントを自動探索
-    if resume_checkpoint is True or (isinstance(resume_checkpoint, str) and "checkpoint-latest" in resume_checkpoint):
+    if resume_checkpoint is True or (
+        isinstance(resume_checkpoint, str) and "checkpoint-latest" in resume_checkpoint
+    ):
         from src.training.model_utils import get_checkpoints
-        checkpoints = get_checkpoints()
+
+        checkpoints = get_checkpoints(sort_by="mtime")
         if checkpoints:
             resume_checkpoint = str(checkpoints[-1][1])
             logger.info(f"Resolved checkpoint-latest to: {resume_checkpoint}")
@@ -93,24 +139,34 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         hash_file = checkpoint_path / "hashes.json"
         if hash_file.exists():
             try:
-                with open(hash_file, "r") as f:
+                with open(hash_file) as f:
                     saved_hashes = json.load(f)
                 saved_config_hash = saved_hashes.get("config_hash")
                 saved_data_hash = saved_hashes.get("data_hash")
-                
+
                 # チェックポイント保存時と現在の設定・データが異なる場合はエラーとして学習を中断する
                 if saved_config_hash != current_config_hash or saved_data_hash != current_data_hash:
-                    logger.error("Configuration or training dataset has changed since the checkpoint was saved!")
-                    logger.error(f"Saved Config Hash: {saved_config_hash} | Current Config Hash: {current_config_hash}")
-                    logger.error(f"Saved Data Hash: {saved_data_hash} | Current Data Hash: {current_data_hash}")
-                    raise ValueError("Cannot resume training: config.yaml or training dataset does not match the checkpoint.")
+                    logger.error(
+                        "Configuration or training dataset has changed since the checkpoint was saved!"
+                    )
+                    logger.error(
+                        f"Saved Config Hash: {saved_config_hash} | Current Config Hash: {current_config_hash}"
+                    )
+                    logger.error(
+                        f"Saved Data Hash: {saved_data_hash} | Current Data Hash: {current_data_hash}"
+                    )
+                    raise ValueError(
+                        "Cannot resume training: config.yaml or training dataset does not match the checkpoint."
+                    )
                 else:
                     logger.info("Configuration and dataset hashes match. Verification successful.")
             except Exception as e:
                 logger.error(f"Failed to verify checkpoint hashes: {e}")
                 raise
         else:
-            logger.warning(f"No hashes.json found in checkpoint {resume_checkpoint}. Proceeding without verification.")
+            logger.warning(
+                f"No hashes.json found in checkpoint {resume_checkpoint}. Proceeding without verification."
+            )
     else:
         if not isinstance(resume_checkpoint, str):
             resume_checkpoint = None
@@ -121,6 +177,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path))
     else:
         from transformers import AutoTokenizer
+
         tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
 
     # 特殊トークンの明示的な設定
@@ -132,9 +189,26 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 8. データセットのロードとトークン化処理（前処理が渡されていない場合のみ実施）
     if tokenized_datasets is None:
         logger.info("Starting dataset loading...")
+        
+        # 物理パス（シンボリックリンクを含む）の解決状況を特定しログ出力
+        resolved_train_path = Path(data_path_str).resolve()
+        is_symlink = Path(data_path_str).is_symlink()
+        symlink_msg = " (symlink)" if is_symlink else ""
+        logger.info(f"Loading train dataset from: {data_path_str}{symlink_msg} -> Resolved physical path: {resolved_train_path}")
+        
+        if str(resolved_train_path).startswith("/mnt/"):
+            logger.warning(
+                f"Performance Alert: Resolved dataset path '{resolved_train_path}' is located under WSL mount directory '/mnt/'. "
+                "Accessing Windows filesystems from WSL2 is extremely slow (10x-20x slower). "
+                "It is strongly recommended to copy the dataset file directly into WSL2 storage (e.g. ~/dataset.jsonl)."
+            )
+
         data_files = {"train": data_path_str}
         if config.get("val_data_path"):
-            data_files["validation"] = config["val_data_path"]
+            val_path_str = config["val_data_path"]
+            resolved_val_path = Path(val_path_str).resolve()
+            logger.info(f"Loading validation dataset from: {val_path_str} -> Resolved physical path: {resolved_val_path}")
+            data_files["validation"] = val_path_str
 
         # JSONLファイルからデータセットをロード
         ds = load_dataset("json", data_files=data_files)
@@ -165,6 +239,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
                 wrapper = PackedDatasetWrapper(ds[split], seq_len, tokenizer.eos_token_id)
                 packed_ds[split] = wrapper()
             from datasets import DatasetDict
+
             ds = DatasetDict(packed_ds)
 
         # デバッグや軽量テスト用途のデータ一部抽出 (data_fraction < 1.0 の場合)
@@ -187,7 +262,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 9. モデルの設定と初期化 (Llamaアーキテクチャ)
     model_config = create_model_config(config, tokenizer)
     model = LlamaForCausalLM(model_config)
-    
+
     # トークナイザーの語彙数に合わせて埋め込み層のサイズを調整
     model.resize_token_embeddings(len(tokenizer))
 
@@ -201,21 +276,6 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     per_device_batch = config.get("per_device_batch_size", 1)
     grad_accum_steps = config.get("grad_accum_steps", 1)
-    
-    # HPO(ハイパーパラメータ最適化)設定が含まれており、バッチサイズ自動決定が必要な場合の処理
-    if "batch_size_seqs" in hpo_config and "per_device_batch_size" not in config:
-        target_total_batch_seqs = hpo_config.get("batch_size_seqs", 16)
-        vram_limit = config.get("vram_limit_gb", 4.0)
-        
-        # 利用可能なVRAM容量に応じて、OOMを防止するためのデバイスあたりバッチサイズと勾配累積ステップ数を自動決定
-        if vram_limit <= 4.5:
-            max_batch = 1
-        elif vram_limit <= 8.5:
-            max_batch = 4
-        else:
-            max_batch = 8
-        per_device_batch = min(target_total_batch_seqs, max_batch)
-        grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
 
     # Pagedオプティマイザが選択されている場合、性能低下の可能性を警告
     optim_selected = config.get("optim", "adamw_torch_fused")
@@ -227,22 +287,37 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         )
 
     # Hugging Face TrainingArguments の初期化
-    # warmup_ratio → warmup_steps 変換 (Transformers v5.2 で warmup_ratio 廃止予定)
+    # warmup_steps と warmup_ratio の動的設定 (epochモード max_steps=-1 時の比率解決)
     warmup_steps = hpo_config.get("warmup_steps", 0)
-    if warmup_steps == 0 and max_steps > 0:
-        warmup_steps = int(max_steps * hpo_config.get("warmup_ratio", 0.03))
+    warmup_ratio = hpo_config.get("warmup_ratio", 0.03)
+    if warmup_steps > 0:
+        warmup_ratio = 0.0
+    else:
+        warmup_steps = None
+
+    # dataloader_num_workers の動的設定 (Linux/WSLの場合、os.cpu_count()を用いてデータ準備を非同期化)
+    num_workers = config.get("dataloader_num_workers", 0)
+    if num_workers == 0:
+        import os
+        import sys
+        if sys.platform == "linux":
+            num_workers = min(4, max(1, (os.cpu_count() or 2) // 4))
+            logger.info(f"Auto-selected dataloader_num_workers: {num_workers} (system CPU count: {os.cpu_count()})")
 
     args = TrainingArguments(
         output_dir=output_dir,
         learning_rate=hpo_config.get("max_lr_2d", 3e-4),
         per_device_train_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum_steps,
-        gradient_checkpointing=True,                       # メモリ節約のため勾配チェックポインティングを有効化
-        gradient_checkpointing_kwargs={"use_reentrant": False}, # 安定性とコンパイラ互換性のための非再帰方式
+        gradient_checkpointing=True,  # メモリ節約のため勾配チェックポインティングを有効化
+        gradient_checkpointing_kwargs={
+            "use_reentrant": False
+        },  # 安定性とコンパイラ互換性のための非再帰方式
         max_steps=max_steps,
         num_train_epochs=num_epochs,
-        lr_scheduler_type="cosine",                        # コサイン学習率スケジューラを採用
+        lr_scheduler_type="cosine",  # コサイン学習率スケジューラを採用
         warmup_steps=warmup_steps,
+        warmup_ratio=warmup_ratio,
         weight_decay=hpo_config.get("weight_decay", 0.1),
         adam_beta2=hpo_config.get("beta2", 0.95),
         max_grad_norm=hpo_config.get("grad_clip", 1.0),
@@ -250,30 +325,36 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         fp16=(precision == "fp16"),
         save_strategy="steps",
         save_steps=config.get("save_steps", 1000),
-        save_total_limit=config.get("save_total_limit", 2), # ローカルチェックポイント保持数制限
+        save_total_limit=config.get("save_total_limit", 2),  # ローカルチェックポイント保持数制限
         eval_strategy="steps" if eval_ds is not None else "no",
         eval_steps=config.get("eval_steps", 1000) if eval_ds is not None else None,
         logging_steps=config.get("logging_steps", 10),
-        report_to=["tensorboard"],                          # TensorBoardによる学習監視の有効化
+        report_to=["tensorboard"],  # TensorBoardによる学習監視の有効化
         load_best_model_at_end=eval_ds is not None,
         metric_for_best_model="eval_loss" if eval_ds is not None else None,
         greater_is_better=False,
         seed=seed,
-        remove_unused_columns=False,                        # カスタムデータコレーター利用時のカラム自動削除防止
+        remove_unused_columns=False,  # カスタムデータコレーター利用時のカラム自動削除防止
         optim=config.get("optim", "adamw_torch_fused"),
         torch_compile=config.get("torch_compile", False),
         use_liger_kernel=config.get("use_liger_kernel", False),
         dataloader_pin_memory=config.get("dataloader_pin_memory", True),
-        dataloader_num_workers=config.get("dataloader_num_workers", 0),
+        dataloader_num_workers=num_workers,
         torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
-        dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2) if config.get("dataloader_num_workers", 0) > 0 else None,
-        disable_tqdm=True,                                  # tqdm進捗バー無効化（独自ログのみ使用）
+        dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2)
+        if num_workers > 0
+        else None,
+        disable_tqdm=True,  # tqdm進捗バー無効化（独自ログのみ使用）
     )
 
     # 11. コールバックの設定
     callbacks = [
-        HashSaveCallback(config_hash=current_config_hash, data_hash=current_data_hash),  # hashes.jsonの自動作成
-        DetailedLoggingCallback(log_every_n_steps=config.get("logging_steps", 10)),       # 詳細なステップ別メトリクスのログ出力
+        HashSaveCallback(
+            config_hash=current_config_hash, data_hash=current_data_hash
+        ),  # hashes.jsonの自動作成
+        DetailedLoggingCallback(
+            log_every_n_steps=config.get("logging_steps", 10)
+        ),  # 詳細なステップ別メトリクスのログ出力
     ]
 
     if extra_callbacks:
@@ -281,14 +362,22 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     # 12. Trainerインスタンスの生成
     from transformers import default_data_collator
+
     trainer = Trainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        data_collator=default_data_collator if config.get("packing", False) else DataCollatorForLanguageModeling(tokenizer, mlm=False),
+        data_collator=default_data_collator
+        if config.get("packing", False)
+        else DataCollatorForLanguageModeling(tokenizer, mlm=False),
         callbacks=callbacks,
     )
+
+    # 既定のPrinterCallback（disable_tqdm=True時に標準出力へ辞書をprintする）を削除して重複ログを防止
+    from transformers.trainer_callback import PrinterCallback
+
+    trainer.remove_callback(PrinterCallback)
 
     # 詳細ログ出力コールバックにTrainerオブジェクトの参照を渡す
     for cb in callbacks:
