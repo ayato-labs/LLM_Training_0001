@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import torch
+import torch._dynamo
 from datasets import disable_caching, load_dataset
 
 # Linuxの /tmp (tmpfs RAMディスク) の容量不足による [Errno 28] OOM を回避するため、
@@ -86,7 +87,6 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         logger.info("TensorFloat-32 (TF32) enabled for matmul and cudnn.")
 
     # 1.6 torch.compile コンパイラ最適化設定 (Graph break の抑制)
-    import torch._dynamo
     torch._dynamo.config.capture_scalar_outputs = True
 
     # 1.7 FlashAttention のディスパッチ検証（サイレントフォールバックの防止）
