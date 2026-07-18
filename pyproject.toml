@@ -28,6 +28,7 @@ dependencies = [
     "google-auth-oauthlib>=1.0.0",
     "google-api-python-client>=2.95.0",
     "liger-kernel>=0.3.0; sys_platform != 'win32'",
+    "bitsandbytes>=0.45.0",
 ]
 
 [tool.hatch.build.targets.wheel]
