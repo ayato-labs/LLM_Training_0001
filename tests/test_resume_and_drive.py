@@ -50,6 +50,22 @@ def run_tests():
         else:
             print("  [BUG CONFIRMED] No local checkpoints found.")
 
+        # Test 3: Chronological (mtime) checkpoint-latest resolution check
+        print("\nTest 3: checkpoint-latest chronological resolution check...")
+        # Modify cp200 to simulate a newer run checkpoint
+        time_touched = (cp200 / "trainer_state.json")
+        # Ensure it has a distinct newer modification time
+        import time
+        os.utime(time_touched, (time.time() + 10, time.time() + 10))
+        checkpoints_mtime = utils.get_checkpoints(output_dir=temp_dir, sort_by="mtime")
+        print("  Found checkpoints (mtime):", checkpoints_mtime)
+        if checkpoints_mtime:
+            latest_mtime = checkpoints_mtime[-1][1]
+            print("  Latest checkpoint path (mtime) resolved to:", latest_mtime)
+            assert latest_mtime == cp200, f"Expected {cp200} because it was modified last, but got {latest_mtime}"
+        else:
+            print("  [BUG] No local checkpoints found for mtime test.")
+
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)

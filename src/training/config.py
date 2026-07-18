@@ -70,6 +70,15 @@ def _normalize_config(raw: dict) -> dict:
         "eval_steps": t.get("eval_steps", 1000),
         "logging_steps": t.get("logging_steps", 10),
         "warmup_steps": t.get("warmup_steps", 0),
+        "packing": t.get("packing", False),
+        "torch_compile": t.get("torch_compile", False),
+        "use_liger_kernel": t.get("use_liger_kernel", False),
+        "dataloader_pin_memory": t.get("dataloader_pin_memory", True),
+        "dataloader_num_workers": t.get("dataloader_num_workers", 0),
+        "allow_tf32": t.get("allow_tf32", True),
+        "torch_empty_cache_steps": t.get("torch_empty_cache_steps", 100),
+        "dataloader_prefetch_factor": t.get("dataloader_prefetch_factor", 2),
+        "optim": t.get("optim", "adamw_torch_fused"),
     }
 
     # トップレベルマージ

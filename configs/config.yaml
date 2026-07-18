@@ -30,6 +30,7 @@ training:
   allow_tf32: true
   torch_empty_cache_steps: 100
   dataloader_prefetch_factor: 2
+  packing: true
 
 # トークナイズ並列化設定 (Windows ThreadPool / Linux multiprocessing)
 tokenization:
