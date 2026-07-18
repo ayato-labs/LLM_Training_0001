@@ -2,7 +2,10 @@ import json
 from pathlib import Path
 
 import torch
-from datasets import load_dataset
+from datasets import disable_caching, load_dataset
+
+disable_caching()
+
 from transformers import (
     DataCollatorForLanguageModeling,
     LlamaForCausalLM,

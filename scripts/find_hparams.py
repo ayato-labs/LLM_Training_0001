@@ -12,8 +12,11 @@ from pathlib import Path
 
 import optuna
 import yaml
-from datasets import load_dataset
+from datasets import disable_caching, load_dataset
 from transformers import PreTrainedTokenizerFast
+
+disable_caching()
+
 
 from src.common.logger import log_exceptions, log_function_call, logger
 from src.hpo.hpo_manager import create_search_space, objective
