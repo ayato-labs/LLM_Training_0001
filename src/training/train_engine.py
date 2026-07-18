@@ -260,21 +260,6 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     per_device_batch = config.get("per_device_batch_size", 1)
     grad_accum_steps = config.get("grad_accum_steps", 1)
 
-    # HPO(ハイパーパラメータ最適化)設定が含まれており、バッチサイズ自動決定が必要な場合の処理
-    if "batch_size_seqs" in hpo_config and "per_device_batch_size" not in config:
-        target_total_batch_seqs = hpo_config.get("batch_size_seqs", 16)
-        vram_limit = config.get("vram_limit_gb", 4.0)
-
-        # 利用可能なVRAM容量に応じて、OOMを防止するためのデバイスあたりバッチサイズと勾配累積ステップ数を自動決定
-        if vram_limit <= 4.5:
-            max_batch = 1
-        elif vram_limit <= 8.5:
-            max_batch = 4
-        else:
-            max_batch = 8
-        per_device_batch = min(target_total_batch_seqs, max_batch)
-        grad_accum_steps = max(1, target_total_batch_seqs // per_device_batch)
-
     # Pagedオプティマイザが選択されている場合、性能低下の可能性を警告
     optim_selected = config.get("optim", "adamw_torch_fused")
     if "paged" in optim_selected:
@@ -285,10 +270,22 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         )
 
     # Hugging Face TrainingArguments の初期化
-    # warmup_ratio → warmup_steps 変換 (Transformers v5.2 で warmup_ratio 廃止予定)
+    # warmup_steps と warmup_ratio の動的設定 (epochモード max_steps=-1 時の比率解決)
     warmup_steps = hpo_config.get("warmup_steps", 0)
-    if warmup_steps == 0 and max_steps > 0:
-        warmup_steps = int(max_steps * hpo_config.get("warmup_ratio", 0.03))
+    warmup_ratio = hpo_config.get("warmup_ratio", 0.03)
+    if warmup_steps > 0:
+        warmup_ratio = 0.0
+    else:
+        warmup_steps = None
+
+    # dataloader_num_workers の動的設定 (Linux/WSLの場合、os.cpu_count()を用いてデータ準備を非同期化)
+    num_workers = config.get("dataloader_num_workers", 0)
+    if num_workers == 0:
+        import os
+        import sys
+        if sys.platform == "linux":
+            num_workers = min(4, max(1, (os.cpu_count() or 2) // 4))
+            logger.info(f"Auto-selected dataloader_num_workers: {num_workers} (system CPU count: {os.cpu_count()})")
 
     args = TrainingArguments(
         output_dir=output_dir,
@@ -303,6 +300,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         num_train_epochs=num_epochs,
         lr_scheduler_type="cosine",  # コサイン学習率スケジューラを採用
         warmup_steps=warmup_steps,
+        warmup_ratio=warmup_ratio,
         weight_decay=hpo_config.get("weight_decay", 0.1),
         adam_beta2=hpo_config.get("beta2", 0.95),
         max_grad_norm=hpo_config.get("grad_clip", 1.0),
@@ -324,10 +322,10 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         torch_compile=config.get("torch_compile", False),
         use_liger_kernel=config.get("use_liger_kernel", False),
         dataloader_pin_memory=config.get("dataloader_pin_memory", True),
-        dataloader_num_workers=config.get("dataloader_num_workers", 0),
+        dataloader_num_workers=num_workers,
         torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
         dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2)
-        if config.get("dataloader_num_workers", 0) > 0
+        if num_workers > 0
         else None,
         disable_tqdm=True,  # tqdm進捗バー無効化（独自ログのみ使用）
     )
