@@ -75,15 +75,52 @@ class DetailedLoggingCallback(TrainerCallback):
         self.log_every_n_steps = log_every_n_steps
         self.step_count = 0
         self.epoch_start_time = time.time()
+        self.start_step = 0
         self.trainer = None  # Reference injected after trainer instantiation
+        self.last_step_time = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self.epoch_start_time = time.time()
+        self.start_step = state.global_step
 
     def on_step_end(self, args, state, control, **kwargs):
-        self.step_count += 1
+        self.step_count = state.global_step
+        current_time = time.time()
+        
         if self.step_count % self.log_every_n_steps == 0:
             loss = state.log_history[-1].get("loss") if state.log_history else None
             lr_val = "N/A"
             if self.trainer and self.trainer.optimizer:
                 lr_val = f"{self.trainer.optimizer.param_groups[0]['lr']:.2e}"
+
+            # 進捗割合とETAの算出
+            total_steps = state.max_steps
+            progress_str = f"Step {self.step_count}"
+            eta_str = ""
+            speed_str = ""
+            
+            elapsed_time = current_time - self.epoch_start_time
+            steps_in_session = self.step_count - self.start_step
+            if steps_in_session > 0:
+                steps_per_sec = steps_in_session / elapsed_time
+                speed_str = f" | {1.0 / steps_per_sec:.2f}s/it"
+                
+                if total_steps and total_steps > 0:
+                    pct = (self.step_count / total_steps) * 100
+                    progress_str = f"Step {self.step_count}/{total_steps} ({pct:.1f}%)"
+                    
+                    remaining_steps = total_steps - self.step_count
+                    remaining_time = remaining_steps * (elapsed_time / steps_in_session)
+                    
+                    # hh:mm:ss 形式にフォーマット
+                    hrs, remainder = divmod(int(remaining_time), 3600)
+                    mins, secs = divmod(remainder, 60)
+                    if hrs > 0:
+                        eta_str = f" | ETA={hrs}h{mins}m"
+                    elif mins > 0:
+                        eta_str = f" | ETA={mins}m{secs}s"
+                    else:
+                        eta_str = f" | ETA={secs}s"
 
             gpu_info = ""
             if torch.cuda.is_available():
@@ -98,10 +135,13 @@ class DetailedLoggingCallback(TrainerCallback):
 
             if loss is not None:
                 logger.info(
-                    f"Step {self.step_count} | "
+                    f"{progress_str} | "
                     f"loss={loss:.4f} | "
                     f"lr={lr_val}"
-                    f" | elapsed={time.time() - self.epoch_start_time:.1f}s"
+                    f"{speed_str}"
+                    f" | elapsed={elapsed_time:.1f}s"
+                    f"{eta_str}"
                     f"{gpu_info}"
                 )
         return control
+

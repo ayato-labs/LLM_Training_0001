@@ -74,7 +74,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # "checkpoint-latest" が指定された場合、または True の場合は最新のチェックポイントを自動探索
     if resume_checkpoint is True or (isinstance(resume_checkpoint, str) and "checkpoint-latest" in resume_checkpoint):
         from src.training.model_utils import get_checkpoints
-        checkpoints = get_checkpoints()
+        checkpoints = get_checkpoints(sort_by="mtime")
         if checkpoints:
             resume_checkpoint = str(checkpoints[-1][1])
             logger.info(f"Resolved checkpoint-latest to: {resume_checkpoint}")

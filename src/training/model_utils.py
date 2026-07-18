@@ -383,8 +383,8 @@ def compute_db_fingerprint(db_path: str) -> dict:
     }
 
 
-def get_checkpoints(output_dir=None):
-    """ステップ番号でソートされた有効なチェックポイントディレクトリを一覧表示。"""
+def get_checkpoints(output_dir=None, sort_by="step"):
+    """有効なチェックポイントディレクトリを一覧表示（デフォルトはステップ番号順、'mtime'指定で更新日時順）。"""
     import re
     target_dir = Path(output_dir) if output_dir else Path("models/output")
     if not target_dir.exists():
@@ -395,6 +395,16 @@ def get_checkpoints(output_dir=None):
         if item.is_dir() and re.match(r"^checkpoint-\d+$", item.name):
             step = int(item.name.split("-")[1])
             checkpoints.append((step, item))
+
+    if sort_by == "mtime":
+        def get_mtime(path: Path) -> float:
+            for filename in ["trainer_state.json", "hashes.json", "pytorch_model.bin", "model.safetensors"]:
+                file_path = path / filename
+                if file_path.exists():
+                    return file_path.stat().st_mtime
+            return path.stat().st_mtime
+        return sorted(checkpoints, key=lambda x: get_mtime(x[1]))
+
     return sorted(checkpoints, key=lambda x: x[0])
 
 
