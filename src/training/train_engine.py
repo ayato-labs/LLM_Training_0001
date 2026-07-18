@@ -189,9 +189,26 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 8. データセットのロードとトークン化処理（前処理が渡されていない場合のみ実施）
     if tokenized_datasets is None:
         logger.info("Starting dataset loading...")
+        
+        # 物理パス（シンボリックリンクを含む）の解決状況を特定しログ出力
+        resolved_train_path = Path(data_path_str).resolve()
+        is_symlink = Path(data_path_str).is_symlink()
+        symlink_msg = " (symlink)" if is_symlink else ""
+        logger.info(f"Loading train dataset from: {data_path_str}{symlink_msg} -> Resolved physical path: {resolved_train_path}")
+        
+        if str(resolved_train_path).startswith("/mnt/"):
+            logger.warning(
+                f"Performance Alert: Resolved dataset path '{resolved_train_path}' is located under WSL mount directory '/mnt/'. "
+                "Accessing Windows filesystems from WSL2 is extremely slow (10x-20x slower). "
+                "It is strongly recommended to copy the dataset file directly into WSL2 storage (e.g. ~/dataset.jsonl)."
+            )
+
         data_files = {"train": data_path_str}
         if config.get("val_data_path"):
-            data_files["validation"] = config["val_data_path"]
+            val_path_str = config["val_data_path"]
+            resolved_val_path = Path(val_path_str).resolve()
+            logger.info(f"Loading validation dataset from: {val_path_str} -> Resolved physical path: {resolved_val_path}")
+            data_files["validation"] = val_path_str
 
         # JSONLファイルからデータセットをロード
         ds = load_dataset("json", data_files=data_files)
