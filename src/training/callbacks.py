@@ -112,7 +112,24 @@ class DetailedLoggingCallback(TrainerCallback):
             steps_in_session = self.step_count - self.start_step
             if steps_in_session > 0:
                 steps_per_sec = steps_in_session / elapsed_time
-                speed_str = f" | {1.0 / steps_per_sec:.2f}s/it"
+                
+                # 直近インターバルの速度（local）を算出（コンパイル等の初期遅延による影響を排除）
+                if not hasattr(self, "last_logged_step") or self.last_logged_step is None:
+                    self.last_logged_step = self.start_step
+                    self.last_logged_time = self.epoch_start_time
+                
+                local_steps = self.step_count - self.last_logged_step
+                local_elapsed = current_time - self.last_logged_time
+                
+                local_speed_str = ""
+                if local_steps > 0 and local_elapsed > 0:
+                    local_speed = local_steps / local_elapsed
+                    local_speed_str = f" ({1.0 / local_speed:.2f}s/it local)"
+                
+                self.last_logged_step = self.step_count
+                self.last_logged_time = current_time
+
+                speed_str = f" | {1.0 / steps_per_sec:.2f}s/it{local_speed_str}"
 
                 if total_steps and total_steps > 0:
                     pct = (self.step_count / total_steps) * 100
@@ -134,9 +151,21 @@ class DetailedLoggingCallback(TrainerCallback):
             gpu_info = ""
             if torch.cuda.is_available():
                 allocated = torch.cuda.memory_allocated() / 1024**3
+                peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
                 total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                gpu_info = f" | GPU: {allocated:.2f}/{total:.1f}GB"
-                if total > 0 and (allocated / total) > 0.95:
+                gpu_info = f" | GPU: {allocated:.2f}/{total:.1f}GB (peak_reserved={peak_reserved:.2f}GB)"
+                
+                # 4GB未満のエントリーGPU等で、CUDAコンテクスト（0.7GB）込みの総量が物理VRAMの上限に迫っている場合に警告
+                estimated_total_vram = peak_reserved + 0.7
+                if total > 0 and estimated_total_vram > total and (allocated / total) <= 0.95:
+                    logger.warning(
+                        f"Silent VRAM Paging Warning: Peak reserved memory ({peak_reserved:.2f}GB) "
+                        f"plus estimated CUDA context/OS overhead (~0.7GB) is {estimated_total_vram:.2f}GB, "
+                        f"which exceeds physical VRAM ({total:.1f}GB). "
+                        "The Windows WDDM driver has likely silently paged CUDA memory to system RAM, "
+                        "which will severely degrade steps speed (up to 5x-10x slower)."
+                    )
+                elif total > 0 and (allocated / total) > 0.95:
                     logger.warning(
                         f"High VRAM usage detected: {allocated:.2f}/{total:.1f}GB ({allocated / total * 100:.1f}%). "
                         "CPU offloading or Unified Memory paging may be active, which can severely degrade training speed."

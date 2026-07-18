@@ -8,6 +8,7 @@ seed: 42
 precision: "bf16"
 output_dir: "models/output"
 resume_from_checkpoint: null
+deterministic: false
 
 
 # データ

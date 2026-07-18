@@ -79,9 +79,10 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 0. 解決されたハイパーパラメータ/設定値の全出力
     logger.info(f"Resolved Configuration:\n{json.dumps(config, indent=2, ensure_ascii=False)}")
 
-    # 1. 乱数シードの設定（再現性確保のため決定論的挙動を強制）
+    # 1. 乱数シードの設定
     seed = config.get("seed", 42)
-    set_seed(seed, deterministic=True)
+    deterministic_val = config.get("deterministic", False)
+    set_seed(seed, deterministic=deterministic_val)
 
     # 1.5 TF32 (TensorFloat-32) の有効化（Ampere世代以降のGPUでの行列演算高速化）
     if config.get("allow_tf32", True) and torch.cuda.is_available():
@@ -89,7 +90,17 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         torch.backends.cudnn.allow_tf32 = True
         logger.info("TensorFloat-32 (TF32) enabled for matmul and cudnn.")
 
-    # 1.6 torch.compile コンパイラ最適化設定 (Graph break の抑制)
+    # 1.6 torch.compile と Liger Kernel の同時使用に対する警告（グラフブレイクによる減速リスク）
+    if config.get("torch_compile", False) and config.get("use_liger_kernel", False):
+        logger.warning(
+            "Performance Warning: Both 'torch_compile' and 'use_liger_kernel' are enabled. "
+            "Combining Triton custom autograd functions in Liger with torch.compile Dynamo tracing "
+            "often causes severe graph breaks, triggering eager fallbacks and degrading step speed. "
+            "It is highly recommended to disable one of them: "
+            "Use Liger Kernel alone for memory savings, or torch.compile alone for compute optimization."
+        )
+
+    # 1.65 torch.compile コンパイラ最適化設定 (Graph break の抑制)
     torch._dynamo.config.capture_scalar_outputs = True
 
     # 1.7 FlashAttention のディスパッチ検証（サイレントフォールバックの防止）
