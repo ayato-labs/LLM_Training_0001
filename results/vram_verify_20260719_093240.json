@@ -1,0 +1,70 @@
+{
+  "timestamp": "20260719_093240",
+  "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+  "vram_gb": 4.0,
+  "pytorch_version": "2.6.0+cu124",
+  "config": {
+    "seq_len": 512,
+    "batch_size": 2,
+    "hidden_size": 512,
+    "num_layers": 6,
+    "num_steps": 5
+  },
+  "results": [
+    {
+      "mode": "none",
+      "peak_allocated_gb": 0.0,
+      "peak_reserved_gb": 0.0,
+      "peak_fragmentation_gb": 0.0,
+      "avg_step_time_s": 0.0,
+      "compile_time_s": 1.180806800010032,
+      "total_time_s": 0.0,
+      "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n",
+      "steps": []
+    },
+    {
+      "mode": "default",
+      "peak_allocated_gb": 0.0,
+      "peak_reserved_gb": 0.0,
+      "peak_fragmentation_gb": 0.0,
+      "avg_step_time_s": 0.0,
+      "compile_time_s": 0.0023843000089982525,
+      "total_time_s": 0.0,
+      "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n",
+      "steps": []
+    },
+    {
+      "mode": "reduce-overhead",
+      "peak_allocated_gb": 0.0,
+      "peak_reserved_gb": 0.0,
+      "peak_fragmentation_gb": 0.0,
+      "avg_step_time_s": 0.0,
+      "compile_time_s": 0.0031454999989364296,
+      "total_time_s": 0.0,
+      "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n",
+      "steps": []
+    },
+    {
+      "mode": "max-autotune",
+      "peak_allocated_gb": 0.0,
+      "peak_reserved_gb": 0.0,
+      "peak_fragmentation_gb": 0.0,
+      "avg_step_time_s": 0.0,
+      "compile_time_s": 0.003446799993980676,
+      "total_time_s": 0.0,
+      "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n",
+      "steps": []
+    },
+    {
+      "mode": "max-autotune+cached",
+      "peak_allocated_gb": 0.0,
+      "peak_reserved_gb": 0.0,
+      "peak_fragmentation_gb": 0.0,
+      "avg_step_time_s": 0.0,
+      "compile_time_s": 0.0035554999922169372,
+      "total_time_s": 0.0,
+      "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n",
+      "steps": []
+    }
+  ]
+}
