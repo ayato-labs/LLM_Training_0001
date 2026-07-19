@@ -1,5 +1,6 @@
 import datetime
 import json
+import math
 import time
 from pathlib import Path
 
@@ -182,3 +183,134 @@ class DetailedLoggingCallback(TrainerCallback):
                     f"{gpu_info}"
                 )
         return control
+
+
+class PeriodicEvaluationCallback(TrainerCallback):
+    """
+    学習中の定期評価コールバック
+    
+    機能:
+    - perplexity 計算 (eval_dataset使用時)
+    - 生成サンプル出力 (指定プロンプト)
+    - TensorBoard 記録
+    - 早期発散検知 (loss > threshold)
+    
+    Step Law / Muon 環境での学習安定性監視用
+    """
+
+    def __init__(
+        self,
+        eval_every_n_steps: int = 500,
+        eval_prompts: list[str] | None = None,
+        max_new_tokens: int = 64,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        divergence_threshold: float = 10.0,
+        log_generations: bool = True,
+    ):
+        self.eval_every_n_steps = eval_every_n_steps
+        self.eval_prompts = eval_prompts or [
+            "＜|start_of_story|＞",
+            "昔々、あるところに",
+            "彼は剣を構え、",
+            "「待って、」彼女は言った。",
+        ]
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.divergence_threshold = divergence_threshold
+        self.log_generations = log_generations
+        self.trainer = None
+        self.tokenizer = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if self.trainer is not None:
+            self.tokenizer = self.trainer.tokenizer
+
+    def on_step_end(self, args, state, control, **kwargs):
+        step = state.global_step
+        
+        # 発散検知
+        if state.log_history:
+            last_loss = state.log_history[-1].get("loss")
+            if last_loss and last_loss > self.divergence_threshold:
+                logger.error(
+                    f"DIVERGENCE DETECTED at step {step}: loss={last_loss:.4f} "
+                    f"> threshold={self.divergence_threshold}. Consider early stopping."
+                )
+                control.should_training_stop = True
+                return control
+
+        # 定期評価実行
+        if step > 0 and step % self.eval_every_n_steps == 0:
+            self._run_periodic_evaluation(args, state, control)
+        
+        return control
+
+    def _run_periodic_evaluation(self, args, state, control):
+        """定期評価の実行"""
+        logger.info(f"=== Periodic Evaluation at Step {state.global_step} ===")
+        
+        # 1. Perplexity 計算 (eval_datasetがある場合)
+        if self.trainer is not None and self.trainer.eval_dataset is not None:
+            try:
+                eval_results = self.trainer.evaluate()
+                eval_loss = eval_results.get("eval_loss")
+                if eval_loss is not None:
+                    perplexity = math.exp(min(eval_loss, 20))  # overflow防止
+                    logger.info(f"  Eval Loss: {eval_loss:.4f} | Perplexity: {perplexity:.2f}")
+                    
+                    # TensorBoard記録
+                    if self.trainer.tb_writer:
+                        self.trainer.tb_writer.add_scalar("eval/loss", eval_loss, state.global_step)
+                        self.trainer.tb_writer.add_scalar("eval/perplexity", perplexity, state.global_step)
+            except Exception as e:
+                logger.warning(f"Periodic evaluation failed: {e}")
+        
+        # 2. 生成サンプル出力
+        if self.log_generations and self.trainer is not None and self.tokenizer is not None:
+            self._generate_samples(state.global_step)
+        
+        logger.info(f"=== Periodic Evaluation Complete ===")
+
+    def _generate_samples(self, step: int):
+        """生成サンプルの出力"""
+        if not self.eval_prompts:
+            return
+        
+        model = self.trainer.model
+        model.eval()
+        
+        try:
+            for i, prompt in enumerate(self.eval_prompts[:3]):  # 最大3サンプル
+                inputs = self.tokenizer(prompt, return_tensors="pt").to(model.device)
+                
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=self.max_new_tokens,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        do_sample=True,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+                
+                # プロンプト部分を除いてデコード
+                generated = outputs[0][inputs["input_ids"].shape[1]:]
+                text = self.tokenizer.decode(generated, skip_special_tokens=True)
+                
+                logger.info(f"  [Gen {i+1}] Prompt: '{prompt[:40]}...' -> '{text[:80]}...'")
+                
+                # TensorBoardにテキスト記録
+                if self.trainer.tb_writer:
+                    self.trainer.tb_writer.add_text(
+                        f"generation/sample_{i+1}",
+                        f"Prompt: {prompt}\nGenerated: {text}",
+                        step,
+                    )
+        
+        except Exception as e:
+            logger.warning(f"Generation failed: {e}")
+        finally:
+            model.train()

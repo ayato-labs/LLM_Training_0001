@@ -117,6 +117,13 @@ def _normalize_config(raw: dict) -> dict:
         "torch_empty_cache_steps": t.get("torch_empty_cache_steps", 100),
         "dataloader_prefetch_factor": t.get("dataloader_prefetch_factor", 2),
         "optim": t.get("optim", "adamw_torch_fused"),
+        # LRスケジューラ設定 (Step Law / Muon 推奨)
+        "lr_scheduler_type": t.get("lr_scheduler_type", "constant_cosine"),
+        "warmup_ratio": t.get("warmup_ratio", 0.03),
+        "constant_ratio": t.get("constant_ratio", 0.1),
+        "warmup_steps": t.get("warmup_steps", 0),
+        "constant_steps": t.get("constant_steps", 0),
+        "num_cycles": t.get("num_cycles", 0.5),
     }
 
     # トップレベルマージ

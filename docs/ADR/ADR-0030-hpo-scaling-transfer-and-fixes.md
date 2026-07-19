@@ -1,7 +1,7 @@
 # ADR-0030-hpo-scaling-transfer-and-fixes: HPO Proxy Scaling Transfer and Configuration Fixes
 
 - **Status:** Accepted
-- **Date:** 2026-07-16
+- **Date:** 2026-07-16 (Updated: 2026-07-20)
 - **Deciders:** Solo Developer
 
 ## Context
@@ -17,8 +17,9 @@ Several architectural improvements and bug fixes were identified in the offline 
 We will implement the following changes:
 
 1. **Proxy Scaling Transfer in HPO Launcher**:
-   Introduce `--proxy-model-size` and `--target-model-size` parameters in `scripts/find_hparams.py`. Run HPO trials on the proxy model size to avoid local OOMs. After the study completes, scale `max_lr_2d` and `max_lr_1d` to the target model parameters using the Step Law scaling relationship:
+   Introduce `--proxy-model-size` and `--target-model-size` parameters in `scripts/find_hparams.py`. Run HPO trials on the proxy model size to avoid local OOMs. After the study completes, scale `max_lr_2d` (Muon) and `max_lr_1d` (AdamW 1D) to the target model parameters using the Step Law scaling relationship:
    $$\eta_{target} = \eta_{proxy\_best} \times \left(\frac{N_{target}}{N_{proxy}}\right)^{-0.713}$$
+   This scaling applies identically to both 2D and 1D learning rates, preserving their ratio (~0.3).
 
 2. **Correct `max_lr_1d` Search Space**:
    Update `create_search_space` in `hpo_manager.py` to center `max_lr_1d` around `step_law_hpo["max_lr_1d"]` with a standard $\times [0.5, 2.0]$ factor range.
@@ -30,12 +31,16 @@ We will implement the following changes:
    - Set `max_position_embeddings` and `initializer_range` inside `LlamaConfig`.
    - Forward `torch_empty_cache_steps` and `dataloader_prefetch_factor` inside `TrainingArguments`.
 
+5. **Muon/AdamW Split in HPO Objective** (NEW, ADR-0043):
+   The HPO proxy training now uses `DualOptimizerTrainer` with `SplitOptimizer` (Muon for 2D, AdamW 8bit for 1D), ensuring proxy HPO results are directly transferable to target training without optimizer mismatch.
+
 ## Consequences
 
 ### Pros
 - **Resilience**: Enables running HPO for 3B/7B models on single local GPUs by offloading the workload to a 50M/150M proxy model.
 - **Accuracy**: Prevents trial divergence and NaN failures by correcting the `max_lr_1d` search range scale.
 - **Consistency**: Eliminates configuration drift between the main training configuration and HPO architectures.
+- **Transfer Fidelity**: Proxy HPO uses identical optimizer stack (Muon/AdamW split) as target training, ensuring scaling transfer validity.
 
 ### Cons
 - None.

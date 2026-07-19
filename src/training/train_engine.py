@@ -26,6 +26,7 @@ from src.common.set_seed import set_seed
 from src.training.callbacks import (
     DetailedLoggingCallback,
     HashSaveCallback,
+    PeriodicEvaluationCallback,
 )
 from src.training.model_utils import (
     PackedDatasetWrapper,
@@ -375,14 +376,19 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
             "which will severely degrade training speed."
         )
 
-    # Hugging Face TrainingArguments の初期化
-    # warmup_steps と warmup_ratio の動的設定 (epochモード max_steps=-1 時の比率解決)
+    # LRスケジューラ設定解決 (Step Law推奨: Constant+Cosine)
+    scheduler_type = hpo_config.get("lr_scheduler_type", "constant_cosine")
     warmup_steps = hpo_config.get("warmup_steps", 0)
     warmup_ratio = hpo_config.get("warmup_ratio", 0.03)
-    if warmup_steps > 0:
-        warmup_ratio = 0.0
-    else:
-        warmup_steps = None
+    constant_steps = hpo_config.get("constant_steps", 0)
+    constant_ratio = hpo_config.get("constant_ratio", 0.1)
+    if warmup_steps == 0 and warmup_ratio > 0:
+        # epochモード時の比率解決
+        estimated_total_steps = max_steps if max_steps > 0 else 10000
+        warmup_steps = int(estimated_total_steps * warmup_ratio)
+    if constant_steps == 0 and constant_ratio > 0:
+        estimated_total_steps = max_steps if max_steps > 0 else 10000
+        constant_steps = int(estimated_total_steps * constant_ratio)
 
     # dataloader_num_workers の動的設定 (Linux/WSLの場合、os.cpu_count()を用いてデータ準備を非同期化)
     num_workers = config.get("dataloader_num_workers", 0)
@@ -404,9 +410,9 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         },  # 安定性とコンパイラ互換性のための非再帰方式
         max_steps=max_steps,
         num_train_epochs=num_epochs,
-        lr_scheduler_type="cosine",  # コサイン学習率スケジューラを採用
+        lr_scheduler_type=scheduler_type,  # constant_cosine / cosine / step_law
         warmup_steps=warmup_steps,
-        warmup_ratio=warmup_ratio,
+        warmup_ratio=warmup_ratio if warmup_steps == 0 else 0.0,
         weight_decay=hpo_config.get("weight_decay", 0.1),
         adam_beta2=hpo_config.get("beta2", 0.95),
         max_grad_norm=hpo_config.get("grad_clip", 1.0),
@@ -434,6 +440,9 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         if num_workers > 0
         else None,
         disable_tqdm=True,  # tqdm進捗バー無効化（独自ログのみ使用）
+        # カスタムスケジューラ引数
+        constant_steps=constant_steps,
+        constant_ratio=constant_ratio,
     )
 
     # 11. コールバックの設定
@@ -444,15 +453,26 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         DetailedLoggingCallback(
             log_every_n_steps=config.get("logging_steps", 10)
         ),  # 詳細なステップ別メトリクスのログ出力
+        PeriodicEvaluationCallback(
+            eval_every_n_steps=config.get("eval_steps", 1000),
+            eval_prompts=config.get("eval_prompts"),
+            max_new_tokens=config.get("eval_max_new_tokens", 64),
+            temperature=config.get("eval_temperature", 0.8),
+            top_p=config.get("eval_top_p", 0.95),
+            divergence_threshold=config.get("divergence_threshold", 10.0),
+            log_generations=config.get("eval_log_generations", True),
+        ),  # 定期評価: perplexity + 生成サンプル + 発散検知
     ]
 
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
 
-    # 12. Trainerインスタンスの生成
+    # 12. Trainerインスタンスの生成 (Muon(2D) + AdamW(1D) 分離最適化)
     from transformers import default_data_collator
 
-    trainer = Trainer(
+    from src.training.trainer.dual_optimizer_trainer import DualOptimizerTrainer
+
+    trainer = DualOptimizerTrainer(
         model=model,
         args=args,
         train_dataset=train_ds,
@@ -461,6 +481,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         if config.get("packing", False)
         else DataCollatorForLanguageModeling(tokenizer, mlm=False),
         callbacks=callbacks,
+        split_optimizer_config=hpo_config,
     )
 
     # 既定のPrinterCallback（disable_tqdm=True時に標準出力へ辞書をprintする）を削除して重複ログを防止

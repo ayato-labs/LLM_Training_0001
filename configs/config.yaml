@@ -34,6 +34,18 @@ training:
   packing: true
   optim: "adamw_bnb_8bit"
 
+# LRスケジューラ設定 (Step Law / Muon 推奨: Constant+Cosine)
+lr_scheduler_type: "constant_cosine"  # constant_cosine / cosine / step_law
+warmup_ratio: 0.03                    # Warmup比率 (Step Law推奨: 0.03 = 3%)
+constant_ratio: 0.1                   # Constant LR維持比率 (Step Law推奨: 0.1 = 10%)
+# warmup_steps: 0                     # 明示指定時は warmup_ratio より優先
+# constant_steps: 0                   # 明示指定時は constant_ratio より優先
+num_cycles: 0.5                       # Cosine減衰サイクル数 (0.5 = 半周期で0)
+
+# ハードウェア最適化設定
+torch_compile: false                  # 常時OFF: コンパイル時VRAMスパイク→CPUオフロード回避
+use_liger_kernel: true                # Linux/WSL2でON: Tritonランタイム最適化(VRAM削減+高速化)。Windowsはconfig.pyで強制OFF
+
 # トークナイズ並列化設定 (Windows ThreadPool / Linux multiprocessing)
 tokenization:
   windows_max_workers: null    # null=自動検出、数値で固定

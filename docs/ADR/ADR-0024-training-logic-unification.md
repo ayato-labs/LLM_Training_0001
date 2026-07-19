@@ -1,7 +1,7 @@
 # ADR-0024-training-logic-unification: Consolidating Duplicate Training Pipelines into a Unified Training Engine
 
 - **Status:** Accepted
-- **Date:** 2026-07-15
+- **Date:** 2026-07-15 (Updated: 2026-07-20)
 - **Deciders:** Ayato-labs (ayato-labs)
 
 ## Context
@@ -22,7 +22,7 @@ We will merge the two pipelines into a single, unified training structure:
 1. **Extract Shared Utilities**: Move `TokenizerWrapper`, `get_optimal_num_proc()`, `compute_file_hash()`, and `detect_vram()` to a shared utilities module `src/training/model_utils.py`.
 2. **Implement Unified `train_engine.py`**: Design a core `src/training/train_engine.py` which contains:
    - All standard callbacks (`ProgressBarFormatCallback`, `HashSaveCallback`, `DetailedLoggingCallback`).
-   - `CustomTrainer` with automatic split optimizer configuration supporting both Muon and AdamW.
+   - `DualOptimizerTrainer` with `SplitOptimizer` (Muon for 2D params, AdamW 8bit for 1D params) — ADR-0043.
    - A unified `train(config, tokenized_datasets=None, extra_callbacks=None)` function that accepts normalized configurations (supporting both Hydra-resolved and HPO raw dictionaries) and executes the training loop.
 3. **Refactor Entrypoints**:
    - Simplify `src/training/main.py` to only handle Hydra config loading and immediately delegate execution to `train_engine.train()`.
@@ -32,7 +32,7 @@ We will merge the two pipelines into a single, unified training structure:
 ## Consequences
 
 ### Pros
-- **Consistency**: Guarantees that HPO runs and final training runs share the exact same training loop, custom callbacks, optimization stack (Muon/AdamW), and execution behavior.
+- **Consistency**: Guarantees that HPO runs and final training runs share the exact same training loop, custom callbacks, optimization stack (Muon/AdamW 1D split), and execution behavior.
 - **Maintainability**: Centralizes the core training pipeline in a single module, simplifying updates, testing, and debugging.
 - **Code Cleanliness**: Eliminates duplicate code and redundant entrypoints.
 
