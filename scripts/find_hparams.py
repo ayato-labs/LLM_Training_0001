@@ -8,6 +8,10 @@ Usage:
 """
 
 import argparse
+import json
+import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
 
 import optuna
@@ -28,7 +32,19 @@ from src.common.logger import log_exceptions, log_function_call, logger
 from src.hpo.hpo_manager import create_search_space, objective
 from src.hpo.step_law import compute_hpo_for_target
 from src.training.config import _detect_vram as detect_vram
-from src.training.model_utils import get_optimal_num_proc, parallel_tokenize
+from src.training.model_utils import compute_file_hash, get_optimal_num_proc, parallel_tokenize
+
+
+def _estimate_vram_from_arch(arch: dict, batch_seqs: int, seq_len: int, target_vram: float) -> float:
+    """アーキテクチャ情報から理論 VRAM 使用量を簡易推定 (GB)"""
+    n_params = arch["n_params"]
+    # bf16前提: weights 2B + grads 2B + optimizer 8bit 2B = 6B/param
+    model_bytes = n_params * 6
+    # アクティベーション (gradient_checkpointing 前提)
+    activation = batch_seqs * seq_len * arch["hidden"] * arch["layers"] * 2
+    # システムオーバーヘッド
+    cuda_overhead = 0.7 + (0.3 if "linux" in sys.platform else 0.0)
+    return (model_bytes + activation) / (1024**3) + cuda_overhead
 
 
 def parse_args():
@@ -362,7 +378,67 @@ def main():
         logger.exception(f"Error saving configuration to {args.output}: {e}")
         raise
 
-    # 7. config.yaml 同期 (--sync-config 指定時)
+    # 7. 全試行 CSV 保存
+    try:
+        trials_df = study.trials_dataframe()
+        csv_path = Path(args.output).with_suffix(".trials.csv")
+        trials_df.to_csv(csv_path, index=False)
+        logger.info(f"All {len(trials_df)} trials saved to {csv_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save trials CSV: {e}")
+
+    # 8. VRAM 推定値の算出
+    final_batch_seqs = output["training"].get("batch_size_seqs", 16)
+    estimated_vram = _estimate_vram_from_arch(target_arch, final_batch_seqs, args.seq_len, target_vram)
+
+    # 9. 最終スケーリング値サマリ出力
+    logger.info("=" * 60)
+    logger.info("  [HPO Final Config] 本番学習で使用される最終設定")
+    logger.info("=" * 60)
+    for k, v in output["training"].items():
+        logger.info(f"  {k}: {v}")
+    logger.info(f"  estimated_vram_gb: {estimated_vram:.2f}")
+    logger.info(f"  step_law_scaling_ratio: {scaling_ratio:.6f}")
+    logger.info(f"  best_proxy_loss: {study.best_value:.4f}")
+
+    # 10. スケーリング前後対比ログ
+    logger.info("  [Scaling Trace] Step Law -> Proxy HPO -> Target Scaled")
+    for k in ["max_lr_2d", "max_lr_1d", "warmup_ratio", "batch_size_seqs", "weight_decay"]:
+        sl = step_law_hpo.get(k)
+        proxy = best.get(k)
+        final = output["training"].get(k)
+        logger.info(f"    {k}: StepLaw={sl} -> Proxy={proxy} -> Final={final}")
+    logger.info("=" * 60)
+
+    # 11. メタ情報 JSON 保存
+    try:
+        git_commit = subprocess.getoutput("git rev-parse HEAD 2>/dev/null || echo unknown")
+        data_hash = compute_file_hash(args.data_path) if Path(args.data_path).exists() else None
+        meta = {
+            "timestamp": datetime.now().isoformat(),
+            "git_commit": git_commit,
+            "seed": 42,
+            "n_trials": len(study.trials),
+            "n_pruned": len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]),
+            "n_complete": len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]),
+            "best_value": study.best_value,
+            "proxy_model_size": proxy_size,
+            "target_model_size": target_size,
+            "n_tokens": n_tokens,
+            "dataset_hash": data_hash,
+            "proxy_vram_gb": proxy_vram,
+            "target_vram_gb": target_vram,
+            "estimated_final_vram_gb": estimated_vram,
+            "scaling_ratio": scaling_ratio,
+        }
+        json_path = Path(args.output).with_suffix(".meta.json")
+        with open(json_path, "w") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+        logger.info(f"Run metadata saved to {json_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save run metadata: {e}")
+
+    # 12. config.yaml 同期 (--sync-config 指定時)
     if args.sync_config:
         try:
             sync_config_yaml(target_arch, target_size, args.output)
