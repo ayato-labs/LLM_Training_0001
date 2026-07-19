@@ -67,6 +67,81 @@ def _verify_flash_attention(precision: str) -> None:
         )
 
 
+def _estimate_vram_and_warn(config: dict) -> None:
+    """学習開始前に理論的なVRAM消費量を推定し、限界値を超える可能性がある場合にログ警告を出力する。"""
+    import sys
+    if not torch.cuda.is_available():
+        return
+
+    try:
+        # 物理VRAM容量の取得
+        device_prop = torch.cuda.get_device_properties(0)
+        total_vram_gb = device_prop.total_memory / (1024**3)
+
+        # 1. モデルパラメーター数と精度情報
+        n_params = config.get("model_params", {}).get("n_params", 150_000_000)
+        precision = config.get("precision", "bf16")
+        bytes_per_param = 2 if precision in ["bf16", "fp16"] else 4
+
+        # モデル重みの容量 (GB)
+        weight_mem = (n_params * bytes_per_param) / (1024**3)
+        # 勾配の容量 (GB)
+        grad_mem = (n_params * bytes_per_param) / (1024**3)
+
+        # 2. オプティマイザの容量 (GB)
+        optim_selected = config.get("optim", "adamw_torch_fused")
+        if "8bit" in optim_selected:
+            optim_bytes_per_param = 2  # 8bit AdamW
+        elif "paged" in optim_selected:
+            optim_bytes_per_param = 4  # paged AdamW
+        else:
+            optim_bytes_per_param = 8  # FP32 states in standard AdamW (fused/native)
+        optim_mem = (n_params * optim_bytes_per_param) / (1024**3)
+
+        # 3. アクティベーション（中間活性値）の容量 (GB)
+        # 勾配チェックポインティング（True）を前提とした最小保持量
+        per_device_batch = config.get("per_device_batch_size", 1)
+        seq_len = config.get("seq_len", 1024)
+        hidden_size = config.get("model_params", {}).get("hidden_size", 768)
+        num_layers = config.get("model_params", {}).get("num_hidden_layers", 12)
+        activation_mem = (per_device_batch * seq_len * hidden_size * num_layers * 2) / (1024**3)
+
+        # 4. 固定システムオーバーヘッド (GB)
+        cuda_overhead = 0.7  # CUDA Context & Driver baseline
+        wsl_overhead = 0.3 if "linux" in sys.platform else 0.0
+
+        # 5. コンパイルによる一時/静的追加メモリ (GB)
+        compile_overhead = 0.0
+        if config.get("torch_compile", False):
+            compile_overhead += 1.0  # コンパイラ中間バッファ + CUDA Graphs
+            if config.get("use_liger_kernel", False):
+                compile_overhead += 0.5  # グラフブレイクによるフラグメンテーション増分
+
+        # 総推定メモリ (GB)
+        estimated_vram_gb = weight_mem + grad_mem + optim_mem + activation_mem + cuda_overhead + wsl_overhead + compile_overhead
+
+        logger.info(
+            f"VRAM Consumption Estimation:\n"
+            f"  - Physical GPU VRAM Limit: {total_vram_gb:.2f} GB\n"
+            f"  - Model Weights & Gradients: {weight_mem + grad_mem:.2f} GB\n"
+            f"  - Optimizer States: {optim_mem:.2f} GB\n"
+            f"  - Activations: {activation_mem:.2f} GB\n"
+            f"  - CUDA Context & OS: {cuda_overhead + wsl_overhead:.2f} GB\n"
+            f"  - Compiler Overhead (torch.compile): {compile_overhead:.2f} GB\n"
+            f"  - Estimated Peak VRAM: {estimated_vram_gb:.2f} GB"
+        )
+
+        if estimated_vram_gb > total_vram_gb:
+            logger.warning(
+                f"VRAM Allocation Danger Warning: Estimated Peak VRAM ({estimated_vram_gb:.2f} GB) "
+                f"exceeds your physical GPU VRAM ({total_vram_gb:.2f} GB).\n"
+                f"The training is very likely to trigger OS-level silent memory paging (swapping) or Out-Of-Memory (OOM) errors.\n"
+                f"It is highly recommended to set 'torch_compile: false' or reduce 'per_device_batch_size'."
+            )
+    except Exception as e:
+        logger.debug(f"Failed to calculate VRAM estimation: {e}")
+
+
 def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     """
     統一された学習オーケストレーションフロー。
@@ -74,10 +149,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     Args:
         config (dict): 学習設定パラメータを含む辞書。
         tokenized_datasets (dict, optional): トークン化済みのデータセット辞書（学習/検証）。省略時はロード及びトークン化を行う。
-        extra_callbacks (list, optional): 追加のTrainerCallbackリスト。
+        extra_callbacks (list, optional): 追加 of TrainerCallback リスト。
     """
     # 0. 解決されたハイパーパラメータ/設定値の全出力
     logger.info(f"Resolved Configuration:\n{json.dumps(config, indent=2, ensure_ascii=False)}")
+    
+    # 0.5 理論的VRAM使用量の見積もりと警告の出力
+    _estimate_vram_and_warn(config)
 
     # 1. 乱数シードの設定
     seed = config.get("seed", 42)
