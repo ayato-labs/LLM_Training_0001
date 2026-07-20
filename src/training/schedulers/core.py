@@ -135,10 +135,10 @@ class StepLawLRScheduler:
     
     def get_last_lr(self):
         """現在のLR取得 (2D, 1D)"""
-        return {
-            "lr_2d": self.scheduler_2d.get_last_lr()[0] if self.scheduler_2d.get_last_lr() else 0,
-            "lr_1d": self.scheduler_1d.get_last_lr()[0] if self.scheduler_1d.get_last_lr() else 0,
-        }
+        return [
+            self.scheduler_2d.get_last_lr()[0] if self.scheduler_2d.get_last_lr() else 0.0,
+            self.scheduler_1d.get_last_lr()[0] if self.scheduler_1d.get_last_lr() else 0.0,
+        ]
     
     def state_dict(self):
         return {

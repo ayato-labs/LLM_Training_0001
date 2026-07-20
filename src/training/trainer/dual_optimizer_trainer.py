@@ -15,13 +15,31 @@ from src.common.logger import logger
 from src.training.optimizers.muon import Muon
 
 
-class SplitOptimizer:
+"""DualOptimizerTrainer: SplitOptimizer を使用する HF Trainer サブクラス
+
+SplitOptimizer は Muon(2D) + AdamW 8bit(1D) を組み合わせた複合最適化を提供。
+2Dパラメータ（重み行列）: Muon
+1Dパラメータ（embedding, bias, LayerNorm）: AdamW 8bit
+"""
+
+import sys
+
+import torch
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LambdaLR
+from transformers import Trainer
+
+from src.common.logger import logger
+from src.training.optimizers.muon import Muon
+
+
+class SplitOptimizer(Optimizer):
     """SplitOptimizer: Muon(2D) + AdamW 8bit(1D) の複合最適化
 
     2Dパラメータ（重み行列）: Muon
     1Dパラメータ（embedding, bias, LayerNorm）: AdamW 8bit
-    
-    LRスケジューラ対応: param_groups を公開し、LambdaLR が両方に比例適用可能
+
+    torch.optim.Optimizer を継承し、LambdaLR 等の標準スケジューラと互換。
     """
 
     def __init__(self, model, config: dict):
@@ -31,7 +49,8 @@ class SplitOptimizer:
         for _name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            if param.ndim == 2:
+            # Muon should only optimize internal 2D weight matrices (not embedding or lm_head)
+            if param.ndim == 2 and not any(x in _name for x in ["embed_tokens", "lm_head"]):
                 muon_params.append(param)
             else:
                 adamw_params.append(param)
@@ -59,13 +78,16 @@ class SplitOptimizer:
                 weight_decay=config.get("weight_decay", 0.1),
             )
 
-        # LRスケジューラ用: 両オプティマイザのparam_groupsを統合公開
-        # HF LambdaLR は optimizer.param_groups を更新するため、proxy param_groups を提供
-        self._param_groups = []
+        # Optimizer基底クラス初期化 (param_groups で LRスケジューラ対応)
+        # muon + adamw の param_groups を統合
+        param_groups = []
         for pg in self.muon.param_groups:
-            self._param_groups.append({"lr": pg["lr"], "optimizer": "muon", "source_pg": pg})
+            param_groups.append(pg)
         for pg in self.adamw.param_groups:
-            self._param_groups.append({"lr": pg["lr"], "optimizer": "adamw", "source_pg": pg})
+            param_groups.append(pg)
+
+        defaults = dict(lr=config.get("max_lr_2d", 3e-4))  # base lr
+        super().__init__(param_groups, defaults)
 
         logger.info(
             f"SplitOptimizer initialized: "
@@ -75,21 +97,20 @@ class SplitOptimizer:
             f"lr_1d={config.get('max_lr_1d', 3e-3):.2e}"
         )
 
-    @property
-    def param_groups(self):
-        """HF LRスケジューラ互換: 両オプティマイザのparam_groupsを統合して公開"""
-        return self._param_groups
-
     def _sync_param_groups(self):
-        """内部オプティマイザのLRを_proxy param_groupsから同期"""
-        for pg in self._param_groups:
-            pg["source_pg"]["lr"] = pg["lr"]
+        """内部オプティマイザのLRを param_groups から同期"""
+        for i, pg in enumerate(self.param_groups):
+            if i < len(self.muon.param_groups):
+                self.muon.param_groups[i]["lr"] = pg["lr"]
+            else:
+                j = i - len(self.muon.param_groups)
+                self.adamw.param_groups[j]["lr"] = pg["lr"]
 
-    def step(self):
+    def step(self, closure=None):
         # LR同期してからstep
         self._sync_param_groups()
-        self.muon.step()
-        self.adamw.step()
+        self.muon.step(closure)
+        self.adamw.step(closure)
 
     def zero_grad(self, set_to_none: bool = True):
         self.muon.zero_grad(set_to_none)
@@ -99,14 +120,11 @@ class SplitOptimizer:
         return {
             "muon": self.muon.state_dict(),
             "adamw": self.adamw.state_dict(),
-            "_param_groups": self._param_groups,  # LR状態も保存
         }
 
     def load_state_dict(self, state: dict):
         self.muon.load_state_dict(state["muon"])
         self.adamw.load_state_dict(state["adamw"])
-        if "_param_groups" in state:
-            self._param_groups = state["_param_groups"]
 
 
 class DualOptimizerTrainer(Trainer):

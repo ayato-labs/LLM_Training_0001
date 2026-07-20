@@ -23,7 +23,7 @@ class Muon(Optimizer):
         super().__init__(params, defaults)
 
     @torch.no_grad()
-    def step(self):
+    def step(self, closure=None):
         for group in self.param_groups:
             for p in group["params"]:
                 if p.grad is None or p.ndim != 2:
@@ -59,8 +59,18 @@ class Muon(Optimizer):
         """
         a, b, c = 3.4445, -4.7750, 2.03153
         X = G / (G.norm() + 1e-7)
-        for _ in range(steps):
+        
+        # Newton-Schulz requires rows <= cols. If rows > cols, operate on the transpose.
+        transposed = G.size(0) > G.size(1)
+        if transposed:
+            X = X.T
+
+        for _range in range(steps):
             A = X @ X.T
             B = A @ X
-            X = a * X + b * B + c * (B @ A)
+            X = a * X + b * B + c * (A @ B)
+
+        if transposed:
+            X = X.T
+
         return X.to(G.dtype)

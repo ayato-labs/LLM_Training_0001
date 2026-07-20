@@ -377,7 +377,14 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         )
 
     # LRスケジューラ設定解決 (Step Law推奨: Constant+Cosine)
-    scheduler_type = hpo_config.get("lr_scheduler_type", "constant_cosine")
+    scheduler_type = hpo_config.get("lr_scheduler_type", "cosine")  # HF標準: cosine / linear 等
+    custom_scheduler = scheduler_type in ("constant_cosine", "step_law")
+    if custom_scheduler:
+        # カスタムスケジューラ使用時は HF 標準の cosine をベースに設定（後で create_scheduler で上書き）
+        hf_scheduler_type = "cosine"
+    else:
+        hf_scheduler_type = scheduler_type
+
     warmup_steps = hpo_config.get("warmup_steps", 0)
     warmup_ratio = hpo_config.get("warmup_ratio", 0.03)
     constant_steps = hpo_config.get("constant_steps", 0)
@@ -410,7 +417,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         },  # 安定性とコンパイラ互換性のための非再帰方式
         max_steps=max_steps,
         num_train_epochs=num_epochs,
-        lr_scheduler_type=scheduler_type,  # constant_cosine / cosine / step_law
+        lr_scheduler_type=hf_scheduler_type,  # constant_cosine/step_law 時は cosine (後で上書き)
         warmup_steps=warmup_steps,
         warmup_ratio=warmup_ratio if warmup_steps == 0 else 0.0,
         weight_decay=hpo_config.get("weight_decay", 0.1),
@@ -440,9 +447,6 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         if num_workers > 0
         else None,
         disable_tqdm=True,  # tqdm進捗バー無効化（独自ログのみ使用）
-        # カスタムスケジューラ引数
-        constant_steps=constant_steps,
-        constant_ratio=constant_ratio,
     )
 
     # 11. コールバックの設定

@@ -25,6 +25,10 @@ from transformers import PreTrainedTokenizerFast
 os.environ["TMPDIR"] = str(Path("models/output/tmp").resolve())
 Path("models/output/tmp").mkdir(parents=True, exist_ok=True)
 
+# PyTorch CUDA メモリアロケータ設定（断片化対策・OOM緩和）
+# expandable_segments: True で小さな割り当てをまとめて管理し、VRAM断片化を抑制
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
+
 disable_caching()
 
 
@@ -251,6 +255,15 @@ def main():
         tokenizer.pad_token = "<pad>"
 
         dataset = load_dataset("json", data_files=str(args.data_path))
+        
+        # Apply data_fraction = 0.001 (0.1%) before tokenization to save massive RAM & time
+        for split in dataset:
+            n_samples = int(len(dataset[split]) * 0.001)
+            n_samples = max(1, n_samples)
+            if n_samples < len(dataset[split]):
+                dataset[split] = dataset[split].select(range(n_samples))
+                logger.info(f"Split '{split}' raw dataset sampled to {n_samples} samples for HPO.")
+
         all_cols = dataset["train"].column_names
         cols_to_remove = [c for c in all_cols if c not in ["input_ids", "attention_mask", "labels"]]
 
@@ -267,15 +280,6 @@ def main():
             max_workers=num_proc,
             batch_size=1000,
         )
-
-        # Apply data_fraction = 0.001 (0.1%) for HPO pilot run speed
-        for split in tokenized_dataset:
-            n_samples = int(len(tokenized_dataset[split]) * 0.001)
-            # Ensure at least 1 sample exists
-            n_samples = max(1, n_samples)
-            if n_samples < len(tokenized_dataset[split]):
-                tokenized_dataset[split] = tokenized_dataset[split].select(range(n_samples))
-                logger.info(f"Split '{split}' sampled to {n_samples} samples for HPO.")
 
         tokenized_dataset.set_format("torch")
         logger.info("Dataset tokenized and cached in memory successfully.")

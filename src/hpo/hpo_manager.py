@@ -58,6 +58,35 @@ def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_
     }
 
 
+def _run_training_process(config, tokenized_dataset, queue):
+    try:
+        import torch
+        from src.training.train_engine import train as proxy_train
+        from transformers import TrainerCallback
+
+        class SubprocessPruningCallback(TrainerCallback):
+            def __init__(self, queue):
+                self.queue = queue
+
+            def on_log(self, args, state, control, logs=None, **kwargs):
+                if logs and "loss" in logs:
+                    loss = logs["loss"]
+                    self.queue.put(("report", state.global_step, loss))
+
+        pruning_callback = SubprocessPruningCallback(queue)
+        loss = proxy_train(
+            config,
+            tokenized_datasets=tokenized_dataset,
+            extra_callbacks=[pruning_callback],
+        )
+        if isinstance(loss, torch.Tensor):
+            loss = loss.item()
+        queue.put(("success", loss))
+    except Exception as e:
+        import traceback
+        queue.put(("error", f"{e}\n{traceback.format_exc()}"))
+
+
 def objective(
     trial: optuna.Trial,
     arch: dict,
@@ -89,6 +118,18 @@ def objective(
     hpo["beta2"] = 0.95
     hpo["grad_clip"] = 1.0
 
+    from omegaconf import OmegaConf
+    from pathlib import Path
+
+    # configs/config.yaml からVRAM最適化/ハードウェア設定を読み込んで再利用する
+    config_path = Path("configs/config.yaml")
+    base_cfg = {}
+    if config_path.exists():
+        try:
+            base_cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+        except Exception as e:
+            logger.warning(f"Failed to load config.yaml in HPO objective: {e}")
+
     # Build config matching normalize_config expectations
     config = {
         "model_params": {
@@ -100,6 +141,7 @@ def objective(
             "intermediate_size": arch["ffn"],
             "rope_theta": arch.get("rope_theta", 500000.0),
             "vocab_size": 64000,
+            "attn_implementation": base_cfg.get("model", {}).get("llama", {}).get("attn_implementation", "sdpa"),
         },
         "hpo": hpo,
         "seq_len": seq_len,
@@ -107,42 +149,86 @@ def objective(
         "data_fraction": 0.001,  # Tiny fraction for speed
         "precision": "bf16",
         "vram_limit_gb": vram_gb,
+        "use_liger_kernel": base_cfg.get("use_liger_kernel", True),  # config.yamlから再利用
+        "torch_compile": base_cfg.get("torch_compile", False),      # config.yamlから再利用
         "seed": 42,
         "tokenizer_path": "data/tokenizer.json",
         "output_dir": "models/output",
+        # LRスケジューラ設定 (proxy用)
+        "lr_scheduler_type": "constant_cosine",
+        "warmup_steps": 2,
+        "constant_steps": 10,
+        "num_cycles": 0.5,
     }
 
+    # Map batch size to per_device_batch_size and grad_accum_steps (enforce gradient accumulation)
+    config["per_device_batch_size"] = 1
+    config["grad_accum_steps"] = hpo["batch_size_seqs"]
+
     try:
-        # Quick proxy training with pruning callback
-        pruning_callback = OptunaPruningCallback(trial)
-        loss = proxy_train(
-            config,
-            tokenized_datasets=tokenized_dataset,
-            extra_callbacks=[pruning_callback],
+        import multiprocessing
+
+        ctx = multiprocessing.get_context("spawn")
+        queue = ctx.Queue()
+        p = ctx.Process(
+            target=_run_training_process,
+            args=(config, tokenized_dataset, queue),
         )
+        p.start()
+
+        loss = 1e9
+        pruned = False
+        error_msg = None
+
+        while p.is_alive() or not queue.empty():
+            try:
+                msg = queue.get(timeout=0.5)
+                if msg[0] == "report":
+                    step, val = msg[1], msg[2]
+                    trial.report(val, step=step)
+                    if trial.should_prune():
+                        logger.info(f"Trial {trial.number} should be pruned. Terminating subprocess...")
+                        p.terminate()
+                        p.join()
+                        pruned = True
+                        break
+                elif msg[0] == "success":
+                    loss = msg[1]
+                elif msg[0] == "error":
+                    error_msg = msg[1]
+            except Exception:  # queue.Empty
+                continue
+
+        if pruned:
+            logger.info(f"Trial {trial.number} pruned.")
+            raise optuna.TrialPruned()
+
+        p.join()
+
+        if error_msg:
+            logger.warning(f"Trial subprocess failed with exception:\n{error_msg}")
+            return 1e9
+
+        if p.exitcode != 0:
+            logger.warning(f"Trial subprocess crashed with exit code {p.exitcode}")
+            return 1e9
+
         return (
             loss
             if not (torch.isnan(torch.tensor(loss)) or torch.isinf(torch.tensor(loss)))
             else 1e9
         )
-    except optuna.TrialPruned:
-        logger.info(f"Trial {trial.number} pruned.")
-        raise
-    except Exception as e:
-        logger.warning(f"Trial failed: {e}")
-        return 1e9
     finally:
-        # HPO試行終了時にストレージを圧迫する中間生成物・モデルを完全に消去
+        # HPO試行終了時に GPU/CPU メモリを確実に解放
         import gc
         import shutil
         import stat
         import time
+        import os
         from pathlib import Path
 
         def _handle_remove_readonly(func, path, exc):
             """Windows読み取り専用ファイル対応"""
-            import os
-
             os.chmod(path, stat.S_IWRITE)
             func(path)
 
@@ -151,24 +237,37 @@ def objective(
             for attempt in range(max_retries):
                 try:
                     gc.collect()
-                    time.sleep(0.5 * (attempt + 1))  # ファイルロック解放待ち
+                    time.sleep(0.5 * (attempt + 1))
                     for item in output_path.iterdir():
+                        if item.name == "tmp":
+                            continue
                         try:
                             if item.is_dir():
                                 shutil.rmtree(item, onerror=_handle_remove_readonly)
                             else:
                                 item.unlink()
                         except Exception:
-                            pass  # 個別ファイル削除失敗は無視
-                    return  # 成功
+                            pass
+                    return
                 except Exception:
                     if attempt < max_retries - 1:
                         continue
-                    # 最大リトライ回数到達後は無視
 
-        # Windowsのファイルロックを解放するために明示的にガベージコレクションを実行
-        gc.collect()
+        # === GPU メモリ強制解放 ===
+        if torch.cuda.is_available():
+            # 1. Python GC でオブジェクト参照を切る
+            gc.collect()
+            # 2. PyTorch CUDA キャッシュを空にする
+            torch.cuda.empty_cache()
+            # 3. IPC 共有メモリも回収
+            torch.cuda.ipc_collect()
+            # 4. 再度GC（デストラクタで解放される分を拾う）
+            gc.collect()
+            # 5. 念のため同期
+            torch.cuda.synchronize()
+            logger.debug(f"Trial {trial.number}: GPU memory released. Free: {torch.cuda.mem_get_info()[0] / 1024**3:.2f} GB")
 
+        # === ディスク上の中間生成物削除 ===
         output_dir = Path("models/output")
         if output_dir.exists():
             logger.info(f"Cleaning up HPO trial output files in {output_dir}")

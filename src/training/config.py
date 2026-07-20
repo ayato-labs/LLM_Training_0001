@@ -201,9 +201,20 @@ def _validate_config_consistency(config: dict) -> None:
 
 
 def _detect_vram() -> float:
+    # PyTorchの CUDA コンテキスト初期化（約1GB以上のVRAMオーバーヘッド）を避けるため、
+    # nvidia-smi コマンドをサブプロセスで呼び出して物理VRAMサイズを取得する。
+    # これにより、HPOの親プロセスで無駄なCUDAコンテキストが起動するのを防ぎ、VRAMを節約する。
+    import subprocess
     try:
-        if torch.cuda.is_available():
-            return round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
+        res = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        vram_mb = float(res.stdout.strip().split("\n")[0])
+        return round(vram_mb / 1024.0, 2)
     except Exception:
         pass
     return 4.0
