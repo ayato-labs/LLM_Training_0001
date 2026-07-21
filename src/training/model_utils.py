@@ -162,7 +162,7 @@ class ThreadPoolTokenizer:
                 mem_gb = 8.0
             # スレッドはプロセスより軽量なので 0.5GB/thread で計算
             mem_based = max(1, int(mem_gb // 0.5))
-            max_workers = min(max(1, cpu_cores - 1), mem_based)
+            max_workers = min(max(1, cpu_cores), mem_based)
 
         self.max_workers = max_workers
         logger.info(f"ThreadPoolTokenizer: workers={max_workers}, batch_size={batch_size}")
@@ -236,7 +236,7 @@ def get_optimal_num_proc() -> int:
             available_mem_gb = 8.0
         # スレッドは軽量なので 0.5GB/thread で計算
         mem_based = max(1, int(available_mem_gb // 0.5))
-        optimal = min(max(1, cpu_cores - 1), mem_based)
+        optimal = min(max(1, cpu_cores), mem_based)
         logger.info(
             f"Windows ThreadPool: Cores={cpu_cores}, RAM={available_mem_gb:.1f}GB -> threads={optimal}"
         )
@@ -250,7 +250,7 @@ def get_optimal_num_proc() -> int:
 
     # 1プロセスあたり1.5GBを見積もる
     mem_based_cores = int(available_mem_gb // 1.5)
-    optimal_cores = min(max(1, cpu_cores - 1), max(1, mem_based_cores))
+    optimal_cores = min(max(1, cpu_cores), max(1, mem_based_cores))
     logger.info(
         f"Resource Auto-Adjustment: Cores={cpu_cores}, Available RAM={available_mem_gb:.1f}GB -> num_proc={optimal_cores}"
     )

@@ -407,7 +407,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         import os
         import sys
         if sys.platform == "linux":
-            num_workers = min(4, max(1, (os.cpu_count() or 2) // 4))
+            num_workers = min(4, max(1, (os.cpu_count() or 2)))
             logger.info(f"Auto-selected dataloader_num_workers: {num_workers} (system CPU count: {os.cpu_count()})")
 
     args = TrainingArguments(
