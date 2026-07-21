@@ -101,6 +101,8 @@ from datasets import Dataset
 
 from src.common.logger import logger
 
+_MAX_HASH_SIZE_MB = 100  # この閾値(MB)を超えるファイルは高速メタデータハッシュに切り替え
+
 
 class TokenizerWrapper:
     """Windowsマルチプロセッシングのピクリング問題をサポートするためのラッパー。"""
@@ -305,10 +307,24 @@ def parallel_tokenize(
     return tokenized
 
 
-def compute_file_hash(filepath: str) -> str:
+def compute_file_hash(filepath: str, max_size_mb: int = _MAX_HASH_SIZE_MB) -> str:
     path = Path(filepath)
     if not path.exists():
         return ""
+
+    size_bytes = path.stat().st_size
+    size_mb = size_bytes / (1024 * 1024)
+
+    if size_mb > max_size_mb:
+        mtime = path.stat().st_mtime
+        meta_str = f"{size_bytes}:{mtime}"
+        fast_hash = hashlib.sha256(meta_str.encode()).hexdigest()
+        logger.warning(
+            f"compute_file_hash: {filepath} ({size_mb:.1f} MB) exceeds {max_size_mb} MB threshold. "
+            f"Using fast metadata hash ({hashlib.sha256.__name__} of size+mtime) instead of full SHA256."
+        )
+        return fast_hash
+
     sha256 = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(8192):
@@ -333,15 +349,25 @@ def compute_dataset_fingerprint(dataset_path: str) -> dict:
     import datetime
 
     stat = path.stat()
-    line_count = 0
-    with open(path, encoding="utf-8") as f:
-        for _ in f:
-            line_count += 1
+    size_bytes = stat.st_size
+    size_mb = size_bytes / (1024 * 1024)
+
+    if size_mb > _MAX_HASH_SIZE_MB:
+        line_count = -1
+        logger.warning(
+            f"compute_dataset_fingerprint: {dataset_path} ({size_mb:.1f} MB) exceeds "
+            f"{_MAX_HASH_SIZE_MB} MB threshold. Skipping line count scan."
+        )
+    else:
+        line_count = 0
+        with open(path, encoding="utf-8") as f:
+            for _ in f:
+                line_count += 1
 
     return {
         "path": str(path.resolve()),
         "sha256": compute_file_hash(str(path)),
-        "size_bytes": stat.st_size,
+        "size_bytes": size_bytes,
         "line_count": line_count,
         "mtime": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
     }

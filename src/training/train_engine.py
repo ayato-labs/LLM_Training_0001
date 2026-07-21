@@ -188,12 +188,16 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 2. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
     config_path = Path("configs/config.yaml")
     data_path_str = config.get("data_path", "data/dataset.jsonl")
+    logger.info(f"Computing config hash: {config_path}")
     current_config_hash = compute_file_hash(str(config_path))
+    logger.info(f"Computing data hash: {data_path_str}")
     current_data_hash = compute_file_hash(data_path_str)
 
     # 4. データセットおよびデータベースのフィンガープリントを取得
+    logger.info(f"Computing dataset fingerprint: {data_path_str}")
     data_fingerprint = compute_dataset_fingerprint(data_path_str)
     db_path_str = config.get("db_path", "../Novel_Data_Collection/novels.db")
+    logger.info(f"Computing database fingerprint: {db_path_str}")
     db_fingerprint = compute_db_fingerprint(db_path_str)
 
     logger.info(
