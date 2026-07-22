@@ -1,5 +1,4 @@
-# utils/step_law.py
-# 論文: arXiv:2503.04715, 数式は Step Law 公式サイトより
+from src.common.constants import MAX_LR_2D, clip_learning_rates
 
 
 def step_law_optimal_lr(n_params: int, n_tokens: int) -> float:
@@ -13,8 +12,8 @@ def step_law_optimal_lr(n_params: int, n_tokens: int) -> float:
     # 公式: η*(N, D) = 1.79 * N^(-0.713) * D^(0.307)
     lr = 1.79 * (n_params_m**-0.713) * (n_tokens**0.307)
 
-    # 【安全装置】学習率が発散しないよう上限(0.01)を設ける
-    return min(lr, 0.01)
+    # 【安全装置】学習率が発散しないよう上限を設ける
+    return min(lr, MAX_LR_2D)
 
 
 def step_law_optimal_batch(n_tokens: int) -> int:
@@ -57,6 +56,9 @@ def compute_hpo_for_target(
     # Muon LR / AdamW 1D LR の推奨比率（IMU-1 実験より）
     muon_lr = max_lr
     adamw_lr = max_lr * (0.007 / 0.0235)  # ≈ max_lr * 0.298
+
+    # 安全上限によるクリッピング (案B)
+    muon_lr, adamw_lr = clip_learning_rates(muon_lr, adamw_lr, source="StepLaw-HPO")
 
     return {
         "n_params": n_params,
