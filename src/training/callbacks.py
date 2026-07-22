@@ -7,49 +7,9 @@ from pathlib import Path
 import torch
 from transformers import (
     TrainerCallback,
-    TrainerControl,
-    TrainerState,
-    TrainingArguments,
 )
 
 from src.common.logger import logger
-
-
-class ProgressBarFormatCallback(TrainerCallback):
-    """
-    tqdm進捗バーの書式をカスタマイズするコールバック。
-    推定残り時間の代わりに平均イテレーション時間を表示。
-    """
-
-    def __init__(self):
-        self.iteration_times = []
-        self.last_time = None
-
-    def on_train_begin(
-        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
-    ):
-        self.iteration_times = []
-        self.last_time = time.time()
-
-    def on_step_begin(
-        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
-    ):
-        self.last_time = time.time()
-
-    def on_step_end(
-        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
-    ):
-        if self.last_time is not None:
-            iter_time = time.time() - self.last_time
-            self.iteration_times.append(iter_time)
-            if len(self.iteration_times) > 100:
-                self.iteration_times.pop(0)
-            self.last_time = None
-
-            if self.iteration_times:
-                avg_time = sum(self.iteration_times) / len(self.iteration_times)
-                if "pbar" in kwargs:
-                    kwargs["pbar"].set_postfix_str(f"avg: {avg_time:.2f}s/it")
 
 
 class HashSaveCallback(TrainerCallback):
@@ -113,20 +73,20 @@ class DetailedLoggingCallback(TrainerCallback):
             steps_in_session = self.step_count - self.start_step
             if steps_in_session > 0:
                 steps_per_sec = steps_in_session / elapsed_time
-                
+
                 # 直近インターバルの速度（local）を算出（コンパイル等の初期遅延による影響を排除）
                 if not hasattr(self, "last_logged_step") or self.last_logged_step is None:
                     self.last_logged_step = self.start_step
                     self.last_logged_time = self.epoch_start_time
-                
+
                 local_steps = self.step_count - self.last_logged_step
                 local_elapsed = current_time - self.last_logged_time
-                
+
                 local_speed_str = ""
                 if local_steps > 0 and local_elapsed > 0:
                     local_speed = local_steps / local_elapsed
                     local_speed_str = f" ({1.0 / local_speed:.2f}s/it local)"
-                
+
                 self.last_logged_step = self.step_count
                 self.last_logged_time = current_time
 
@@ -154,22 +114,32 @@ class DetailedLoggingCallback(TrainerCallback):
                 allocated = torch.cuda.memory_allocated() / 1024**3
                 peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
                 total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                gpu_info = f" | GPU: {allocated:.2f}/{total:.1f}GB (peak_reserved={peak_reserved:.2f}GB)"
-                
-                # 4GB未満のエントリーGPU等で、CUDAコンテクスト（0.7GB）込みの総量が物理VRAMの上限に迫っている場合に警告
+                gpu_info = (
+                    f" | GPU: {allocated:.2f}/{total:.1f}GB (peak_reserved={peak_reserved:.2f}GB)"
+                )
+
+                # 4GB未満のエントリーGPU等で、CUDAコンテクスト（0.7GB）込みの
+                # 総量が物理VRAMの上限に迫っている場合に警告
                 estimated_total_vram = peak_reserved + 0.7
                 if total > 0 and estimated_total_vram > total and (allocated / total) <= 0.95:
                     logger.warning(
-                        f"Silent VRAM Paging Warning: Peak reserved memory ({peak_reserved:.2f}GB) "
-                        f"plus estimated CUDA context/OS overhead (~0.7GB) is {estimated_total_vram:.2f}GB, "
+                        "Silent VRAM Paging Warning: "
+                        f"Peak reserved memory ({peak_reserved:.2f}GB) "
+                        f"plus estimated CUDA context/OS overhead (~0.7GB) "
+                        f"is {estimated_total_vram:.2f}GB, "
                         f"which exceeds physical VRAM ({total:.1f}GB). "
-                        "The Windows WDDM driver has likely silently paged CUDA memory to system RAM, "
-                        "which will severely degrade steps speed (up to 5x-10x slower)."
+                        "The Windows WDDM driver has likely silently "
+                        "paged CUDA memory to system RAM, "
+                        "which will severely degrade steps speed "
+                        "(up to 5x-10x slower)."
                     )
                 elif total > 0 and (allocated / total) > 0.95:
                     logger.warning(
-                        f"High VRAM usage detected: {allocated:.2f}/{total:.1f}GB ({allocated / total * 100:.1f}%). "
-                        "CPU offloading or Unified Memory paging may be active, which can severely degrade training speed."
+                        f"High VRAM usage detected: "
+                        f"{allocated:.2f}/{total:.1f}GB "
+                        f"({allocated / total * 100:.1f}%). "
+                        "CPU offloading or Unified Memory paging may be "
+                        "active, which can severely degrade training speed."
                     )
 
             if loss is not None:
@@ -188,13 +158,13 @@ class DetailedLoggingCallback(TrainerCallback):
 class PeriodicEvaluationCallback(TrainerCallback):
     """
     学習中の定期評価コールバック
-    
+
     機能:
     - perplexity 計算 (eval_dataset使用時)
     - 生成サンプル出力 (指定プロンプト)
     - TensorBoard 記録
     - 早期発散検知 (loss > threshold)
-    
+
     Step Law / Muon 環境での学習安定性監視用
     """
 
@@ -229,7 +199,7 @@ class PeriodicEvaluationCallback(TrainerCallback):
 
     def on_step_end(self, args, state, control, **kwargs):
         step = state.global_step
-        
+
         # 発散検知
         if state.log_history:
             last_loss = state.log_history[-1].get("loss")
@@ -244,13 +214,13 @@ class PeriodicEvaluationCallback(TrainerCallback):
         # 定期評価実行
         if step > 0 and step % self.eval_every_n_steps == 0:
             self._run_periodic_evaluation(args, state, control)
-        
+
         return control
 
     def _run_periodic_evaluation(self, args, state, control):
         """定期評価の実行"""
         logger.info(f"=== Periodic Evaluation at Step {state.global_step} ===")
-        
+
         # 1. Perplexity 計算 (eval_datasetがある場合)
         if self.trainer is not None and self.trainer.eval_dataset is not None:
             try:
@@ -259,32 +229,34 @@ class PeriodicEvaluationCallback(TrainerCallback):
                 if eval_loss is not None:
                     perplexity = math.exp(min(eval_loss, 20))  # overflow防止
                     logger.info(f"  Eval Loss: {eval_loss:.4f} | Perplexity: {perplexity:.2f}")
-                    
+
                     # TensorBoard記録
                     if self.trainer.tb_writer:
                         self.trainer.tb_writer.add_scalar("eval/loss", eval_loss, state.global_step)
-                        self.trainer.tb_writer.add_scalar("eval/perplexity", perplexity, state.global_step)
+                        self.trainer.tb_writer.add_scalar(
+                            "eval/perplexity", perplexity, state.global_step
+                        )
             except Exception as e:
                 logger.warning(f"Periodic evaluation failed: {e}")
-        
+
         # 2. 生成サンプル出力
         if self.log_generations and self.trainer is not None and self.tokenizer is not None:
             self._generate_samples(state.global_step)
-        
-        logger.info(f"=== Periodic Evaluation Complete ===")
+
+        logger.info("=== Periodic Evaluation Complete ===")
 
     def _generate_samples(self, step: int):
         """生成サンプルの出力"""
         if not self.eval_prompts:
             return
-        
+
         model = self.trainer.model
         model.eval()
-        
+
         try:
             for i, prompt in enumerate(self.eval_prompts[:3]):  # 最大3サンプル
                 inputs = self.tokenizer(prompt, return_tensors="pt").to(model.device)
-                
+
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
@@ -295,21 +267,21 @@ class PeriodicEvaluationCallback(TrainerCallback):
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                     )
-                
+
                 # プロンプト部分を除いてデコード
-                generated = outputs[0][inputs["input_ids"].shape[1]:]
+                generated = outputs[0][inputs["input_ids"].shape[1] :]
                 text = self.tokenizer.decode(generated, skip_special_tokens=True)
-                
-                logger.info(f"  [Gen {i+1}] Prompt: '{prompt[:40]}...' -> '{text[:80]}...'")
-                
+
+                logger.info(f"  [Gen {i + 1}] Prompt: '{prompt[:40]}...' -> '{text[:80]}...'")
+
                 # TensorBoardにテキスト記録
                 if self.trainer.tb_writer:
                     self.trainer.tb_writer.add_text(
-                        f"generation/sample_{i+1}",
+                        f"generation/sample_{i + 1}",
                         f"Prompt: {prompt}\nGenerated: {text}",
                         step,
                     )
-        
+
         except Exception as e:
             logger.warning(f"Generation failed: {e}")
         finally:

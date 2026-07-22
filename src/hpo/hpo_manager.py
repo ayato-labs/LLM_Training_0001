@@ -60,8 +60,6 @@ def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_
 
 def _run_training_process(config, tokenized_dataset, queue):
     try:
-        import torch
-        from src.training.train_engine import train as proxy_train
         from transformers import TrainerCallback
 
         class SubprocessPruningCallback(TrainerCallback):
@@ -84,6 +82,7 @@ def _run_training_process(config, tokenized_dataset, queue):
         queue.put(("success", loss))
     except Exception as e:
         import traceback
+
         queue.put(("error", f"{e}\n{traceback.format_exc()}"))
 
 
@@ -118,8 +117,9 @@ def objective(
     hpo["beta2"] = 0.95
     hpo["grad_clip"] = 1.0
 
-    from omegaconf import OmegaConf
     from pathlib import Path
+
+    from omegaconf import OmegaConf
 
     # configs/config.yaml からVRAM最適化/ハードウェア設定を読み込んで再利用する
     config_path = Path("configs/config.yaml")
@@ -141,7 +141,9 @@ def objective(
             "intermediate_size": arch["ffn"],
             "rope_theta": arch.get("rope_theta", 500000.0),
             "vocab_size": 64000,
-            "attn_implementation": base_cfg.get("model", {}).get("llama", {}).get("attn_implementation", "sdpa"),
+            "attn_implementation": base_cfg.get("model", {})
+            .get("llama", {})
+            .get("attn_implementation", "sdpa"),
         },
         "hpo": hpo,
         "seq_len": seq_len,
@@ -150,7 +152,7 @@ def objective(
         "precision": "bf16",
         "vram_limit_gb": vram_gb,
         "use_liger_kernel": base_cfg.get("use_liger_kernel", True),  # config.yamlから再利用
-        "torch_compile": base_cfg.get("torch_compile", False),      # config.yamlから再利用
+        "torch_compile": base_cfg.get("torch_compile", False),  # config.yamlから再利用
         "seed": 42,
         "tokenizer_path": "data/tokenizer.json",
         "output_dir": "models/output",
@@ -187,7 +189,9 @@ def objective(
                     step, val = msg[1], msg[2]
                     trial.report(val, step=step)
                     if trial.should_prune():
-                        logger.info(f"Trial {trial.number} should be pruned. Terminating subprocess...")
+                        logger.info(
+                            f"Trial {trial.number} should be pruned. Terminating subprocess..."
+                        )
                         p.terminate()
                         p.join()
                         pruned = True
@@ -221,10 +225,10 @@ def objective(
     finally:
         # HPO試行終了時に GPU/CPU メモリを確実に解放
         import gc
+        import os
         import shutil
         import stat
         import time
-        import os
         from pathlib import Path
 
         def _handle_remove_readonly(func, path, exc):
@@ -265,7 +269,10 @@ def objective(
             gc.collect()
             # 5. 念のため同期
             torch.cuda.synchronize()
-            logger.debug(f"Trial {trial.number}: GPU memory released. Free: {torch.cuda.mem_get_info()[0] / 1024**3:.2f} GB")
+            logger.debug(
+                f"Trial {trial.number}: GPU memory released. "
+                f"Free: {torch.cuda.mem_get_info()[0] / 1024**3:.2f} GB"
+            )
 
         # === ディスク上の中間生成物削除 ===
         output_dir = Path("models/output")

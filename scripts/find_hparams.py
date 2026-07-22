@@ -4,11 +4,14 @@ Offline Hyperparameter Search Script
 分離された探索フェーズ。学習パイプライン(main.py)からは完全独立。
 
 Usage:
-  python -m scripts.find_hparams --model-size 150M --data-path data/dataset.jsonl --output configs/hparams_150M.yaml --n-trials 20
+  python -m scripts.find_hparams --model-size 150M \\
+    --data-path data/dataset.jsonl \\
+    --output configs/hparams_150M.yaml --n-trials 20
 """
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -16,7 +19,6 @@ from pathlib import Path
 
 import optuna
 import yaml
-import os
 from datasets import disable_caching, load_dataset
 from transformers import PreTrainedTokenizerFast
 
@@ -39,7 +41,9 @@ from src.training.config import _detect_vram as detect_vram
 from src.training.model_utils import compute_file_hash, get_optimal_num_proc, parallel_tokenize
 
 
-def _estimate_vram_from_arch(arch: dict, batch_seqs: int, seq_len: int, target_vram: float) -> float:
+def _estimate_vram_from_arch(
+    arch: dict, batch_seqs: int, seq_len: int, target_vram: float
+) -> float:
     """アーキテクチャ情報から理論 VRAM 使用量を簡易推定 (GB)"""
     n_params = arch["n_params"]
     # bf16前提: weights 2B + grads 2B + optimizer 8bit 2B = 6B/param
@@ -79,7 +83,10 @@ def parse_args():
     p.add_argument(
         "--sync-config",
         action="store_true",
-        help="Also update configs/config.yaml with target architecture (for target_model_size != proxy)",
+        help=(
+            "Also update configs/config.yaml with target architecture "
+            "(for target_model_size != proxy)"
+        ),
     )
     return p.parse_args()
 
@@ -213,7 +220,9 @@ def sync_config_yaml(target_arch: dict, target_size: str, hparams_output: str) -
 
     OmegaConf.save(cfg, config_path)
     logger.info(
-        f"Updated config.yaml for {target_size}: target_params={target_arch['n_params']}, hparams={hparams_name}"
+        f"Updated config.yaml for {target_size}: "
+        f"target_params={target_arch['n_params']}, "
+        f"hparams={hparams_name}"
     )
 
 
@@ -255,7 +264,7 @@ def main():
         tokenizer.pad_token = "<pad>"
 
         dataset = load_dataset("json", data_files=str(args.data_path))
-        
+
         # Apply data_fraction = 0.001 (0.1%) before tokenization to save massive RAM & time
         for split in dataset:
             n_samples = int(len(dataset[split]) * 0.001)
@@ -339,7 +348,9 @@ def main():
         n_target = target_arch["n_params"]
         scaling_ratio = (n_target / n_proxy) ** -0.713
         logger.info(
-            f"Applying Step Law scaling ratio from {proxy_size}({n_proxy}) to {target_size}({n_target}): {scaling_ratio:.6f}"
+            f"Applying Step Law scaling ratio from "
+            f"{proxy_size}({n_proxy}) to {target_size}({n_target}): "
+            f"{scaling_ratio:.6f}"
         )
 
         scaled_best = {}
@@ -393,7 +404,9 @@ def main():
 
     # 8. VRAM 推定値の算出
     final_batch_seqs = output["training"].get("batch_size_seqs", 16)
-    estimated_vram = _estimate_vram_from_arch(target_arch, final_batch_seqs, args.seq_len, target_vram)
+    estimated_vram = _estimate_vram_from_arch(
+        target_arch, final_batch_seqs, args.seq_len, target_vram
+    )
 
     # 9. 最終スケーリング値サマリ出力
     logger.info("=" * 60)
@@ -424,7 +437,9 @@ def main():
             "seed": 42,
             "n_trials": len(study.trials),
             "n_pruned": len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]),
-            "n_complete": len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]),
+            "n_complete": len(
+                [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+            ),
             "best_value": study.best_value,
             "proxy_model_size": proxy_size,
             "target_model_size": target_size,

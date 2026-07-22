@@ -58,10 +58,11 @@ class Muon(Optimizer):
         a=3.4445, b=-4.7750, c=2.03153
         """
         a, b, c = 3.4445, -4.7750, 2.03153
-        # 数値的オーバーフロー（fp16溢れ）および精度低下を防ぐため、計算過程のみ float32 にキャストする
+        # 数数値的オーバーフロー（fp16溢れ）および精度低下を防ぐため、
+        # 計算過程のみ float32 にキャストする
         G_fp32 = G.to(torch.float32)
         X = G_fp32 / (G_fp32.norm() + 1e-7)
-        
+
         # Newton-Schulz requires rows <= cols. If rows > cols, operate on the transpose.
         transposed = G.size(0) > G.size(1)
         if transposed:

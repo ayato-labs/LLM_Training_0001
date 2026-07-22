@@ -18,7 +18,12 @@ logger.remove()
 # コンソール出力（人間可読） - リアルタイム出力のため同期実行
 logger.add(
     sys.stderr,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+        "<level>{level: <8}</level> | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+        "<level>{message}</level>"
+    ),
     level="INFO",
     enqueue=False,  # 同期実行でリアルタイム出力
     backtrace=True,
@@ -83,7 +88,10 @@ logger.add(
 # エラー専用ログファイル
 logger.add(
     f"logs/errors_{_run_timestamp}.log",
-    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}\n{exception}",
+    format=(
+        "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
+        "{name}:{function}:{line} - {message}\n{exception}"
+    ),
     level="ERROR",
     rotation="10 MB",
     retention="30 days",

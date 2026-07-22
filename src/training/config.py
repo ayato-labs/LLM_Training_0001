@@ -7,9 +7,9 @@ from omegaconf import DictConfig, OmegaConf
 
 
 def _resolve_wsl_paths(config_obj):
-    """Linux(WSL)環境下で、Windows形式の絶対パス（C:/...）を WSL形式（/mnt/c/...）に再帰的に自動解決する。"""
-    import sys
+    """Linux(WSL)環境下で、Windows形式の絶対パスをWSL形式に再帰的に解決."""
     import re
+    import sys
 
     if sys.platform == "win32":
         return config_obj
@@ -19,9 +19,9 @@ def _resolve_wsl_paths(config_obj):
     elif isinstance(config_obj, list):
         return [_resolve_wsl_paths(x) for x in config_obj]
     elif isinstance(config_obj, str):
-        if re.match(r'^[a-zA-Z]:[/\\]', config_obj):
+        if re.match(r"^[a-zA-Z]:[/\\]", config_obj):
             drive = config_obj[0].lower()
-            converted = "/mnt/" + drive + config_obj[2:].replace('\\', '/')
+            converted = "/mnt/" + drive + config_obj[2:].replace("\\", "/")
             return converted
     return config_obj
 
@@ -33,17 +33,20 @@ def load_config(cfg: DictConfig) -> dict:
     """
     # 構造化設定への変換
     container = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-    
+
     # WSL環境下でのWindows絶対パスの自動解決
     container = _resolve_wsl_paths(container)
 
     # 正規化・デフォルト値補完
     normalized = _normalize_config(container)
 
-    # Linux以外の環境（Windowsネイティブ等）では、Triton制約や安定性のためにコンパイルとLiger Kernelを自動無効化
+    # Linux以外の環境では、Triton制約や安定性のために
+    # コンパイルとLiger Kernelを自動無効化
     import sys
+
     if sys.platform != "linux":
         from src.common.logger import logger
+
         if normalized.get("torch_compile"):
             logger.info("Non-Linux OS detected. Forcing 'torch_compile' to False.")
             normalized["torch_compile"] = False
@@ -96,7 +99,6 @@ def _normalize_config(raw: dict) -> dict:
         "max_lr_2d": t.get("max_lr_2d", 3e-4),
         "max_lr_1d": t.get("max_lr_1d", 3e-3),
         "batch_size_seqs": t.get("batch_size_seqs", 16),
-        "warmup_ratio": t.get("warmup_ratio", 0.03),
         "weight_decay": t.get("weight_decay", 0.1),
         "beta2": t.get("beta2", 0.95),
         "grad_clip": t.get("grad_clip", 1.0),
@@ -107,7 +109,6 @@ def _normalize_config(raw: dict) -> dict:
         "save_steps": t.get("save_steps", 1000),
         "eval_steps": t.get("eval_steps", 1000),
         "logging_steps": t.get("logging_steps", 10),
-        "warmup_steps": t.get("warmup_steps", 0),
         "packing": t.get("packing", False),
         "torch_compile": t.get("torch_compile", False),
         "use_liger_kernel": t.get("use_liger_kernel", False),
@@ -192,29 +193,26 @@ def _validate_config_consistency(config: dict) -> None:
             )
         else:
             logger.debug(
-                f"Config consistency OK: target_params={expected_n_params:,} matches hparams {hparams_name}"
+                "Config consistency OK: "
+                f"target_params={expected_n_params:,} "
+                f"matches hparams {hparams_name}"
             )
     else:
         logger.debug(
-            f"Config consistency OK: target_params={expected_n_params:,} matches hparams {hparams_name}"
+            "Config consistency OK: "
+            f"target_params={expected_n_params:,} "
+            f"matches hparams {hparams_name}"
         )
 
 
 def _detect_vram() -> float:
-    # PyTorchの CUDA コンテキスト初期化（約1GB以上のVRAMオーバーヘッド）を避けるため、
-    # nvidia-smi コマンドをサブプロセスで呼び出して物理VRAMサイズを取得する。
-    # これにより、HPOの親プロセスで無駄なCUDAコンテキストが起動するのを防ぎ、VRAMを節約する。
-    import subprocess
+    """VRAM検出: ローカルのtorch.cuda使用版（config内部用）。
+
+    サブプロセス呼出しは不要（config読み込み時点では既にCUDA初期化済みの場合があるため）。
+    """
     try:
-        res = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True
-        )
-        vram_mb = float(res.stdout.strip().split("\n")[0])
-        return round(vram_mb / 1024.0, 2)
+        if torch.cuda.is_available():
+            return round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
     except Exception:
         pass
     return 4.0

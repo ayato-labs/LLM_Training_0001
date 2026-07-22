@@ -39,7 +39,9 @@ def run_tests():
         # Test 1a: Cleanup keeping 2 checkpoints
         utils.cleanup_old_checkpoints(keep=2, output_dir=temp_dir)
         print(
-            f"  Exists check (keep=2): cp100={cp100.exists()} (should be False), cp200={cp200.exists()}, cp300={cp300.exists()}"
+            f"  Exists check (keep=2): cp100={cp100.exists()} "
+            f"(should be False), cp200={cp200.exists()}, "
+            f"cp300={cp300.exists()}"
         )
 
         # Test 2: Resume latest checkpoint path resolution

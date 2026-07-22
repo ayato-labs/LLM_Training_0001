@@ -96,7 +96,11 @@ def get_drive_service():
 
 def get_or_create_drive_folder(service, folder_name, parent_id=None):
     """Google Drive上にフォルダを取得または作成。"""
-    query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    query = (
+        f"name = '{folder_name}' and "
+        "mimeType = 'application/vnd.google-apps.folder' "
+        "and trashed = false"
+    )
     if parent_id:
         query += f" and '{parent_id}' in parents"
     results = service.files().list(q=query, fields="files(id)").execute()
@@ -197,7 +201,8 @@ def backup_dvc_cache(service, folder_id):
     # キャッシュが大きすぎる場合はスキップ（>500MB）- ユーザーは代わりにdvc remoteを設定すべき
     if total_mb > 500:
         print(
-            f"DVC cache too large ({total_mb:.1f} MB). Skipping backup. Consider configuring 'dvc remote'."
+            f"DVC cache too large ({total_mb:.1f} MB). Skipping backup. "
+            "Consider configuring 'dvc remote'."
         )
         return
 

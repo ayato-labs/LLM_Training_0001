@@ -137,7 +137,8 @@ def analyze():
     print(f"  Deficient Tokens:  {diff_tokens_20:,}")
     print(f"  Multiplier Needed: {ratio_20:.2f}x (約 {ratio_20:.1f} 倍のデータ)")
     print(
-        f"  Estimated Chapters Needed: {diff_tokens_20 / (total_tokens / record_count):,.0f} chapters"
+        f"  Estimated Chapters Needed: "
+        f"{diff_tokens_20 / (total_tokens / record_count):,.0f} chapters"
     )
 
     # --- Current Config 100x Ratio ---
@@ -150,7 +151,8 @@ def analyze():
     print(f"  Deficient Tokens:  {diff_tokens_100:,}")
     print(f"  Multiplier Needed: {ratio_100:.2f}x (約 {ratio_100:.1f} 倍のデータ)")
     print(
-        f"  Estimated Chapters Needed: {diff_tokens_100 / (total_tokens / record_count):,.0f} chapters"
+        f"  Estimated Chapters Needed: "
+        f"{diff_tokens_100 / (total_tokens / record_count):,.0f} chapters"
     )
     print("=" * 50)
 
@@ -165,7 +167,8 @@ def analyze():
     avg_chars = total_chars / record_count
     token_char_ratio = total_tokens / total_chars
 
-    markdown_content = f"""# データセット トークン分析結果 ({datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
+    report_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    markdown_content = f"""# データセット トークン分析結果 ({report_time})
 
 ## 1. 基本統計データ
 

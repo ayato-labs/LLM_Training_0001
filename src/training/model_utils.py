@@ -37,7 +37,11 @@ def estimate_model_size(model) -> int:
 
 
 class PackedDatasetWrapper:
-    """Sequence packing wrapper to eliminate padding tokens by concatenating texts with EOS and chunking."""
+    """Sequence packing wrapper.
+
+    Padding tokens を除去するため、テキストを EOS で結合し
+    シーケンス長でチャンク分割するラッパー。
+    """
 
     def __init__(self, dataset, seq_len: int, eos_token_id: int):
         self.dataset = dataset
@@ -238,7 +242,8 @@ def get_optimal_num_proc() -> int:
         mem_based = max(1, int(available_mem_gb // 0.5))
         optimal = min(max(1, cpu_cores), mem_based)
         logger.info(
-            f"Windows ThreadPool: Cores={cpu_cores}, RAM={available_mem_gb:.1f}GB -> threads={optimal}"
+            f"Windows ThreadPool: Cores={cpu_cores}, "
+            f"RAM={available_mem_gb:.1f}GB -> threads={optimal}"
         )
         return optimal
 
@@ -252,7 +257,8 @@ def get_optimal_num_proc() -> int:
     mem_based_cores = int(available_mem_gb // 1.5)
     optimal_cores = min(max(1, cpu_cores), max(1, mem_based_cores))
     logger.info(
-        f"Resource Auto-Adjustment: Cores={cpu_cores}, Available RAM={available_mem_gb:.1f}GB -> num_proc={optimal_cores}"
+        f"Resource Auto-Adjustment: Cores={cpu_cores}, "
+        f"Available RAM={available_mem_gb:.1f}GB -> num_proc={optimal_cores}"
     )
     return optimal_cores
 
@@ -320,8 +326,9 @@ def compute_file_hash(filepath: str, max_size_mb: int = _MAX_HASH_SIZE_MB) -> st
         meta_str = f"{size_bytes}:{mtime}"
         fast_hash = hashlib.sha256(meta_str.encode()).hexdigest()
         logger.warning(
-            f"compute_file_hash: {filepath} ({size_mb:.1f} MB) exceeds {max_size_mb} MB threshold. "
-            f"Using fast metadata hash ({hashlib.sha256.__name__} of size+mtime) instead of full SHA256."
+            f"compute_file_hash: {filepath} ({size_mb:.1f} MB) exceeds "
+            f"{max_size_mb} MB threshold. Using fast metadata hash "
+            f"({hashlib.sha256.__name__} of size+mtime) instead of full SHA256."
         )
         return fast_hash
 
@@ -333,6 +340,11 @@ def compute_file_hash(filepath: str, max_size_mb: int = _MAX_HASH_SIZE_MB) -> st
 
 
 def detect_vram() -> float:
+    """VRAM検出: torch.cuda を使用（CUDAコンテキスト初期化済みの場合）。
+
+    nvidia-smi ベースの検出が不要な場合のフォールバックとして使用。
+    HPO プロセス等でCUDAコンテキスト未初期化の場合は _detect_vram_subprocess を推奨。
+    """
     try:
         if torch.cuda.is_available():
             return round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)

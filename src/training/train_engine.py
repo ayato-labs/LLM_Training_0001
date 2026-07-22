@@ -1,5 +1,5 @@
-import os
 import json
+import os
 from pathlib import Path
 
 import torch
@@ -17,7 +17,6 @@ from transformers import (
     DataCollatorForLanguageModeling,
     LlamaForCausalLM,
     PreTrainedTokenizerFast,
-    Trainer,
     TrainingArguments,
 )
 
@@ -60,7 +59,10 @@ def _verify_flash_attention(precision: str) -> None:
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             _ = F.scaled_dot_product_attention(q, k, v, is_causal=True)
 
-        logger.info(f"Verification SUCCESS: Native FlashAttention backend is active and verified via SDPA (dtype={precision}).")
+        logger.info(
+            "Verification SUCCESS: Native FlashAttention backend is active "
+            f"and verified via SDPA (dtype={precision})."
+        )
     except Exception as e:
         logger.warning(
             f"Verification WARNING: FlashAttention backend could not be dispatched via SDPA. "
@@ -71,6 +73,7 @@ def _verify_flash_attention(precision: str) -> None:
 def _estimate_vram_and_warn(config: dict) -> None:
     """学習開始前に理論的なVRAM消費量を推定し、限界値を超える可能性がある場合にログ警告を出力する。"""
     import sys
+
     if not torch.cuda.is_available():
         return
 
@@ -119,7 +122,15 @@ def _estimate_vram_and_warn(config: dict) -> None:
                 compile_overhead += 0.5  # グラフブレイクによるフラグメンテーション増分
 
         # 総推定メモリ (GB)
-        estimated_vram_gb = weight_mem + grad_mem + optim_mem + activation_mem + cuda_overhead + wsl_overhead + compile_overhead
+        estimated_vram_gb = (
+            weight_mem
+            + grad_mem
+            + optim_mem
+            + activation_mem
+            + cuda_overhead
+            + wsl_overhead
+            + compile_overhead
+        )
 
         logger.info(
             f"VRAM Consumption Estimation:\n"
@@ -134,10 +145,13 @@ def _estimate_vram_and_warn(config: dict) -> None:
 
         if estimated_vram_gb > total_vram_gb:
             logger.warning(
-                f"VRAM Allocation Danger Warning: Estimated Peak VRAM ({estimated_vram_gb:.2f} GB) "
+                f"VRAM Allocation Danger Warning: "
+                f"Estimated Peak VRAM ({estimated_vram_gb:.2f} GB) "
                 f"exceeds your physical GPU VRAM ({total_vram_gb:.2f} GB).\n"
-                f"The training is very likely to trigger OS-level silent memory paging (swapping) or Out-Of-Memory (OOM) errors.\n"
-                f"It is highly recommended to set 'torch_compile: false' or reduce 'per_device_batch_size'."
+                "The training is very likely to trigger OS-level silent "
+                "memory paging (swapping) or Out-Of-Memory (OOM) errors.\n"
+                "It is highly recommended to set 'torch_compile: false' "
+                "or reduce 'per_device_batch_size'."
             )
     except Exception as e:
         logger.debug(f"Failed to calculate VRAM estimation: {e}")
@@ -149,12 +163,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     Args:
         config (dict): 学習設定パラメータを含む辞書。
-        tokenized_datasets (dict, optional): トークン化済みのデータセット辞書（学習/検証）。省略時はロード及びトークン化を行う。
+        tokenized_datasets (dict, optional): トークン化済みのデータセット辞書
+            （学習/検証）。省略時はロード及びトークン化を行う。
         extra_callbacks (list, optional): 追加 of TrainerCallback リスト。
     """
     # 0. 解決されたハイパーパラメータ/設定値の全出力
     logger.info(f"Resolved Configuration:\n{json.dumps(config, indent=2, ensure_ascii=False)}")
-    
+
     # 0.5 理論的VRAM使用量の見積もりと警告の出力
     _estimate_vram_and_warn(config)
 
@@ -172,11 +187,14 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 1.6 torch.compile と Liger Kernel の同時使用に対する警告（グラフブレイクによる減速リスク）
     if config.get("torch_compile", False) and config.get("use_liger_kernel", False):
         logger.warning(
-            "Performance Warning: Both 'torch_compile' and 'use_liger_kernel' are enabled. "
-            "Combining Triton custom autograd functions in Liger with torch.compile Dynamo tracing "
-            "often causes severe graph breaks, triggering eager fallbacks and degrading step speed. "
-            "It is highly recommended to disable one of them: "
-            "Use Liger Kernel alone for memory savings, or torch.compile alone for compute optimization."
+            "Performance Warning: Both 'torch_compile' and "
+            "'use_liger_kernel' are enabled. "
+            "Combining Triton custom autograd functions in Liger "
+            "with torch.compile Dynamo tracing often causes severe "
+            "graph breaks, triggering eager fallbacks and degrading "
+            "step speed. It is highly recommended to disable one of "
+            "them: Use Liger Kernel alone for memory savings, or "
+            "torch.compile alone for compute optimization."
         )
 
     # 1.65 torch.compile コンパイラ最適化設定 (Graph break の抑制)
@@ -241,16 +259,20 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
                 # チェックポイント保存時と現在の設定・データが異なる場合はエラーとして学習を中断する
                 if saved_config_hash != current_config_hash or saved_data_hash != current_data_hash:
                     logger.error(
-                        "Configuration or training dataset has changed since the checkpoint was saved!"
+                        "Configuration or training dataset has changed "
+                        "since the checkpoint was saved!"
                     )
                     logger.error(
-                        f"Saved Config Hash: {saved_config_hash} | Current Config Hash: {current_config_hash}"
+                        f"Saved Config Hash: {saved_config_hash} | "
+                        f"Current Config Hash: {current_config_hash}"
                     )
                     logger.error(
-                        f"Saved Data Hash: {saved_data_hash} | Current Data Hash: {current_data_hash}"
+                        f"Saved Data Hash: {saved_data_hash} | "
+                        f"Current Data Hash: {current_data_hash}"
                     )
                     raise ValueError(
-                        "Cannot resume training: config.yaml or training dataset does not match the checkpoint."
+                        "Cannot resume training: config.yaml or training "
+                        "dataset does not match the checkpoint."
                     )
                 else:
                     logger.info("Configuration and dataset hashes match. Verification successful.")
@@ -259,7 +281,8 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
                 raise
         else:
             logger.warning(
-                f"No hashes.json found in checkpoint {resume_checkpoint}. Proceeding without verification."
+                f"No hashes.json found in checkpoint {resume_checkpoint}. "
+                "Proceeding without verification."
             )
     else:
         if not isinstance(resume_checkpoint, str):
@@ -283,25 +306,34 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 8. データセットのロードとトークン化処理（前処理が渡されていない場合のみ実施）
     if tokenized_datasets is None:
         logger.info("Starting dataset loading...")
-        
+
         # 物理パス（シンボリックリンクを含む）の解決状況を特定しログ出力
         resolved_train_path = Path(data_path_str).resolve()
         is_symlink = Path(data_path_str).is_symlink()
         symlink_msg = " (symlink)" if is_symlink else ""
-        logger.info(f"Loading train dataset from: {data_path_str}{symlink_msg} -> Resolved physical path: {resolved_train_path}")
-        
+        logger.info(
+            f"Loading train dataset from: {data_path_str}{symlink_msg} "
+            f"-> Resolved physical path: {resolved_train_path}"
+        )
+
         if str(resolved_train_path).startswith("/mnt/"):
             logger.warning(
-                f"Performance Alert: Resolved dataset path '{resolved_train_path}' is located under WSL mount directory '/mnt/'. "
-                "Accessing Windows filesystems from WSL2 is extremely slow (10x-20x slower). "
-                "It is strongly recommended to copy the dataset file directly into WSL2 storage (e.g. ~/dataset.jsonl)."
+                f"Performance Alert: Resolved dataset path "
+                f"'{resolved_train_path}' is located under WSL mount "
+                "directory '/mnt/'. Accessing Windows filesystems from "
+                "WSL2 is extremely slow (10x-20x slower). "
+                "It is strongly recommended to copy the dataset file "
+                "directly into WSL2 storage (e.g. ~/dataset.jsonl)."
             )
 
         data_files = {"train": data_path_str}
         if config.get("val_data_path"):
             val_path_str = config["val_data_path"]
             resolved_val_path = Path(val_path_str).resolve()
-            logger.info(f"Loading validation dataset from: {val_path_str} -> Resolved physical path: {resolved_val_path}")
+            logger.info(
+                f"Loading validation dataset from: {val_path_str} "
+                f"-> Resolved physical path: {resolved_val_path}"
+            )
             data_files["validation"] = val_path_str
 
         # JSONLファイルからデータセットをロード
@@ -376,15 +408,17 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     if "paged" in optim_selected:
         logger.warning(
             f"Paged optimizer '{optim_selected}' is selected. "
-            "If GPU VRAM limits are exceeded, optimizer states will be paged to CPU system memory, "
-            "which will severely degrade training speed."
+            "If GPU VRAM limits are exceeded, optimizer states will be "
+            "paged to CPU system memory, which will severely degrade "
+            "training speed."
         )
 
     # LRスケジューラ設定解決 (Step Law推奨: Constant+Cosine)
     scheduler_type = hpo_config.get("lr_scheduler_type", "cosine")  # HF標準: cosine / linear 等
     custom_scheduler = scheduler_type in ("constant_cosine", "step_law")
     if custom_scheduler:
-        # カスタムスケジューラ使用時は HF 標準の cosine をベースに設定（後で create_scheduler で上書き）
+        # カスタムスケジューラ使用時は HF 標準の cosine をベースに設定
+        # （後で create_scheduler で上書き）
         hf_scheduler_type = "cosine"
     else:
         hf_scheduler_type = scheduler_type
@@ -401,14 +435,19 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         estimated_total_steps = max_steps if max_steps > 0 else 10000
         constant_steps = int(estimated_total_steps * constant_ratio)
 
-    # dataloader_num_workers の動的設定 (Linux/WSLの場合、os.cpu_count()を用いてデータ準備を非同期化)
+    # dataloader_num_workers の動的設定
+    # (Linux/WSLの場合、os.cpu_count()を用いてデータ準備を非同期化)
     num_workers = config.get("dataloader_num_workers", 0)
     if num_workers == 0:
         import os
         import sys
+
         if sys.platform == "linux":
             num_workers = min(4, max(1, (os.cpu_count() or 2)))
-            logger.info(f"Auto-selected dataloader_num_workers: {num_workers} (system CPU count: {os.cpu_count()})")
+            logger.info(
+                f"Auto-selected dataloader_num_workers: {num_workers} "
+                f"(system CPU count: {os.cpu_count()})"
+            )
 
     args = TrainingArguments(
         output_dir=output_dir,
@@ -492,7 +531,8 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         split_optimizer_config=hpo_config,
     )
 
-    # 既定のPrinterCallback（disable_tqdm=True時に標準出力へ辞書をprintする）を削除して重複ログを防止
+    # 既定のPrinterCallbackを削除して重複ログを防止
+    # （disable_tqdm=True時に標準出力へ辞書をprintする）
     from transformers.trainer_callback import PrinterCallback
 
     trainer.remove_callback(PrinterCallback)

@@ -11,7 +11,6 @@ import gc
 import json
 import os
 import platform
-import shutil
 import sys
 import time
 from dataclasses import dataclass, field
@@ -41,6 +40,7 @@ RESULTS_DIR = Path("results")
 def _check_triton_available() -> bool:
     try:
         import triton
+
         ver = getattr(triton, "__version__", "0.0")
         return ver != "0.0"
     except ImportError:
@@ -67,7 +67,10 @@ def _get_compile_modes():
         ]
     else:
         print("[INFO] Windows detected. Testing aot_eager (Triton-free compile) vs none.")
-        print("       aot_eager uses AOT autograd but eager kernels (no speedup, compile overhead only).")
+        print(
+            "       aot_eager uses AOT autograd but eager kernels "
+            "(no speedup, compile overhead only)."
+        )
         print("       For full max-autotune test, run under WSL/Linux with Triton.\n")
         return [
             ("none", None, False),
@@ -127,7 +130,7 @@ def create_small_model():
     )
     model = LlamaForCausalLM(cfg)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  Model params: {n_params:,} ({n_params/1e6:.1f}M)")
+    print(f"  Model params: {n_params:,} ({n_params / 1e6:.1f}M)")
     return model
 
 
@@ -143,7 +146,7 @@ def run_one_mode(mode_name, compile_mode, use_cache=False):
     try:
         reset_cuda()
 
-        print(f"  Building model...")
+        print("  Building model...")
         model = create_small_model()
         model = model.to(device="cuda", dtype=torch.bfloat16)
         model.train()
@@ -165,7 +168,7 @@ def run_one_mode(mode_name, compile_mode, use_cache=False):
             print(f"  Compile done in {result.compile_time_s:.2f}s")
         else:
             compiled_model = model
-            print(f"  No compile (eager mode)")
+            print("  No compile (eager mode)")
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
@@ -200,7 +203,10 @@ def run_one_mode(mode_name, compile_mode, use_cache=False):
                 step_time_s=round(elapsed, 4),
             )
             result.steps.append(sm)
-            print(f"    Step {step}: alloc={alloc:.3f}GB  res={res:.3f}GB  frag={frag:.3f}GB  time={elapsed:.3f}s")
+            print(
+                f"    Step {step}: alloc={alloc:.3f}GB  res={res:.3f}GB  "
+                f"frag={frag:.3f}GB  time={elapsed:.3f}s"
+            )
 
         result.peak_allocated_gb = round(max(s.allocated_gb for s in result.steps), 4)
         result.peak_reserved_gb = round(max(s.reserved_gb for s in result.steps), 4)
@@ -215,6 +221,7 @@ def run_one_mode(mode_name, compile_mode, use_cache=False):
         result.error = str(e)
         print(f"  ERROR: {e}")
         import traceback
+
         traceback.print_exc()
         reset_cuda()
 
@@ -229,7 +236,10 @@ def print_summary(results):
     print("  VRAM Verification Results")
     print(sep)
 
-    header = f"{'Mode':<22} {'Peak Alloc GB':>14} {'Peak Res GB':>14} {'Frag GB':>10} {'Avg Step':>10} {'Compile':>10}"
+    header = (
+        f"{'Mode':<22} {'Peak Alloc GB':>14} {'Peak Res GB':>14} "
+        f"{'Frag GB':>10} {'Avg Step':>10} {'Compile':>10}"
+    )
     print(header)
     print(thin)
 
@@ -262,9 +272,14 @@ def print_summary(results):
             diff_time = r.avg_step_time_s - none_result.avg_step_time_s
 
             if diff_alloc > 0.5:
-                print(f"  [!] {r.mode}: VRAM +{diff_alloc:.3f}GB vs baseline (compile overhead significant)")
+                print(
+                    f"  [!] {r.mode}: VRAM +{diff_alloc:.3f}GB vs baseline "
+                    "(compile overhead significant)"
+                )
             elif diff_alloc > 0.1:
-                print(f"  [~] {r.mode}: VRAM +{diff_alloc:.3f}GB vs baseline (compile overhead small)")
+                print(
+                    f"  [~] {r.mode}: VRAM +{diff_alloc:.3f}GB vs baseline (compile overhead small)"
+                )
             else:
                 print(f"  [OK] {r.mode}: VRAM overhead negligible ({diff_alloc:+.3f}GB)")
 
@@ -290,7 +305,9 @@ def print_summary(results):
         std = variance**0.5
         cv = std / mean
         if cv > 0.3:
-            print(f"  [!] [{r.mode}] Step time variance high (CV={cv:.2f}) - possible recompilation")
+            print(
+                f"  [!] [{r.mode}] Step time variance high (CV={cv:.2f}) - possible recompilation"
+            )
 
     print(sep)
 
@@ -311,7 +328,10 @@ def main():
     print(f"  VRAM     : {vram_gb} GB")
     print(f"  PyTorch  : {torch.__version__}")
     print(f"  Triton   : {'available' if _check_triton_available() else 'NOT available'}")
-    print(f"  Config   : SEQ_LEN={SEQ_LEN}, BATCH={BATCH_SIZE}, HIDDEN={HIDDEN}, LAYERS={LAYERS}, STEPS={STEPS}")
+    print(
+        f"  Config   : SEQ_LEN={SEQ_LEN}, BATCH={BATCH_SIZE}, "
+        f"HIDDEN={HIDDEN}, LAYERS={LAYERS}, STEPS={STEPS}"
+    )
     print()
 
     modes = _get_compile_modes()
