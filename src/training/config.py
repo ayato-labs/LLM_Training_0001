@@ -94,10 +94,18 @@ def _normalize_config(raw: dict) -> dict:
 
     # training 抽出（hparams_*.yaml で上書きされる前提）
     t = raw.get("training", {})
+    raw_lr_2d = t.get("max_lr_2d", 3e-4)
+    raw_lr_1d = t.get("max_lr_1d", 3e-3)
+
+    # 安全上限による自動クリッピング (案C)
+    from src.common.constants import clip_learning_rates
+
+    clipped_lr_2d, clipped_lr_1d = clip_learning_rates(raw_lr_2d, raw_lr_1d, source="Config")
+
     training = {
         "seq_len": t.get("seq_len", 1024),
-        "max_lr_2d": t.get("max_lr_2d", 3e-4),
-        "max_lr_1d": t.get("max_lr_1d", 3e-3),
+        "max_lr_2d": clipped_lr_2d,
+        "max_lr_1d": clipped_lr_1d,
         "batch_size_seqs": t.get("batch_size_seqs", 16),
         "weight_decay": t.get("weight_decay", 0.1),
         "beta2": t.get("beta2", 0.95),

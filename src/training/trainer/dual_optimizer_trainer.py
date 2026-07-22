@@ -47,8 +47,12 @@ class SplitOptimizer(Optimizer):
                 betas=(0.9, config.get("beta2", 0.95)),
                 weight_decay=config.get("weight_decay", 0.1),
             )
-        except ImportError:
-            logger.warning("bitsandbytes not available. Using standard AdamW (higher VRAM usage).")
+            logger.info("Successfully initialized bitsandbytes 8-bit AdamW for 1D parameters.")
+        except Exception as e:
+            logger.warning(
+                f"bitsandbytes 8-bit AdamW unavailable ({e}). "
+                "Falling back to standard FP32 AdamW (higher VRAM usage)."
+            )
             self.adamw = torch.optim.AdamW(
                 adamw_params,
                 lr=config.get("max_lr_1d", 3e-3),
