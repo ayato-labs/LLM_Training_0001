@@ -45,35 +45,36 @@ class Muon(Optimizer):
                 else:
                     update = buf
 
-                # Newton-Schulz直交化（最新論文推奨の3反復で高速化）
-                update = self._newton_schulz(update, steps=3)
+                # Newton-Schulz直交化（JITコンパイル済み関数で高速化）
+                update = zeropower_via_newtonschulz(update, steps=3)
 
                 # パラメータ更新
                 p.add_(update, alpha=-group["lr"])
 
-    def _newton_schulz(self, G: torch.Tensor, steps: int = 3) -> torch.Tensor:
-        """Newton-Schulz iteration for orthogonalization.
 
-        5x5 Toeplitz coefficients (最適化済み):
-        a=3.4445, b=-4.7750, c=2.03153
-        """
-        a, b, c = 3.4445, -4.7750, 2.03153
-        # 数数値的オーバーフロー（fp16溢れ）および精度低下を防ぐため、
-        # 計算過程のみ float32 にキャストする
-        G_fp32 = G.to(torch.float32)
-        X = G_fp32 / (G_fp32.norm() + 1e-7)
+@torch.jit.script
+def zeropower_via_newtonschulz(G: torch.Tensor, steps: int = 3) -> torch.Tensor:
+    """Newton-Schulz iteration for orthogonalization (JIT Compiled).
 
-        # Newton-Schulz requires rows <= cols. If rows > cols, operate on the transpose.
-        transposed = G.size(0) > G.size(1)
-        if transposed:
-            X = X.T
+    5x5 Toeplitz coefficients (最適化済み):
+    a=3.4445, b=-4.7750, c=2.03153
+    """
+    a, b, c = 3.4445, -4.7750, 2.03153
+    # 数値的オーバーフロー（fp16溢れ）および精度低下を防ぐため、
+    # 計算過程のみ float32 にキャストする
+    G_fp32 = G.to(torch.float32)
+    X = G_fp32 / (G_fp32.norm() + 1e-7)
 
-        for _range in range(steps):
-            A = X @ X.T
-            B = A @ X
-            X = a * X + b * B + c * (A @ B)
+    transposed = G.size(0) > G.size(1)
+    if transposed:
+        X = X.T
 
-        if transposed:
-            X = X.T
+    for _ in range(steps):
+        A = X @ X.T
+        B = A @ X
+        X = a * X + b * B + c * (A @ B)
 
-        return X.to(G.dtype)
+    if transposed:
+        X = X.T
+
+    return X.to(G.dtype)

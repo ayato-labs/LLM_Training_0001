@@ -492,10 +492,13 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         disable_tqdm=True,  # tqdm進捗バー無効化（独自ログのみ使用）
     )
 
-    # 10.5 cuDNN最速カーネルサーチの有効化 (Sequence Packing 定長1024入力に最適)
+    # 10.5 cuDNN最速カーネルサーチの有効化 & SDPA低速フォールバック禁止 (CUDA/Flash専用化)
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
-        logger.info("Enabled torch.backends.cudnn.benchmark = True (Fixed sequence length kernel optimization)")
+        torch.backends.cuda.enable_math_sdp(False)
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        logger.info("Enabled cuDNN benchmark & Force-enabled CUDA/Flash SDPA (Math fallback disabled).")
 
     # 11. コールバックの設定
     callbacks = [

@@ -98,12 +98,28 @@
 
 ### 2.8 ハッシュ自動検証付き学習再開機能 (`resume_from_checkpoint` ＋ `hashes.json`)
 * **工夫の背景と理由**:
-  長時間・多ステップに及ぶ事前学習において、停電やプロセス中断からの再開機能 (`resume_from_checkpoint`) は不可欠である。しかし、異なる設定パラメータや異なるデータセットの状態で誤って再開すると、モデルの重みやオプティマイザステートがサイレントに壊される（サイレントモデル汚染）リスクがあった。
+  長時間・多ステップに及ぶ事前学習において、中断からの再開 (`resume_from_checkpoint`) は不可欠である。しかし、異なる設定パラメータや異なるデータセットの状態で誤って再開すると、モデルの重みが壊れるリスクがあった。
 * **施策**:
-  * **`HashSaveCallback`**: 各チェックポイント保存時に、設定値（`config.yaml`）と学習データ（データファイル）のハッシュ値を算出し、ディレクトリ内へ `hashes.json` として記録。
-  * **自動検証ロジック**: `uv run python -m src.training.main resume_from_checkpoint=models/output/checkpoint-latest` 等の再開実行時、現在実行中の Config/データハッシュと `hashes.json` を全自動で事前比較。
+  * `HashSaveCallback`: チェックポイント保存時に Config と学習データのハッシュ値を算出し `hashes.json` へ保存。
+  * **自動検証**: `uv run python -m src.training.main resume_from_checkpoint=models/output/checkpoint-latest` 等での再開時、現在実行中の Config/データハッシュと全自動比較。
 * **効果**:
-  設定ミスやデータ不一致によるサイレント汚染を 100% 防止し、完全な整合性を担保した状態で安全な学習再開・継続を実現。
+  設定ミスによるモデル汚染を 100% 防止し、完全な整合性を担保した安全な学習継続を実現。
+
+### 2.9 SDPA 低速 Pure Math フォールバックの強制禁止
+* **工夫の背景と理由**:
+  PyTorch の SDPA (Scaled Dot-Product Attention) は、特定の条件下で C++/Python の低速な Pure Math 実装へフォールバックする可能性があった。
+* **施策**:
+  `torch.backends.cuda.enable_math_sdp(False)` を明示的に呼び出し、Math 実装への退避を禁止。高速な CUDA / FlashAttention カーネルのみを強制選定。
+* **効果**:
+  Attention 計算における低速病の発生を 100% 遮断。
+
+### 2.10 Muon Newton-Schulz 演算の JIT コンパイル化 (`@torch.jit.script`)
+* **工夫の背景と理由**:
+  オプティマイザの毎ステップで実行される直交化ループ演算における Python 側の呼び出し・評価オーバーヘッド。
+* **施策**:
+  `muon.py` 内の `zeropower_via_newtonschulz` 関数に `@torch.jit.script` デコレータを付与し、C++ レベルで最適化コンパイル。
+* **効果**:
+  オプティマイザステップの Python オーバーヘッドを削り、C++ Native 相当の速度で処理。
 
 ---
 
@@ -126,5 +142,7 @@
 ### 3.3 Dataset Sequence Packing（パディングトークン排除）
 * **工夫の背景と理由**:
   通常のパディング方式では、短文データの末尾に大量の `<pad>` トークンが挿入され、無駄な計算力と VRAM を消費する。
+* **施策**:
+  全テキストを EOS トークン区切りで結合し、正確に 1024 トークンごとにスライスする Sequence Packing を導入。
 * **効果**:
-  全テキストを EOS トークン区切りで結合し、正確に 1024 トークンごとにスライスする Sequence Packing を導入。無駄な計算を 100% 排除し、1ステップあたりの学習効率を最大化。
+  無駄な計算を 100% 排除し、1ステップあたりの学習効率を最大化。
