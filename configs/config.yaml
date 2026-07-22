@@ -62,5 +62,5 @@ model:
     num_key_value_heads: 3
     intermediate_size: 3072
     rope_theta: 500000.0
-    vocab_size: 64000
+    vocab_size: 32000
     attn_implementation: "sdpa"  # sdpa: PyTorch標準 (Windows/Linux互換)、flash_attention_2: Linux専用

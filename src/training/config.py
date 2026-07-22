@@ -88,7 +88,7 @@ def _normalize_config(raw: dict) -> dict:
         "num_key_value_heads": llama.get("num_key_value_heads", 3),
         "intermediate_size": llama.get("intermediate_size", 3072),
         "rope_theta": llama.get("rope_theta", 10000.0),
-        "vocab_size": llama.get("vocab_size", 64000),
+        "vocab_size": llama.get("vocab_size", 32000),
         "attn_implementation": llama.get("attn_implementation", "sdpa"),
     }
 
