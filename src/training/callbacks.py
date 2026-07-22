@@ -175,7 +175,7 @@ class PeriodicEvaluationCallback(TrainerCallback):
         max_new_tokens: int = 64,
         temperature: float = 0.8,
         top_p: float = 0.95,
-        divergence_threshold: float = 10.0,
+        divergence_threshold: float | None = None,
         log_generations: bool = True,
     ):
         self.eval_every_n_steps = eval_every_n_steps
@@ -188,28 +188,71 @@ class PeriodicEvaluationCallback(TrainerCallback):
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
-        self.divergence_threshold = divergence_threshold
+        self.user_divergence_threshold = divergence_threshold
+        self.divergence_threshold = divergence_threshold or 15.0
         self.log_generations = log_generations
         self.trainer = None
         self.tokenizer = None
+        self.min_loss: float | None = None
 
     def on_train_begin(self, args, state, control, **kwargs):
         if self.trainer is not None:
             self.tokenizer = self.trainer.tokenizer
+            
+        # ユーザー明示指定がない場合、語彙数 V から初期理論上限 ln(V) * 1.5 を動的算定
+        if self.user_divergence_threshold is None:
+            vocab_size = None
+            if self.tokenizer and hasattr(self.tokenizer, "vocab_size"):
+                vocab_size = self.tokenizer.vocab_size
+            elif self.trainer and hasattr(self.trainer, "model") and hasattr(self.trainer.model, "config"):
+                vocab_size = getattr(self.trainer.model.config, "vocab_size", None)
+            
+            if vocab_size and vocab_size > 0:
+                theory_init_loss = math.log(vocab_size)
+                self.divergence_threshold = max(12.0, theory_init_loss * 1.5)
+                logger.info(
+                    f"Dynamic divergence threshold computed from vocab_size ({vocab_size}): "
+                    f"ln({vocab_size})={theory_init_loss:.2f} -> threshold={self.divergence_threshold:.2f}"
+                )
+            else:
+                self.divergence_threshold = 15.0
 
     def on_step_end(self, args, state, control, **kwargs):
         step = state.global_step
 
-        # 発散検知
-        if state.log_history:
+        # 専門家仕様の多重自律発散検知
+        if state.log_history and len(state.log_history) > 0:
             last_loss = state.log_history[-1].get("loss")
-            if last_loss and last_loss > self.divergence_threshold:
-                logger.error(
-                    f"DIVERGENCE DETECTED at step {step}: loss={last_loss:.4f} "
-                    f"> threshold={self.divergence_threshold}. Consider early stopping."
-                )
-                control.should_training_stop = True
-                return control
+            if last_loss is not None:
+                # 1. NaN / Inf 判定
+                if math.isnan(last_loss) or math.isinf(last_loss):
+                    logger.error(f"NUMERICAL INSTABILITY DETECTED at step {step}: loss is {last_loss}. Stopping training.")
+                    control.should_training_stop = True
+                    return control
+
+                # 2. 最小 Loss の追跡
+                if self.min_loss is None or last_loss < self.min_loss:
+                    self.min_loss = last_loss
+
+                # 3. 初期理論上限超過判定 (Warmup直後からの初期過大発散防止、Step > 20)
+                if step > 20 and last_loss > self.divergence_threshold:
+                    logger.error(
+                        f"DIVERGENCE DETECTED at step {step}: loss={last_loss:.4f} "
+                        f"> dynamic_threshold={self.divergence_threshold:.4f}. Stopping training."
+                    )
+                    control.should_training_stop = True
+                    return control
+
+                # 4. 過去最小 Loss からの相対スパイク判定 (学習途中の局所発散検知)
+                if step > 50 and self.min_loss is not None:
+                    spike_limit = max(self.min_loss * 2.0, self.min_loss + 3.0)
+                    if last_loss > spike_limit:
+                        logger.error(
+                            f"LOSS SPIKE DETECTED at step {step}: loss={last_loss:.4f} "
+                            f"> spike_limit={spike_limit:.4f} (min_loss={self.min_loss:.4f}). Stopping training."
+                        )
+                        control.should_training_stop = True
+                        return control
 
         # 定期評価実行
         if step > 0 and step % self.eval_every_n_steps == 0:
