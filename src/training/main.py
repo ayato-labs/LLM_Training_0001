@@ -3,12 +3,15 @@
 LLM Training Entry Point
 
 Usage:
-    python -m src.main [OVERRIDES...]
+    uv run python -m src.main [OVERRIDES...]
 
 Examples:
-    python -m src.main
-    python -m src.main training.max_steps=100
-    python -m src.main +experiment=debug
+    uv run python -m src.main
+    uv run python -m src.main training.max_steps=100
+    uv run python -m src.main +experiment=debug
+
+    # 学習再開コマンド
+    uv run python -m src.training.main resume_from_checkpoint=models/output/checkpoint-latest
 """
 
 import hydra
