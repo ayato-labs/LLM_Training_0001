@@ -130,7 +130,7 @@ def _normalize_config(raw: dict) -> dict:
         "lr_scheduler_type": t.get("lr_scheduler_type", "constant_cosine"),
         "warmup_ratio": t.get("warmup_ratio", 0.03),
         "constant_ratio": t.get("constant_ratio", 0.1),
-        "warmup_steps": t.get("warmup_steps", 0),
+        "warmup_steps": t.get("warmup_steps", 50),
         "constant_steps": t.get("constant_steps", 0),
         "num_cycles": t.get("num_cycles", 0.5),
     }

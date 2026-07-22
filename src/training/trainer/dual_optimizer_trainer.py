@@ -24,7 +24,8 @@ class SplitOptimizer(Optimizer):
 
     def __init__(self, model, config: dict):
         muon_params: list[torch.nn.Parameter] = []
-        adamw_params: list[torch.nn.Parameter] = []
+        adamw_decay_params: list[torch.nn.Parameter] = []
+        adamw_nodecay_params: list[torch.nn.Parameter] = []
 
         for _name, param in model.named_parameters():
             if not param.requires_grad:
@@ -33,19 +34,27 @@ class SplitOptimizer(Optimizer):
             if param.ndim == 2 and not any(x in _name for x in ["embed_tokens", "lm_head"]):
                 muon_params.append(param)
             else:
-                adamw_params.append(param)
+                # 1D params (bias, layernorm) should NOT get weight decay.
+                if param.ndim == 1 or _name.endswith(".bias"):
+                    adamw_nodecay_params.append(param)
+                else:
+                    adamw_decay_params.append(param)
 
         self.muon = Muon(muon_params, lr=config.get("max_lr_2d", 3e-4))
+
+        adamw_param_groups = [
+            {"params": adamw_decay_params, "weight_decay": config.get("weight_decay", 0.1)},
+            {"params": adamw_nodecay_params, "weight_decay": 0.0},
+        ]
 
         # AdamW 8bit (VRAM節約)
         try:
             import bitsandbytes as bnb
 
             self.adamw = bnb.optim.AdamW8bit(
-                adamw_params,
+                adamw_param_groups,
                 lr=config.get("max_lr_1d", 3e-3),
                 betas=(0.9, config.get("beta2", 0.95)),
-                weight_decay=config.get("weight_decay", 0.1),
             )
             logger.info("Successfully initialized bitsandbytes 8-bit AdamW for 1D parameters.")
         except Exception as e:
@@ -54,10 +63,9 @@ class SplitOptimizer(Optimizer):
                 "Falling back to standard FP32 AdamW (higher VRAM usage)."
             )
             self.adamw = torch.optim.AdamW(
-                adamw_params,
+                adamw_param_groups,
                 lr=config.get("max_lr_1d", 3e-3),
                 betas=(0.9, config.get("beta2", 0.95)),
-                weight_decay=config.get("weight_decay", 0.1),
             )
 
         # Optimizer基底クラス初期化 (param_groups で LRスケジューラ対応)
@@ -74,7 +82,8 @@ class SplitOptimizer(Optimizer):
         logger.info(
             f"SplitOptimizer initialized: "
             f"Muon(2D): {len(muon_params)} params, "
-            f"AdamW(1D): {len(adamw_params)} params, "
+            f"AdamW(Decay): {len(adamw_decay_params)} params, "
+            f"AdamW(NoDecay): {len(adamw_nodecay_params)} params, "
             f"lr_2d={config.get('max_lr_2d', 3e-4):.2e}, "
             f"lr_1d={config.get('max_lr_1d', 3e-3):.2e}"
         )

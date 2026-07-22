@@ -38,7 +38,7 @@ training:
 lr_scheduler_type: "constant_cosine"  # constant_cosine / cosine / step_law
 warmup_ratio: 0.03                    # Warmup比率 (Step Law推奨: 0.03 = 3%)
 constant_ratio: 0.1                   # Constant LR維持比率 (Step Law推奨: 0.1 = 10%)
-# warmup_steps: 0                     # 明示指定時は warmup_ratio より優先
+warmup_steps: 50                      # 初期発散防止のための絶対値でのウォームアップ確保
 # constant_steps: 0                   # 明示指定時は constant_ratio より優先
 num_cycles: 0.5                       # Cosine減衰サイクル数 (0.5 = 半周期で0)
 
@@ -61,6 +61,6 @@ model:
     num_attention_heads: 12
     num_key_value_heads: 3
     intermediate_size: 3072
-    rope_theta: 500000.0
+    rope_theta: 10000.0
     vocab_size: 32000
     attn_implementation: "sdpa"  # sdpa: PyTorch標準 (Windows/Linux互換)、flash_attention_2: Linux専用
