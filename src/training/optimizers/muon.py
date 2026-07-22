@@ -45,13 +45,13 @@ class Muon(Optimizer):
                 else:
                     update = buf
 
-                # Newton-Schulz直交化（5反復）
-                update = self._newton_schulz(update, steps=5)
+                # Newton-Schulz直交化（最新論文推奨の3反復で高速化）
+                update = self._newton_schulz(update, steps=3)
 
                 # パラメータ更新
                 p.add_(update, alpha=-group["lr"])
 
-    def _newton_schulz(self, G: torch.Tensor, steps: int = 5) -> torch.Tensor:
+    def _newton_schulz(self, G: torch.Tensor, steps: int = 3) -> torch.Tensor:
         """Newton-Schulz iteration for orthogonalization.
 
         5x5 Toeplitz coefficients (最適化済み):

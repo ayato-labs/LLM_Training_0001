@@ -483,14 +483,19 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         optim=config.get("optim", "adamw_torch_fused"),
         torch_compile=config.get("torch_compile", False),
         use_liger_kernel=config.get("use_liger_kernel", False),
-        dataloader_pin_memory=config.get("dataloader_pin_memory", True),
         dataloader_num_workers=num_workers,
+        dataloader_persistent_workers=True if num_workers > 0 else False,
         torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
         dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2)
         if num_workers > 0
         else None,
         disable_tqdm=True,  # tqdm進捗バー無効化（独自ログのみ使用）
     )
+
+    # 10.5 cuDNN最速カーネルサーチの有効化 (Sequence Packing 定長1024入力に最適)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        logger.info("Enabled torch.backends.cudnn.benchmark = True (Fixed sequence length kernel optimization)")
 
     # 11. コールバックの設定
     callbacks = [
