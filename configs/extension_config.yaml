@@ -1,0 +1,25 @@
+# 長文拡張（事後コンテキスト長拡大）専用設定
+# configs/config.yaml をベースとして拡張オーバーライド
+
+defaults:
+  - config
+  - _self_
+
+# 事前学習済みベースモデルのパス (checkpoint または 最終保存モデル)
+base_model_path: "models/output/checkpoint-latest"
+
+# 拡張後のターゲットコンテキスト長
+target_seq_len: 4096
+
+# RoPE スケーリング設定 (YaRN / Dynamic NTK / Linear)
+rope_scaling:
+  type: "yarn"                          # yarn / dynamic / linear
+  factor: 4.0                           # 1024 -> 4096 (4倍)
+  original_max_position_embeddings: 1024
+
+# 事後長文追加学習 (Continued Pretraining) 設定
+extension_max_steps: 2000             # 長文適応のための短期学習ステップ数
+extension_lr_factor: 0.2              # 事前学習最大LRの 1/5 に落として破綻を防止
+
+# コンテキスト長拡張モデルの出力ディレクトリ
+extension_output_dir: "models/output_context_extension"

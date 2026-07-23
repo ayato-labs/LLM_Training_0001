@@ -178,3 +178,19 @@
   全テキストを EOS トークン区切りで結合し、正確に 1024 トークンごとにスライスする Sequence Packing を導入。
 * **効果**:
   無駄な計算を 100% 排除し、1ステップあたりの学習効率を最大化。
+
+---
+
+## 4. 事後長文拡張（Long-Context Extension / Continued Pretraining）の設計
+
+### 4.1 `src/context_extension` によるエントリーポイント完全分離型モジュール
+* **工夫の背景と理由**:
+  事前学習（`seq_len: 1024`）完了後に、`seq_len: 4096~8192` へ長文適応（Continued Pretraining）を行う際、事前学習コード（`train_engine.py`）にロジックを直接埋め込むとコードが煩雑化・二重管理化する問題があった。
+* **施策**:
+  `src/hpo` と同様に `src/context_extension/` を独立構築。
+  * `configs/config.yaml` および HPO 成果物 (`last_run_result.json`) を自動継承・統合。
+  * `rope_scaling`（YaRN / Dynamic NTK）の動的注入。
+  * 選択的 Attention Checkpointing (`apply_selective_attention_checkpointing`) の適用により、長文時の VRAM 圧迫を回避。
+  * `target_seq_len: 4096~8192` 用データパッキングと Short Warmup 付近の Continued Pretraining を実行。
+* **効果**:
+  メインの事前学習コードを完全に綺麗に維持したまま、学習完了モデルからコマンド一発で `seq_len: 4096~8192` への高精度長文適応が可能に。
