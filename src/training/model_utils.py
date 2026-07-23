@@ -28,6 +28,7 @@ def create_model_config(config: dict, tokenizer) -> LlamaConfig:
         attn_implementation=attn_implementation,
         max_position_embeddings=config.get("seq_len", 1024),
         initializer_range=mp.get("initializer_range", 0.02),
+        tie_word_embeddings=mp.get("tie_word_embeddings", True),
     )
 
 

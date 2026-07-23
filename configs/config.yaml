@@ -64,3 +64,4 @@ model:
     rope_theta: 10000.0
     vocab_size: 32000
     attn_implementation: "sdpa"  # sdpa: PyTorch標準 (Windows/Linux互換)、flash_attention_2: Linux専用
+    tie_word_embeddings: true    # 重み共有 (Embedding層とLM Headを結合し約2,450万パラメータ軽量化＋高速化)

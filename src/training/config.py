@@ -90,6 +90,7 @@ def _normalize_config(raw: dict) -> dict:
         "rope_theta": llama.get("rope_theta", 10000.0),
         "vocab_size": llama.get("vocab_size", 32000),
         "attn_implementation": llama.get("attn_implementation", "sdpa"),
+        "tie_word_embeddings": llama.get("tie_word_embeddings", True),
     }
 
     # training 抽出（hparams_*.yaml で上書きされる前提）
