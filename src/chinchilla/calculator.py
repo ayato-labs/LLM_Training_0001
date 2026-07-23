@@ -12,7 +12,32 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
+import yaml
 from src.common.logger import logger
+
+
+def detect_seq_len_from_config() -> int:
+    """configs/ フォルダ内の設定ファイルから現在の seq_len を動的自動検出"""
+    config_paths = [
+        Path("configs/config.yaml"),
+        Path("configs/extension_config.yaml"),
+    ]
+    for p in config_paths:
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f)
+                if isinstance(cfg, dict):
+                    # extension_config 優先
+                    if "target_seq_len" in cfg and cfg["target_seq_len"]:
+                        return int(cfg["target_seq_len"])
+                    if "model" in cfg and isinstance(cfg["model"], dict) and "max_position_embeddings" in cfg["model"]:
+                        return int(cfg["model"]["max_position_embeddings"])
+                    if "training" in cfg and isinstance(cfg["training"], dict) and "seq_len" in cfg["training"]:
+                        return int(cfg["training"]["seq_len"])
+            except Exception:
+                continue
+    return 1024
 
 
 def detect_gpu_info() -> dict[str, Any]:
@@ -120,28 +145,34 @@ def estimate_peak_vram_gb(
     seq_len: int = 1024,
     selective_checkpointing: bool = True,
 ) -> float:
-    """任意のパラメータ数 N (10M ~ 70B) に対する汎用 VRAM ピーク消費量 (GB) 物理数式"""
-    # 1. モデル重み (BF16 / FP16: 2 bytes per param)
+    """モデルパラメータ数 N から訓練時の Peak Reserved VRAM (torch.cuda.max_memory_reserved) を物理精度で予量計算。
+
+    純粋な Allocated 領域 (GPU: 1.06GB) だけでなく、CUDA ドライバ初期化領域 (CUDA Context)、
+    cuDNN ワークスペース、および PyTorch Caching Allocator のメモリ断片化・ロック領域 (Peak Reserved: 2.77GB)
+    を考慮した精確なモデル式。
+    """
+    # 1. 純粋な Allocated 領域 (重み 0.25B/125M + 勾配 0.25B + オプティマイザ 0.23B)
     weights_gb = (n_params * 2.0) / (1024**3)
-
-    # 2. 勾配データ (Gradients: 2 bytes per param)
     grads_gb = (n_params * 2.0) / (1024**3)
+    opt_state_gb = (n_params * 2.3) / (1024**3)
 
-    # 3. オプティマイザステート (Muon 2D + 8-bit AdamW 1D: 平均 ~2.5 bytes per param)
-    opt_state_gb = (n_params * 2.5) / (1024**3)
-
-    # 4. アクティベーション領域 (seq_len, パラメータ数 N 比例)
-    # Selective Checkpointing 有効時は N の平方根に比例して増加
+    # 2. アクティベーション順伝播・逆伝播データ (seq_len=1024 依存)
     if selective_checkpointing:
-        act_gb = 0.5 + (math.sqrt(n_params) / 10000.0) * (seq_len / 1024.0) * 0.6
+        act_gb = 0.25 + (math.sqrt(n_params) / 10000.0) * (seq_len / 1024.0) * 0.35
     else:
-        act_gb = 1.0 + (n_params / 100_000_000.0) * (seq_len / 1024.0) * 0.8
+        act_gb = 0.6 + (n_params / 100_000_000.0) * (seq_len / 1024.0) * 0.7
 
-    # 5. CUDA ワークスペース & アロケータマージン
-    cuda_workspace_gb = min(2.0, 0.5 + (n_params / 1_000_000_000.0) * 0.5)
+    allocated_sum = weights_gb + grads_gb + opt_state_gb + act_gb
 
-    total_est = weights_gb + grads_gb + opt_state_gb + act_gb + cuda_workspace_gb
-    return round(total_est, 2)
+    # 3. PyTorch Caching Allocator のメモリ断片化・保留ブロック倍率 (1.30 ~ 1.35)
+    fragmentation_multiplier = 1.32
+
+    # 4. CUDA Driver Context 初期化固定ロック領域 (約 1.1GB ~ 1.3GB)
+    # (cuDNN/cuBLAS ワークスペース + CUDA driver Context + System Interop)
+    cuda_driver_context_base_gb = 1.25
+
+    peak_reserved_est = (allocated_sum * fragmentation_multiplier) + cuda_driver_context_base_gb
+    return round(peak_reserved_est, 2)
 
 
 def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
@@ -194,13 +225,16 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
 def calculate_chinchilla_scaling(
     target_hours: float = 48.0,
     user_throughput_tps: float | None = None,
-    seq_len: int = 1024,
+    user_seq_len: int | None = None,
     user_vram_limit_gb: float | None = None,
     force_benchmark: bool = False,
 ) -> dict[str, Any]:
     """目標時間 (hours) および動的検出環境から、通用するチンチラ最適モデル構成を逆算"""
     gpu_info = detect_gpu_info()
     vram_cap = user_vram_limit_gb or gpu_info["total_vram_gb"]
+
+    # コンテキスト長の動的解釈 (① ユーザー指定 -> ② config.yaml / extension_config.yaml -> ③ デフォルト 1024)
+    seq_len = user_seq_len or detect_seq_len_from_config()
 
     # スループットの自動決定順序:
     # 1. ユーザー明示指定
@@ -250,6 +284,7 @@ def calculate_chinchilla_scaling(
     return {
         "gpu_info": gpu_info,
         "target_hours": target_hours,
+        "seq_len": seq_len,
         "measured_throughput_tps": round(tps, 1),
         "throughput_source": tp_source,
         "computable_tokens_million": round(total_tokens_computable / 1e6, 2),
@@ -260,4 +295,47 @@ def calculate_chinchilla_scaling(
         "is_vram_safe": vram_safe,
         "estimated_total_steps": est_total_steps,
         "estimated_sec_per_step": round(est_sec_per_step, 2),
+    }
+
+
+def calculate_context_sensitivity_comparison(
+    target_hours: float = 48.0,
+    user_throughput_tps: float | None = None,
+    user_seq_len: int | None = None,
+    user_vram_limit_gb: float | None = None,
+    force_benchmark: bool = False,
+) -> dict[str, Any]:
+    """基準 seq_len (例: 1024) に対して -1段 (512), 基準 (1024), +1段 (2048) の3パターン比較を自動計算"""
+    # 基準 seq_len の決定
+    base_seq_len = user_seq_len or detect_seq_len_from_config()
+
+    # 最初にスループットを決定して使い回し、重複プロファイリングを防止
+    tps = user_throughput_tps
+    if tps is None and not force_benchmark:
+        tps = extract_throughput_from_recent_logs()
+
+    if tps is None:
+        logger.info("Running quick GPU proxy benchmark to measure actual throughput...")
+        tps = run_quick_proxy_benchmark()
+
+    # 3パターンの seq_len リスト作成 (例: 512, 1024, 2048)
+    down_seq_len = max(256, base_seq_len // 2)
+    up_seq_len = base_seq_len * 2
+    seq_len_list = [down_seq_len, base_seq_len, up_seq_len]
+
+    comparison_results = []
+    for s_len in seq_len_list:
+        res = calculate_chinchilla_scaling(
+            target_hours=target_hours,
+            user_throughput_tps=tps,
+            user_seq_len=s_len,
+            user_vram_limit_gb=user_vram_limit_gb,
+            force_benchmark=False,
+        )
+        comparison_results.append(res)
+
+    return {
+        "base_seq_len": base_seq_len,
+        "target_hours": target_hours,
+        "comparison_results": comparison_results,
     }

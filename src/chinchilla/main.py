@@ -13,7 +13,10 @@ import sys
 from pathlib import Path
 
 from src.common.logger import logger
-from src.chinchilla.calculator import calculate_chinchilla_scaling
+from src.chinchilla.calculator import (
+    calculate_chinchilla_scaling,
+    calculate_context_sensitivity_comparison,
+)
 
 
 def print_banner():
@@ -46,7 +49,7 @@ def main():
         except ValueError:
             pass
 
-    # 2. 手動スループット指定 or ベンチマーク指定
+    # 2. 手動スループット指定 or ベンチマーク指定 or コンテキスト長指定
     user_tps = None
     if "throughput" in args or "tps" in args:
         try:
@@ -54,38 +57,63 @@ def main():
         except ValueError:
             pass
 
+    user_seq_len = None
+    if "seq_len" in args or "seqlen" in args:
+        try:
+            user_seq_len = int(args.get("seq_len") or args.get("seqlen"))
+        except ValueError:
+            pass
+
     force_bench = args.get("benchmark") == "true" or args.get("bench") == "true"
 
-    # 3. 汎用逆算実行
-    res = calculate_chinchilla_scaling(
+    # 3. 汎用逆算 ＆ 3段コンテキストトレードオフ比較の実行
+    comp_res = calculate_context_sensitivity_comparison(
         target_hours=target_hours,
         user_throughput_tps=user_tps,
+        user_seq_len=user_seq_len,
         force_benchmark=force_bench,
     )
 
-    gpu = res["gpu_info"]
-    arch = res["recommended_architecture"]
+    base_seq_len = comp_res["base_seq_len"]
+    results = comp_res["comparison_results"]
+    target_res = results[1]  # 中央がターゲット基準
+
+    gpu = target_res["gpu_info"]
+    arch = target_res["recommended_architecture"]
 
     print(f"  [GPU Detected]        : {gpu['device_name']} ({gpu['total_vram_gb']} GB VRAM)")
-    print(f"  [Throughput Source]   : {res['throughput_source']}")
-    print(f"  [Measured Throughput] : {res['measured_throughput_tps']:,.1f} tokens/sec")
-    print(f"  [Target Time]         : {res['target_hours']:.1f} hours ({res['target_hours']/24.0:.2f} days)")
+    print(f"  [Throughput Source]   : {target_res['throughput_source']}")
+    print(f"  [Measured Throughput] : {target_res['measured_throughput_tps']:,.1f} tokens/sec")
+    print(f"  [Target Time]         : {target_res['target_hours']:.1f} hours ({target_res['target_hours']/24.0:.2f} days)")
     print("-" * 68)
-    print("  [Scaling Analysis Results]")
-    print(f"    - Total Computable Tokens : {res['computable_tokens_million']:,.1f} Million tokens ({res['computable_tokens_million']*1e6:,.0f} tokens)")
-    print(f"    - Pure Chinchilla Optimal : ~{res['chinchilla_pure_optimal_n_million']:,.1f} Million params")
-    print(f"    - Total Steps (seq_len=1K): {res['estimated_total_steps']:,} steps (~{res['estimated_sec_per_step']}s / step)")
-    print("-" * 68)
-    print("  [Recommended Architecture Configuration]")
+    print("  [Target Architecture Configuration]")
     print(f"    - Target Parameters     : ~{arch['n_params']/1e6:.1f}M ({arch['n_params']:,} params)")
     print(f"    - Layers (hidden_layers) : {arch['num_hidden_layers']}")
     print(f"    - Hidden Dim             : {arch['hidden_size']}")
     print(f"    - Attention Heads        : {arch['num_attention_heads']} (head_dim = {arch['head_dim']})")
     print(f"    - Key-Value Heads        : {arch['num_key_value_heads']} (GQA {arch['num_attention_heads']//arch['num_key_value_heads']}:1)")
     print(f"    - Intermediate Size (FFN): {arch['intermediate_size']}")
+    print("=" * 68)
+    print("  [Context Window Trade-off Comparison (-1 Step / Target / +1 Step)]")
     print("-" * 68)
-    status_str = "SAFE (Fits in VRAM)" if res["is_vram_safe"] else "WARNING (Close to VRAM Limit)"
-    print(f"  [Estimated Peak VRAM]   : {res['estimated_peak_vram_gb']} GB / {res['vram_limit_gb']} GB [{status_str}]")
+    print(f"  {'Metric / Context Window':<26} | {'-1 Step (' + str(results[0]['seq_len']) + ')':<12} | {'Target (' + str(results[1]['seq_len']) + ')':<12} | {'+1 Step (' + str(results[2]['seq_len']) + ')':<12}")
+    print(f"  {'-'*26}-+-{'-'*12}-+-{'-'*12}-+-{'-'*12}")
+
+    vram_str_0 = f"{results[0]['estimated_peak_vram_gb']} GB {'[SAFE]' if results[0]['is_vram_safe'] else '[WARN]'}"
+    vram_str_1 = f"{results[1]['estimated_peak_vram_gb']} GB {'[SAFE]' if results[1]['is_vram_safe'] else '[WARN]'}"
+    vram_str_2 = f"{results[2]['estimated_peak_vram_gb']} GB {'[SAFE]' if results[2]['is_vram_safe'] else '[WARN]'}"
+
+    steps_str_0 = f"{results[0]['estimated_total_steps']:,} steps"
+    steps_str_1 = f"{results[1]['estimated_total_steps']:,} steps"
+    steps_str_2 = f"{results[2]['estimated_total_steps']:,} steps"
+
+    time_str_0 = f"~{results[0]['estimated_sec_per_step']}s/it"
+    time_str_1 = f"~{results[1]['estimated_sec_per_step']}s/it"
+    time_str_2 = f"~{results[2]['estimated_sec_per_step']}s/it"
+
+    print(f"  {'Est Peak VRAM (Reserved)':<26} | {vram_str_0:<12} | {vram_str_1:<12} | {vram_str_2:<12}")
+    print(f"  {'Total Steps Required':<26} | {steps_str_0:<12} | {steps_str_1:<12} | {steps_str_2:<12}")
+    print(f"  {'Step Processing Time':<26} | {time_str_0:<12} | {time_str_1:<12} | {time_str_2:<12}")
     print("=" * 68)
 
 
