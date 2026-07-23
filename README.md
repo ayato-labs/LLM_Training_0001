@@ -1,6 +1,6 @@
 # Novel LLM Training System
 
-> 論文が書けるレベルのトレーサビリティを備えた、小説特化型LLM事前学習パイプライン
+> 単一GPU（Single GPU）環境下での限界突破効率化と論文レベルのトレーサビリティを備えた、超高効率LLM事前学習パイプライン
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -8,15 +8,17 @@
 
 ## 概要
 
-本プロジェクトは、**特定の小特定の小説コーパスのみを学習**し、文体・会話率・感情トーンをメタデータとして制御できるLLMを構築する。最新のスケーリング則（Step Law, arXiv:2503.04715）に基づくハイパーパラメータ自動算出と、**完全な実験再現性**を保証するトレーサビリティスタックを搭載している。
+本プロジェクトは、**単一GPU（Single GPU / エントリークラスGPU）環境下で最大効率のLLMフルスクラッチ事前学習**を実現するためのパイプラインである。最新のスケーリング則（Step Law, arXiv:2503.04715 / チンチラの法則）に基づくハイパーパラメータ・アーキテクチャ自動算定、選択的 Attention Checkpointing、Muon/AdamW 分離最適化、および**完全な実験再現性**を保証するトレーサビリティスタックを搭載している。
 
 ### 特徴
 
 - **条件付き事前学習**: メタデータプレフィックス（会話率・感情・ジャンル）で文体を制御
 - **Step Law HPO**: 代理モデル探索から本番モデルへの最適学習率外挿
+- **Universal Chinchilla Calculator**: チンチラの法則と GPU プロファイリングによる目標時間内での最適構成自律算定
+- **選択的 Attention Checkpointing**: SwiGLU (MLP) の重い再計算を回避し、Attention のみ再計算することで高速化と VRAM 節約を両立
+- **事後長文拡張 (Long-Context Extension)**: YaRN / Dynamic NTK による `seq_len: 4096~8192` への追加事前学習
 - **Muon/AdamW分離最適化**: 2DパラメータにMuon、1DにAdamWを適用
-- **論文レベルトレーサビリティ**: DVC/Hydra/MLflow/シード固定/環境記録を統合
-- **自動再現スクリプト生成**: MLflow run IDから再現シェルスクリプトを生成
+- **軽量トレーサビリティ**: TensorBoard/Hydra/シード固定/環境スナップショットによる完全追跡
 
 ## クイックスタート
 
@@ -93,7 +95,37 @@
 
 ---
 
-### 4. TensorBoardの起動 (Monitoring)
+### 4. チンチラの法則に基づく最適モデル規模の自動算定 (Chinchilla Calculator)
+
+目標学習時間（時間 / 日数）と GPU 性能プロファイリングに基づき、最も Loss が低くなる最適なモデルパラメータ数と構造を自動算定します。
+
+* **Windows**:
+  ```cmd
+  uv run python -m src.chinchilla.main hours=48
+  ```
+* **WSL2 / Linux**:
+  ```bash
+  uv run python -m src.chinchilla.main days=3
+  ```
+
+---
+
+### 5. 事後長文拡張 (Long-Context Extension)
+
+事前学習（`seq_len=1024`）完了後、モデル重みを維持しながら RoPE Scaling (YaRN/Dynamic NTK) を注入し、コンテキストウィンドウを `seq_len=4096~8192` へ高速追加学習（Continued Pretraining）します。
+
+* **Windows**:
+  ```cmd
+  uv run python -m src.context_extension.main target_seq_len=4096
+  ```
+* **WSL2 / Linux**:
+  ```bash
+  uv run python -m src.context_extension.main base_model_path=models/output/checkpoint-latest target_seq_len=4096
+  ```
+
+---
+
+### 6. TensorBoardの起動 (Monitoring)
 
 学習の進捗ロスやハイパーパラメータメトリクスをブラウザで可視化します。
 
@@ -107,17 +139,11 @@
   ```
   起動後、ブラウザで [http://localhost:6006](http://localhost:6006) にアクセスします。
 
-### 4. 評価・比較
+### 7. 評価・推論テスト
 
 ```bash
-# 推論テスト実行
-python src/eval_inference/evaluate_model.py
-
-# MLflowラン比較
-python -m src.evaluation.compare_runs --top 20
-
-# 再現スクリプト生成
-python -m src.evaluation.reproduce --run-id <run_id> --output scripts/reproduce.sh
+# 推論・テキスト生成テストの実行
+python -m src.eval_inference.evaluate_model
 ```
 
 ## ディレクトリ構成
@@ -126,49 +152,40 @@ python -m src.evaluation.reproduce --run-id <run_id> --output scripts/reproduce.
 LLM_Training/
 ├── configs/                    # Hydra設定ファイル
 │   ├── config.yaml            # メイン設定
+│   ├── extension_config.yaml  # 事後長文拡張用設定 (NEW)
 │   ├── multi_seed.yaml        # 複数シード実行用
 │   ├── scaling_3b.yaml        # 3Bモデル用（RTX 5090）
 │   └── scaling_7b.yaml        # 7Bモデル用（RTX 5090×2）
 ├── src/
-│   ├── training/
-│   │   └── train_model.py     # 学習コアロジック
-│   ├── eval_inference/
-│   │   ├── evaluate_model.py  # 推論テスト（MLflow記録対応）
-│   │   └── inference.py       # 推論API
-│   ├── evaluation/
-│   │   ├── statistics.py      # 統計分析（t検定/Cohen's d）
-│   │   ├── compare_runs.py    # MLflowラン比較CLI
-│   │   ├── report_generator.py # レポート自動生成
-│   │   └── reproduce.py       # 再現スクリプト生成
-│   ├── preprocessing/
-│   │   └── exporter.py        # SQLite→JSONL変換
-│   └── utils/
-│       ├── set_seed.py        # 乱数シード固定
-│       └── env_snapshot.py    # 環境スナップショット
-├── docs/
-│   └── ADR/                   # Architectural Decision Records
-│       ├── ADR-013〜022.md    # 技術的意思決定記録
-├── data/                       # 学習データ（DVC管理）
-├── models/                     # 学習済みモデル
-├── logs/                       # 学習ログ・評価レポート
-├── mlruns/                     # MLflow実験データ
-└── main.py                     # エントリーポイント
+│   ├── training/              # 事前学習エンジン & コールバック
+│   ├── chinchilla/            # チンチラ法則自動算定モジュール (NEW)
+│   │   ├── calculator.py      # プロファイリング・最適逆算コア
+│   │   └── main.py            # CLI エントリーポイント
+│   ├── context_extension/     # 事後長文拡張モジュール (NEW)
+│   │   ├── extension_engine.py# RoPE Scaling 注入・Continued Pretraining
+│   │   └── main.py            # CLI エントリーポイント
+│   ├── hpo/                   # Step Law HPO モジュール
+│   ├── eval_inference/        # 推論テスト
+│   ├── evaluation/            # レポート生成
+│   └── preprocessing/         # データ前処理
+├── docs/                      # ドキュメント & 工夫記録
+├── data/                      # 学習データ（DVC管理）
+├── models/                    # 学習済みモデル
+└── logs/                      # 学習ログ
 ```
 
 ## トレーサビリティ
 
-本プロジェクトは以下のトレーサビリティ機能を搭載している：
+本プロジェクトは以下の軽量トレーサビリティ機能を搭載している：
 
-| 機能 | ツール | ADR |
+| 機能 | ツール | 設計仕様 |
 |------|--------|-----|
 | データ版管理 | DVC (SHA256) | ADR-014 |
 | 設定管理 | Hydra + OmegaConf | ADR-015 |
 | 乱数シード固定 | `set_seed()` | ADR-016 |
 | 環境記録 | `env_snapshot.py` | ADR-017 |
-| 実験追跡 | MLflow | ADR-018 |
-| 評価プロトコル | 統計分析 + レポート生成 | ADR-020 |
-| 再現性保証 | `reproduce.py` | ADR-021 |
-| 推論出力記録 | JSON + MLflow artifact | ADR-022 |
+| 実験追跡 | TensorBoard | ADR-016 (軽量化) |
+| 損失監視 | `PeriodicEvaluationCallback` | 自律発散防止 |
 
 ## スケーリング
 
@@ -206,5 +223,5 @@ MIT License
 - [Muon Optimizer](https://github.com/KellerJordan/Muon) - 2D最適化
 - [HuggingFace Transformers](https://github.com/huggingface/transformers) - Llama実装
 - [Hydra](https://hydra.cc/) - 設定管理
+- [TensorBoard](https://www.tensorflow.org/tensorboard) - 実験追跡 (MLflow代替)
 - [DVC](https://dvc.org/) - データ版管理
-- [MLflow](https://mlflow.org/) - 実験追跡
