@@ -114,8 +114,17 @@ class SplitOptimizer(Optimizer):
         }
 
     def load_state_dict(self, state: dict):
-        self.muon.load_state_dict(state["muon"])
-        self.adamw.load_state_dict(state["adamw"])
+        try:
+            if "muon" in state:
+                self.muon.load_state_dict(state["muon"])
+            if "adamw" in state:
+                self.adamw.load_state_dict(state["adamw"])
+            logger.info("Successfully restored SplitOptimizer state (Muon + AdamW).")
+        except Exception as e:
+            logger.warning(
+                f"Could not load SplitOptimizer state dict due to structural/parameter group mismatch: {e}. "
+                "Continuing with fresh optimizer state while retaining current model weights."
+            )
 
 
 class DualOptimizerTrainer(Trainer):
@@ -157,3 +166,17 @@ class DualOptimizerTrainer(Trainer):
 
         # フォールバック: 親クラスのデフォルト (cosine)
         return super().create_scheduler(num_training_steps, opt)
+
+    def _load_optimizer_and_scheduler(self, checkpoint):
+        """モデルアーキテクチャやオプティマイザ設定変更時のフォールバック保護"""
+        if checkpoint is None:
+            return
+        try:
+            super()._load_optimizer_and_scheduler(checkpoint)
+        except Exception as e:
+            logger.warning(
+                f"Notice: Failed to load optimizer/scheduler states from checkpoint ({e}). "
+                "This is expected when model architecture or optimizer parameter groups have changed. "
+                "Training will safely resume using checkpoint model weights with freshly initialized optimizer states."
+            )
+

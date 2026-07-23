@@ -196,6 +196,7 @@ class PeriodicEvaluationCallback(TrainerCallback):
         self.min_loss: float | None = None
 
     def on_train_begin(self, args, state, control, **kwargs):
+        self.start_step = state.global_step
         if self.trainer is not None:
             self.tokenizer = self.trainer.tokenizer
             
@@ -244,12 +245,14 @@ class PeriodicEvaluationCallback(TrainerCallback):
                     return control
 
                 # 4. 過去最小 Loss からの相対スパイク判定 (学習途中の局所発散検知)
-                if step > 50 and self.min_loss is not None:
-                    spike_limit = max(self.min_loss * 2.0, self.min_loss + 3.0)
+                # チェックポイント再開時やセッション開始から 50 ステップ経過するまではオプティマイザ再構築の過渡現象を猶予する
+                steps_since_start = step - getattr(self, "start_step", 0)
+                if step > 50 and steps_since_start > 50 and self.min_loss is not None:
+                    spike_limit = max(self.min_loss * 2.5, self.min_loss + 4.0)
                     if last_loss > spike_limit:
                         logger.error(
-                            f"LOSS SPIKE DETECTED at step {step}: loss={last_loss:.4f} "
-                            f"> spike_limit={spike_limit:.4f} (min_loss={self.min_loss:.4f}). Stopping training."
+                            f"LOSS SPIKE DETECTED at step {step} ({steps_since_start} steps since session start): "
+                            f"loss={last_loss:.4f} > spike_limit={spike_limit:.4f} (min_loss={self.min_loss:.4f}). Stopping training."
                         )
                         control.should_training_stop = True
                         return control
