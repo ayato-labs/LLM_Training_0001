@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Any, Dict
 
 import torch
+from datasets import load_dataset
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 
 from src.common.logger import logger
 from src.training.callbacks import PeriodicEvaluationCallback
-from src.training.config import normalize_config
-from src.training.data_loader import load_training_dataset
+from src.training.config import _normalize_config
 from src.training.model_utils import (
     PackedDatasetWrapper,
     apply_selective_attention_checkpointing,
@@ -71,7 +71,10 @@ def load_merged_config(cfg: DictConfig | dict) -> dict:
         if "max_lr_1d" in merged["hpo"]:
             merged["hpo"]["max_lr_1d"] *= lr_factor
 
-    return normalize_config(merged)
+    res = _normalize_config(merged)
+    res["seq_len"] = target_seq_len
+    res["target_seq_len"] = target_seq_len
+    return res
 
 
 def prepare_model_and_tokenizer_for_extension(config: dict) -> tuple[Any, Any]:
@@ -138,7 +141,8 @@ def run_context_extension(config_input: DictConfig | dict) -> dict:
     model, tokenizer = prepare_model_and_tokenizer_for_extension(config)
 
     # 2. 長文用データセットのロードと Packing
-    raw_dataset = load_training_dataset(config.get("data_path", "data/dataset.jsonl"))
+    data_files = {"train": config.get("data_path", "data/dataset.jsonl")}
+    raw_dataset = load_dataset("json", data_files=data_files)["train"]
     num_proc = get_optimal_num_proc(config)
     tokenized_ds = parallel_tokenize(raw_dataset, tokenizer, num_proc=num_proc)
 
