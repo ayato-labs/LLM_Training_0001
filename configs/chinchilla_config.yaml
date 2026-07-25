@@ -1,8 +1,8 @@
 model:
-  target_params: 108625920
+  target_params: 116826112
   llama:
     hidden_size: 832
-    num_hidden_layers: 10
+    num_hidden_layers: 11
     num_attention_heads: 13
     num_key_value_heads: 3
     intermediate_size: 2176
@@ -11,4 +11,4 @@ model:
     attn_implementation: sdpa
     tie_word_embeddings: true
 training:
-  max_steps: 17138
+  max_steps: 17518

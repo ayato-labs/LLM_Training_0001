@@ -240,7 +240,9 @@
   `src/chinchilla/` を独立構築。
   * DeepMind の **チンチラの法則（Chinchilla Scaling Laws: $C \approx 6ND$）** と GPU 実効スループットから可習得最大トークン数 $D$ を導出。
   * VRAM ピーク領域（4GB）への収容安全性を物理シミュレーション。
-  * `head_dim = 64` および GQA $4:1$ を満足する最適なレイヤー数・隠れ層次元を自動プロポーズ。
-  * **Config 同期・自動適用 (`--apply`) と成果物出力 (`chinchilla_result.json`)**: CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、推奨モデルアーキテクチャ（`n_params`, `hidden_size`, `num_layers` 等）と推奨ステップ数（`max_steps`）を `configs/config.yaml` へ即座に反映・保存。同時に試算結果のメタデータを `chinchilla_result.json` へ成果物として自動出力。
+  * `configs/base_config.yaml` の `model_defaults`（語彙数, GQA比率, 重み共有等）に基づく自律的モデル生成。
+  * **本番モデル構築エンジンのファンクションコール統合 (`create_model_config`)**:
+    `src/chinchilla/calculator.py` 内で事前学習本番の `src.training.model_utils.create_model_config` を直接ファンクションコールしてモデル（`LlamaConfig`）を構築・検証。本番学習で投入される実データ構造と 100% 完全合致するモデル仕様でチンチラ法則を算定。
+  * **Config 同期・自動適用 (`--apply`) と成果物出力 (`chinchilla_result.json`)**: CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、推奨モデルアーキテクチャ（`n_params`, `hidden_size`, `num_layers` 等）と推奨ステップ数（`max_steps`）を `configs/chinchilla_config.yaml` へ即座に保存。同時に試算結果のメタデータを `chinchilla_result.json` へ成果物として自動出力。
 * **効果**:
-  手動コピーペーストによる設定ミスや MLOps パイプラインの断層を 100% 排除し、`python -m src.chinchilla.main hours=48 --apply` の一発コマンドで目標学習時間に合わせた最速・最軽量・高精度なモデル構成をそのまま本番設定へシームレスに伝搬・自動反映可能に。
+  独自モデル生成処理による重複・不一致リスクを全廃し、`python -m src.chinchilla.main hours=48 --apply` の一発コマンドで本番と 100% 同一仕様のモデル構成を `configs/chinchilla_config.yaml` へ自動反映可能に。

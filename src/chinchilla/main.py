@@ -153,16 +153,17 @@ def main():
                         "num_attention_heads": arch["num_attention_heads"],
                         "num_key_value_heads": arch["num_key_value_heads"],
                         "intermediate_size": arch["intermediate_size"],
-                        "rope_theta": 10000.0,
-                        "vocab_size": 32000,
-                        "attn_implementation": "sdpa",
-                        "tie_word_embeddings": True,
+                        "rope_theta": arch.get("rope_theta", 10000.0),
+                        "vocab_size": arch.get("vocab_size", 32000),
+                        "attn_implementation": arch.get("attn_implementation", "sdpa"),
+                        "tie_word_embeddings": arch.get("tie_word_embeddings", True),
                     },
                 },
                 "training": {
                     "max_steps": target_res["estimated_total_steps"],
                 },
             }
+
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(chinchilla_cfg, f, default_flow_style=False, sort_keys=False)
 
