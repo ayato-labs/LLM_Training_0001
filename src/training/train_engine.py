@@ -475,7 +475,6 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         num_train_epochs=num_epochs,
         lr_scheduler_type=hf_scheduler_type,  # constant_cosine/step_law 時は cosine (後で上書き)
         warmup_steps=warmup_steps,
-        warmup_ratio=warmup_ratio if warmup_steps == 0 else 0.0,
         weight_decay=hpo_config.get("weight_decay", 0.1),
         adam_beta2=hpo_config.get("beta2", 0.95),
         max_grad_norm=hpo_config.get("grad_clip", 1.0),
