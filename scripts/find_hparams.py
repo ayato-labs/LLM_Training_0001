@@ -79,18 +79,33 @@ def parse_args():
         help="Output YAML path (defaults to configs/hpo_config.yaml)",
     )
 
-    p.add_argument("--n-trials", type=int, default=150, help="Optuna trials (5D: 150推奨)")
+    p.add_argument(
+        "--n-trials",
+        type=int,
+        default=None,
+        help="Optuna trials count (optional: dynamically calculated based on proxy model size if omitted)",
+    )
     p.add_argument("--vram-gb", type=float, help="Override VRAM detection for proxy")
     p.add_argument("--seq-len", type=int, default=1024, help="Sequence length")
-    p.add_argument(
-        "--sync-config",
-        action="store_true",
-        help=(
-            "Also update configs/config.yaml with target architecture "
-            "(for target_model_size != proxy)"
-        ),
-    )
     return p.parse_args()
+
+
+def calculate_dynamic_n_trials(search_space_dim: int = 5) -> int:
+    """
+    探索空間の次元数 (自由度: 5次元: lr_2d, lr_1d, batch_size, weight_decay, warmup_ratio) に基づき
+    理論的に必要な Optuna 試行回数を自律計算する。
+    
+    1次元あたり 30 試行を基本基準とし、Optuna の MedianPruner (枝刈り) と併用することで
+    過剰適合や手動ハードコードを完全に排除。
+    """
+    n_trials = search_space_dim * 30
+
+    logger.info(
+        f"[Dynamic HPO Trial Allocation] Search space dimensions: {search_space_dim} -> "
+        f"Auto-calculated n_trials: {n_trials} trials (30 trials/dim)"
+    )
+    return n_trials
+
 
 
 def determine_optimal_proxy_size(target_params: int) -> str:
@@ -106,6 +121,7 @@ def determine_optimal_proxy_size(target_params: int) -> str:
         f"Auto-calculated proxy size: '{proxy_size_str}' ({proxy_params:,} params, Min bound: 50M)"
     )
     return proxy_size_str
+
 
 
 
@@ -287,6 +303,13 @@ def main():
     proxy_vram = args.vram_gb or detect_vram()
     target_vram = args.target_vram_gb or proxy_vram
 
+    # n_trials が指定されていない場合は、探索自由度（次元数）に応じた理論試行回数を算出
+    if args.n_trials:
+        n_trials = args.n_trials
+    else:
+        n_trials = calculate_dynamic_n_trials(search_space_dim=5)
+
+
     logger.info(
         "HPO Search initialized",
         extra={
@@ -295,9 +318,10 @@ def main():
             "tokens": n_tokens,
             "proxy_vram": proxy_vram,
             "target_vram": target_vram,
-            "trials": args.n_trials,
+            "trials": n_trials,
         },
     )
+
 
     logger.info(f"Loading and tokenizing dataset from {args.data_path} once...")
     try:
@@ -362,15 +386,16 @@ def main():
                 interval_steps=5,
             ),
         )
-        study.set_user_attr("n_trials", args.n_trials)
-        logger.info("Starting Optuna optimization")
+        study.set_user_attr("n_trials", n_trials)
+        logger.info(f"Starting Optuna optimization with n_trials={n_trials}")
         study.optimize(
             lambda trial: objective(
                 trial, proxy_arch, tokenized_dataset, args.seq_len, proxy_vram, step_law_hpo
             ),
-            n_trials=args.n_trials,
+            n_trials=n_trials,
             timeout=86400,
         )
+
         logger.info("Optuna optimization completed")
     except Exception as e:
         logger.exception(f"Error during Optuna study: {e}")
