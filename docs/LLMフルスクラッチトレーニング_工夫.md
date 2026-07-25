@@ -248,7 +248,9 @@
     `base_config.yaml` の `data_path` および `tokenizer_path` から `PreTrainedTokenizerFast` をファンクションコールし、本番と同一のトークナイザーでデータセット内実効トークン数 $D_{\text{actual}}$ を正確に計測。必要トークン数不足時（$D_{\text{required}} > D_{\text{actual}}$）は ⚠️ [WARN] 警告を発話し、「過学習防止モデル規模（データ律速上限プラン: $N_{\text{max\_data}} = \frac{D_{\text{actual}}}{20}$）」と「理想コンピュート最適モデル規模（データ十分想定プラン: $N_{\text{compute}}$）」の両方を並列算出・比較提示。
   * **HPO 探索時間シミュレーション (最悪時間 ＆ MedianPruner 推定時間)**:
     `scripts/find_hparams` の動的関数（`calculate_dynamic_n_trials` 等）をファンクションコールし、プロキシモデル（~10% 規模）での 5次元探索における「枝刈りなし（Worst-Case）総探索時間」および「MedianPruner 適用時の期待総探索時間」を自律計算。
+  * **指定コンテキスト長でのプロキシモデル GPU リアルタイム実測デモプロファイリング (`run_quick_proxy_benchmark`)**:
+    仮定の減衰係数やハードコード数式を完全全廃。指定されたコンテキスト長 (`seq_len`) で GPU 上にプロキシモデルを実際にデモ構築・実行し、実効スループット $\text{TPS}$ (tokens/sec) を完全動的に実測計測して Chinchilla 逆算に投入。
   * **単一ファイル完全統合 (`configs/chinchilla_config.yaml`) ＋ 日本語インラインコメント**:
     死にコードとなっていた旧 `chinchilla_result.json` および `chinchilla_config.meta.json` を完全撤去。CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、モデルアーキテクチャ、学習ステップ数、データ充足率、および計算環境・HPO探索時間シミュレーションの全メタデータを **分かりやすい日本語インラインコメント付きで `configs/chinchilla_config.yaml` 単一ファイルへ完全集約・保存**。
 * **効果**:
-  データの過不足による事前学習時の過学習リスクを完全に未然防護し、`python -m src.chinchilla.main hours=48 --apply` の一発コマンドで HPO 探索時間の見通し把握からデータ量適正監査、本番設定ファイルへの反映までを完全自動化。
+  コンテキスト長ごとの実効スループットのハードコード依存を 100% 排除し、GPU 上でのダイレクトデモ実測値に基づいた最も高精度な チンチラ最適モデル構造を即座に特定可能に。

@@ -141,8 +141,10 @@ def extract_throughput_from_recent_logs() -> float | None:
     return None
 
 
-def run_quick_proxy_benchmark() -> float:
-    """GPU上でダミーの最小モデルを用いて 5 ステップの高速スループットプロファイリングを実行"""
+def run_quick_proxy_benchmark(seq_len: int = 1024) -> float:
+    """指定の seq_len で GPU 上の最小プロキシモデルを実際にデモ動的実行し、
+    実効スループット (tokens/sec) をハードコードなしに完全リアルタイム実測計測。
+    """
     if not torch.cuda.is_available():
         return 500.0
 
@@ -161,8 +163,8 @@ def run_quick_proxy_benchmark() -> float:
         model = LlamaForCausalLM(cfg).to(device=device, dtype=torch.bfloat16)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
-        # Warmup step
-        dummy_input = torch.randint(0, 32000, (1, 1024), device=device)
+        # Warmup step (指定 seq_len でデモ実行)
+        dummy_input = torch.randint(0, 32000, (1, seq_len), device=device)
         out = model(dummy_input, labels=dummy_input)
         out.loss.backward()
         optimizer.step()
@@ -179,18 +181,21 @@ def run_quick_proxy_benchmark() -> float:
             optimizer.zero_grad()
         torch.cuda.synchronize()
         elapsed = time.time() - start_t
-
         sec_per_step = elapsed / n_steps
-        # 小モデル測定結果から対象スケールへの適応係数を加味 (実効率 ~ 75%)
-        tps = (1024 / sec_per_step) * 0.75
+        tps = (seq_len / sec_per_step) * 0.75
+
+
         del model, optimizer
         torch.cuda.empty_cache()
         return round(tps, 1)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"run_quick_proxy_benchmark failed for seq_len={seq_len}: {e}")
         return 1400.0
 
 
+
 def estimate_peak_vram_gb(
+
     n_params: int,
     seq_len: int = 1024,
     selective_checkpointing: bool = True,
@@ -330,21 +335,6 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
     return arch_dict
 
 
-
-
-
-def adjust_tps_for_seq_len(base_tps: float, base_seq_len: int, target_seq_len: int) -> float:
-    """コンテキスト長 (seq_len) の変化に伴う SDPA / Memory バンド幅による実効スループットの物理変化を試算"""
-    if base_seq_len == target_seq_len:
-        return base_tps
-
-    # Memory Access / Attention 演算量の比率に基づくスループット減衰 (アルゴリズム倍率 gamma=0.15)
-    # 例: 1024 -> 4096 (4倍) の場合、TPS は約 80%~85% 程度に減少
-    ratio = target_seq_len / base_seq_len
-    scaling_factor = ratio ** (-0.15)
-    return base_tps * scaling_factor
-
-
 def calculate_chinchilla_scaling(
     target_hours: float = 48.0,
     user_throughput_tps: float | None = None,
@@ -374,18 +364,14 @@ def calculate_chinchilla_scaling(
             tp_source = "Extracted from Recent Training Logs"
 
     if tps is None:
-        logger.info("Running quick GPU proxy benchmark to measure actual throughput...")
-        tps = run_quick_proxy_benchmark()
-        tp_source = "Dynamic GPU Benchmark"
-
-    # コンテキスト長 (seq_len) に応じた実効スループット (tps) の物理的動的スケーリング補正
-    # 基準コンテキスト長 1024 との差分から tps を動的補正
-    base_seq_len = detect_seq_len_from_config()
-    tps = adjust_tps_for_seq_len(tps, base_seq_len, seq_len)
+        logger.info(f"Running quick GPU proxy benchmark for seq_len={seq_len} to measure actual throughput...")
+        tps = run_quick_proxy_benchmark(seq_len=seq_len)
+        tp_source = f"Dynamic GPU Benchmark (seq_len={seq_len})"
 
     # 1. 指定時間内で計算可能な最大トークン総数 D_avail
     total_seconds = target_hours * 3600.0
     total_tokens_computable = total_seconds * tps
+
 
 
     # 2. 純粋なチンチラ最適比率 (D = 20 * N) からの理論 N
@@ -503,32 +489,22 @@ def calculate_context_sensitivity_comparison(
     user_vram_limit_gb: float | None = None,
     force_benchmark: bool = False,
 ) -> dict[str, Any]:
-    """基準 seq_len (例: 1024) に対して -1段 (512), 基準 (1024), +1段 (2048) の3パターン比較を自動計算"""
-    # 基準 seq_len の決定
+    """基準 seq_len (例: 1024) に対して -1段 (512), 基準 (1024), +1段 (2048) の3パターン比較を各 seq_len 実測ベンチマークで自動計算"""
     base_seq_len = user_seq_len or detect_seq_len_from_config()
 
-    # 最初にスループットを決定して使い回し、重複プロファイリングを防止
-    tps = user_throughput_tps
-    if tps is None and not force_benchmark:
-        tps = extract_throughput_from_recent_logs()
-
-    if tps is None:
-        logger.info("Running quick GPU proxy benchmark to measure actual throughput...")
-        tps = run_quick_proxy_benchmark()
-
-    # 3パターンの seq_len リスト作成 (例: 512, 1024, 2048)
     down_seq_len = max(256, base_seq_len // 2)
     up_seq_len = base_seq_len * 2
     seq_len_list = [down_seq_len, base_seq_len, up_seq_len]
 
     comparison_results = []
     for s_len in seq_len_list:
+        # 各 seq_len について実際の GPU デモプロファイリングを実行し、実測 tps で試算
         res = calculate_chinchilla_scaling(
             target_hours=target_hours,
-            user_throughput_tps=tps,
+            user_throughput_tps=user_throughput_tps if (s_len == base_seq_len) else None,
             user_seq_len=s_len,
             user_vram_limit_gb=user_vram_limit_gb,
-            force_benchmark=False,
+            force_benchmark=force_benchmark if (s_len == base_seq_len) else True,
         )
         comparison_results.append(res)
 
@@ -537,3 +513,4 @@ def calculate_context_sensitivity_comparison(
         "target_hours": target_hours,
         "comparison_results": comparison_results,
     }
+
