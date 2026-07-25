@@ -1,0 +1,41 @@
+# @package _global_
+# ベース固定設定（インフラ・データ・精度・乱数シード等）
+
+seed: 42
+precision: "bf16"
+output_dir: "models/output"
+resume_from_checkpoint: null
+deterministic: false
+
+# データ設定
+data_path: "data/dataset.jsonl"
+val_data_path: null  # 存在すれば評価有効化
+tokenizer_path: "data/tokenizer.json"
+
+# 学習実行制御デフォルト
+training:
+  seq_len: 1024
+  num_epochs: 1
+  save_steps: 500
+  eval_steps: 2500
+  logging_steps: 10
+  torch_compile: false
+  use_liger_kernel: true
+  dataloader_pin_memory: true
+  dataloader_num_workers: 0
+  allow_tf32: true
+  torch_empty_cache_steps: 100
+  dataloader_prefetch_factor: 2
+  packing: true
+  optim: "adamw_bnb_8bit"
+
+# ハードウェア最適化設定
+torch_compile: false
+use_liger_kernel: true
+selective_checkpointing: true
+
+# トークナイズ並列化設定
+tokenization:
+  windows_max_workers: null
+  windows_batch_size: 1000
+  fallback_single_thread: true

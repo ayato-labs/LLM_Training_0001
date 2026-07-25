@@ -74,8 +74,11 @@ def parse_args():
     )
     p.add_argument("--data-path", required=True, help="Path to training dataset (JSONL)")
     p.add_argument(
-        "--output", required=True, help="Output YAML path (e.g., configs/hparams_150M.yaml)"
+        "--output",
+        default="configs/hpo_config.yaml",
+        help="Output YAML path (defaults to configs/hpo_config.yaml)",
     )
+
     p.add_argument("--n-trials", type=int, default=150, help="Optuna trials (5D: 150推奨)")
     p.add_argument("--vram-gb", type=float, help="Override VRAM detection for proxy")
     p.add_argument("--seq-len", type=int, default=1024, help="Sequence length")
@@ -421,10 +424,19 @@ def main():
         logger.exception(f"Error calculating scaled derived parameters: {e}")
         raise
 
+    # 6. YAML出力 (configs/hpo_config.yaml 形式に統一)
     try:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        with open(args.output, "w") as f:
-            yaml.dump(output, f, default_flow_style=False, sort_keys=False)
+
+        # Hydraレイヤー合成用ヘッダーコメントを追加
+        hpo_yaml_content = (
+            "# @package _global_\n"
+            "# HPO 探索 (scripts.find_hparams / Step Law + Optuna) 成果物 (最適ハイパーパラメータ)\n\n"
+            + yaml.dump(output, default_flow_style=False, sort_keys=False)
+        )
+
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(hpo_yaml_content)
         logger.info(f"Configuration saved to {args.output}")
     except Exception as e:
         logger.exception(f"Error saving configuration to {args.output}: {e}")
@@ -489,12 +501,6 @@ def main():
     except Exception as e:
         logger.warning(f"Failed to save run metadata: {e}")
 
-    if args.sync_config:
-        try:
-            sync_config_yaml(target_arch, target_size, args.output)
-            logger.info(f"Synced configs/config.yaml with {target_size} architecture")
-        except Exception as e:
-            logger.warning(f"Failed to sync config.yaml: {e}")
 
 
 if __name__ == "__main__":

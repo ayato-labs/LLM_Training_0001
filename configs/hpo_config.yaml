@@ -1,0 +1,17 @@
+# @package _global_
+# HPO 探索 (scripts.find_hparams / Step Law + Optuna) 成果物 (最適ハイパーパラメータ)
+
+training:
+  max_lr_2d: 0.0025
+  max_lr_1d: 0.0003
+  batch_size_seqs: 16
+  per_device_batch_size: 4
+  grad_accum_steps: 4
+  weight_decay: 0.1
+  beta2: 0.95
+  grad_clip: 1.0
+  warmup_ratio: 0.03
+  constant_ratio: 0.1
+  warmup_steps: 50
+  lr_scheduler_type: "constant_cosine"
+  num_cycles: 0.5

@@ -11,8 +11,10 @@
 
 import sys
 from pathlib import Path
+import yaml
 
 from src.common.logger import logger
+
 from src.chinchilla.calculator import (
     calculate_chinchilla_scaling,
     calculate_context_sensitivity_comparison,
@@ -137,35 +139,43 @@ def main():
         json.dump(export_data, f, indent=2, ensure_ascii=False)
     logger.info(f"Saved Chinchilla calculation result to {json_path}")
 
-    # 5. --apply フラグ指定時、または適用命令時に configs/config.yaml を自動更新
+    # 5. --apply フラグ指定時、または適用命令時に configs/chinchilla_config.yaml を自動更新
     should_apply = args.get("apply") == "true" or "--apply" in sys.argv
     if should_apply:
-        config_path = Path("configs/config.yaml")
-        if config_path.exists():
-            try:
-                from omegaconf import OmegaConf
+        config_path = Path("configs/chinchilla_config.yaml")
+        try:
+            chinchilla_cfg = {
+                "model": {
+                    "target_params": arch["n_params"],
+                    "llama": {
+                        "hidden_size": arch["hidden_size"],
+                        "num_hidden_layers": arch["num_hidden_layers"],
+                        "num_attention_heads": arch["num_attention_heads"],
+                        "num_key_value_heads": arch["num_key_value_heads"],
+                        "intermediate_size": arch["intermediate_size"],
+                        "rope_theta": 10000.0,
+                        "vocab_size": 32000,
+                        "attn_implementation": "sdpa",
+                        "tie_word_embeddings": True,
+                    },
+                },
+                "training": {
+                    "max_steps": target_res["estimated_total_steps"],
+                },
+            }
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(chinchilla_cfg, f, default_flow_style=False, sort_keys=False)
 
-                cfg = OmegaConf.load(config_path)
-                cfg.model.target_params = arch["n_params"]
-                cfg.model.llama.hidden_size = arch["hidden_size"]
-                cfg.model.llama.num_hidden_layers = arch["num_hidden_layers"]
-                cfg.model.llama.num_attention_heads = arch["num_attention_heads"]
-                cfg.model.llama.num_key_value_heads = arch["num_key_value_heads"]
-                cfg.model.llama.intermediate_size = arch["intermediate_size"]
-                cfg.training.max_steps = target_res["estimated_total_steps"]
-
-                OmegaConf.save(cfg, config_path)
-                logger.info(
-                    f"Successfully applied Chinchilla recommended architecture to {config_path} "
-                    f"(target_params={arch['n_params']:,}, max_steps={target_res['estimated_total_steps']:,})"
-                )
-                print(f"\n[APPLIED] Successfully synced Chinchilla recommendation to {config_path}!")
-            except Exception as e:
-                logger.error(f"Failed to apply Chinchilla config to {config_path}: {e}")
-        else:
-            logger.warning(f"Config file not found at {config_path}. Skipping --apply.")
+            logger.info(
+                f"Successfully applied Chinchilla recommended architecture to {config_path} "
+                f"(target_params={arch['n_params']:,}, max_steps={target_res['estimated_total_steps']:,})"
+            )
+            print(f"\n[APPLIED] Successfully saved Chinchilla recommendation to {config_path}!")
+        except Exception as e:
+            logger.error(f"Failed to apply Chinchilla config to {config_path}: {e}")
     else:
-        print("\n[NOTE] Run with 'apply=true' or '--apply' to automatically update configs/config.yaml")
+        print("\n[NOTE] Run with 'apply=true' or '--apply' to automatically update configs/chinchilla_config.yaml")
+
 
 
 if __name__ == "__main__":
