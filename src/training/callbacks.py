@@ -58,7 +58,12 @@ class DetailedLoggingCallback(TrainerCallback):
         current_time = time.time()
 
         if self.step_count % self.log_every_n_steps == 0:
-            loss = state.log_history[-1].get("loss") if state.log_history else None
+            loss = None
+            if state.log_history:
+                for entry in reversed(state.log_history):
+                    if "loss" in entry:
+                        loss = entry["loss"]
+                        break
             lr_val = "N/A"
             if self.trainer and self.trainer.optimizer:
                 lr_val = f"{self.trainer.optimizer.param_groups[0]['lr']:.2e}"
