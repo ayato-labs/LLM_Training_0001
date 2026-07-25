@@ -72,7 +72,12 @@ def parse_args():
         type=float,
         help="Target model VRAM (GB) for batch size calculation (defaults to proxy VRAM)",
     )
-    p.add_argument("--data-path", required=True, help="Path to training dataset (JSONL)")
+    p.add_argument(
+        "--data-path",
+        default=None,
+        help="Path to training dataset (JSONL). Auto-loaded from configs/base_config.yaml if omitted.",
+    )
+
     p.add_argument(
         "--output",
         default="configs/hpo_config.yaml",
@@ -297,11 +302,24 @@ def main():
     else:
         proxy_size = determine_optimal_proxy_size(target_arch["n_params"])
 
-    proxy_arch = get_base_config(proxy_size)
+    data_path = args.data_path
+    if not data_path:
+        base_cfg_path = Path("configs/base_config.yaml")
+        if base_cfg_path.exists():
+            try:
+                with open(base_cfg_path, "r", encoding="utf-8") as f:
+                    cfg_b = yaml.safe_load(f)
+                if isinstance(cfg_b, dict) and "data_path" in cfg_b and cfg_b["data_path"]:
+                    data_path = str(cfg_b["data_path"])
+            except Exception:
+                pass
+        if not data_path:
+            data_path = "data/dataset.jsonl"
 
-    n_tokens = estimate_tokens(args.data_path)
+    n_tokens = estimate_tokens(data_path)
     proxy_vram = args.vram_gb or detect_vram()
     target_vram = args.target_vram_gb or proxy_vram
+
 
     # n_trials が指定されていない場合は、探索自由度（次元数）に応じた理論試行回数を算出
     if args.n_trials:
