@@ -1,10 +1,13 @@
 import json
 import os
+import warnings
 from pathlib import Path
 
 import torch
 import torch._dynamo
 from datasets import disable_caching, load_dataset
+
+warnings.filterwarnings("ignore", message=".*use_return_dict.*")
 
 # Linuxの /tmp (tmpfs RAMディスク) の容量不足による [Errno 28] OOM を回避するため、
 # 一時ディレクトリを十分な空き容量のあるローカルディスク（ext4）上に強制指定

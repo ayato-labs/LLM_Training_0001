@@ -2,11 +2,14 @@
 main.py からは import されない。scripts/find_hparams.py からのみ使用。
 """
 
+import warnings
 import optuna
 import torch
 from transformers import TrainerCallback
 
 from src.common.logger import logger
+
+warnings.filterwarnings("ignore", message=".*use_return_dict.*")
 
 # Use the unified training engine
 from src.training.train_engine import train as proxy_train
