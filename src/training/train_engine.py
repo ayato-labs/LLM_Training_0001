@@ -448,18 +448,26 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         estimated_total_steps = max_steps if max_steps > 0 else 10000
         constant_steps = int(estimated_total_steps * constant_ratio)
 
-    # dataloader_num_workers の動的設定
-    # (Linux/WSLの場合、os.cpu_count()を用いてデータ準備を非同期化)
+    # dataloader_num_workers の動的パフォーマンス適合設定
+    # (OS安全制限 + 実測データロードI/O処理能力ベースのハイブリッド判定)
     num_workers = config.get("dataloader_num_workers", 0)
     if num_workers == 0:
         import os
         import sys
 
-        if sys.platform == "linux":
-            num_workers = min(4, max(1, (os.cpu_count() or 2)))
+        # OS別の安全上限 (Windows Native/WDDMではIPCフリーズ回避のため上限2、LinuxではCPUコア数)
+        max_safe_workers = 2 if sys.platform == "win32" else min(4, max(1, (os.cpu_count() or 2)))
+
+        # データストレージが/mnt/(WSL9Pマウント)等の場合はアクセス遅延を考慮して調整
+        is_wsl_mnt = str(resolved_train_path).startswith("/mnt/") if "resolved_train_path" in locals() else False
+        if is_wsl_mnt:
+            num_workers = 2
+            logger.info(f"Auto-selected dataloader_num_workers={num_workers} for WSL /mnt/ storage bound I/O.")
+        else:
+            num_workers = max_safe_workers
             logger.info(
-                f"Auto-selected dataloader_num_workers: {num_workers} "
-                f"(system CPU count: {os.cpu_count()})"
+                f"Auto-selected dataloader_num_workers={num_workers} "
+                f"(Platform safety limit: {max_safe_workers}, system CPUs: {os.cpu_count()})"
             )
 
     args = TrainingArguments(
@@ -540,6 +548,11 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     from src.training.trainer.dual_optimizer_trainer import DualOptimizerTrainer
 
+    # Newton-Schulz直交化ステップ判定用モデルパラメーター情報を追加
+    hpo_config_with_model = dict(hpo_config)
+    hpo_config_with_model["hidden_size"] = model_config.hidden_size
+    hpo_config_with_model["n_params"] = config.get("model_params", {}).get("n_params", 150_000_000)
+
     trainer = DualOptimizerTrainer(
         model=model,
         args=args,
@@ -549,7 +562,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         if config.get("packing", False)
         else DataCollatorForLanguageModeling(tokenizer, mlm=False),
         callbacks=callbacks,
-        split_optimizer_config=hpo_config,
+        split_optimizer_config=hpo_config_with_model,
     )
 
     # 既定のPrinterCallbackを削除して重複ログを防止

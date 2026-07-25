@@ -40,7 +40,20 @@ class SplitOptimizer(Optimizer):
                 else:
                     adamw_decay_params.append(param)
 
-        self.muon = Muon(muon_params, lr=config.get("max_lr_2d", 3e-4))
+        from src.training.optimizers.muon import Muon, get_optimal_newton_schulz_steps
+
+        hidden_size = config.get("hidden_size", 768)
+        n_params = config.get("n_params", 150_000_000)
+        ns_steps = config.get(
+            "newton_schulz_steps",
+            get_optimal_newton_schulz_steps(hidden_size=hidden_size, n_params=n_params),
+        )
+
+        self.muon = Muon(
+            muon_params,
+            lr=config.get("max_lr_2d", 3e-4),
+            ns_steps=ns_steps,
+        )
 
         adamw_param_groups = [
             {"params": adamw_decay_params, "weight_decay": config.get("weight_decay", 0.1)},
@@ -81,7 +94,7 @@ class SplitOptimizer(Optimizer):
 
         logger.info(
             f"SplitOptimizer initialized: "
-            f"Muon(2D): {len(muon_params)} params, "
+            f"Muon(2D): {len(muon_params)} params (ns_steps={ns_steps}), "
             f"AdamW(Decay): {len(adamw_decay_params)} params, "
             f"AdamW(NoDecay): {len(adamw_nodecay_params)} params, "
             f"lr_2d={config.get('max_lr_2d', 3e-4):.2e}, "

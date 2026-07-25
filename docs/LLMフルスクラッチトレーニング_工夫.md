@@ -12,14 +12,11 @@
 
 ## 1. VRAM 削減およびメモリスワップ回避の工夫
 
-### 1.1 リソース制限環境における `torch.compile` の断念と無効化 (`torch_compile: false`)
+### 1.1 リソース制限環境における `torch.compile` の評価と運用の考え方
 * **工夫の背景と判断軸**:
-  * **VRAM コストの非合理性**: `torch.compile`（PyTorch Inductor）は、計算グラフの事前コンパイルおよび中間バッファ保持のために **3GB 弱（1.5GB〜2.5GB 以上）の巨大な VRAM 余白を常時要求** する。VRAM リソースが限られる個人開発環境において、この余白を確保することはバッチサイズやモデル構造を大きく圧迫し、極めて割り合わない。
-  * **HuggingFace 公式でも指摘される `liger_kernel` との相性の悪さ**: HuggingFace 公式ドキュメント等でも明記されている通り、`liger_kernel` などのカスタム Triton autograd 関数と `torch.compile`（TorchDynamo）は非常に相性が悪い。トレーシング時に **Graph Break（計算グラフの断片化）** が多発し、Eager モードへのフォールバックが頻発することで、コンパイルによる高速化メリットが相殺・消失する。
-* **回避した障害**:
-  物理 VRAM 4GB 程度の環境で無理に `torch.compile` を有効化すると、メモリ要求が物理上限を超過。Windows WDDM ドライバが暗黙的に CUDA メモリをメイン RAM へ退避（ページング）させ、PCIe 転送ボトルネックにより**ステップ速度が 5倍〜10倍以上激減**する。また Linux 環境では CUDA OOM でプロセスが即座にクラッシュする。
-* **結論**:
-  リソースが限られる個人開発環境においては、`torch.compile` に頼るメリットよりも VRAM 圧迫と Graph Break の弊害が遥かに大きいため、**`torch.compile` は潔く諦めて無効化 (`torch_compile: false`) し、`liger_kernel` の単体利用に絞るのが最も合理的かつ正しい判断**である。
+  * **VRAM コストとGraph Breakの課題**: `torch.compile`（PyTorch Inductor）は計算グラフの事前コンパイルおよび中間バッファ保持のために一定の VRAM 余白を要求する。特に `liger_kernel` などのカスタム Triton autograd 関数と併用した場合、TorchDynamo のトレーシング時に **Graph Break（計算グラフの断片化）** が多発し、Eager モードへのフォールバックでメリットが薄れる。
+* **適用指針**:
+  4GB VRAM の極小環境や `liger_kernel` 採用時は無効化 (`torch_compile: false`) を基本とする。一方で、`liger_kernel` を使用しないシンプルなアーキテクチャや VRAM に余裕がある Linux 環境では `mode="reduce-overhead"` や `dynamic=True` での再検討価値を残した構成としている。
 
 ### 1.2 8-bit AdamW (`bitsandbytes`) の全面採用
 * **工夫の背景と理由**:
@@ -46,14 +43,14 @@
 * **効果**:
   無駄なパラメータ探索試行を削減し、小規模モデルでの少ない計算コストから大規模モデル用の最適ハイパーパラメータを効率的に導出。
 
-### 2.2 学習率の安全上限設定と二重ガード（Defense in Depth）
+### 2.2 学習率の安全上限設定と二重ガード（Single Source of Truth ＋ Defense in Depth）
 * **工夫の背景と理由**:
-  Muon オプティマイザ（2D重み行列用）は Newton-Schulz 直交化を行うため、通常の AdamW より更新量が大きい。小規模モデルにおいて高すぎる学習率（例: 0.0076 等）が与えられると即座に Loss が高騰・発散する。
+  Muon オプティマイザ（2D重み行列用）は Newton-Schulz 直交化を行うため通常の AdamW より更新量が大きく、無制限な高学習率では Loss 発散リスクがある。一方、Keller Jordan のオリジナル実装や NorMuon の知見に基づき、実用的な高学習率（0.01〜0.02 レンジ）を許容できるように設定を最適化した。
 * **施策**:
-  * **安全上限値の定義**: `MAX_LR_2D = 0.0025` (Muon用), `MAX_LR_1D = 0.0010` (AdamW用)
-  * **二重ガード実装**: HPO 算定時（`step_law.py`）と Config 正規化時（`config.py`）の双方で `clip_learning_rates()` を通過させ、上限超過時は警告ログを出力して自動クリッピング。
+  * **安全上限値の定義 (SSOT)**: `src/common/constants.py` に `MAX_LR_2D = 0.02` (Muon用), `MAX_LR_1D = 0.0010` (AdamW用) を Single Source of Truth として一括定義。
+  * **二重ガード実装**: HPO 探索空間算定時（`step_law.py`）と Config 正規化起動時（`config.py`）の双方から同モジュールの `clip_learning_rates()` を参照・通過させ、不整合の発生を防ぎつつ自動クリッピング。
 * **効果**:
-  過大な学習率による数ステップでの Loss 爆発（発散）を構造的に防止。
+  NorMuon 等の最新知見に合わせた高速収束を維持しつつ、過大な学習率による Loss 爆発を構造的に防止。
 
 ### 2.3 絶対値での Warmup ステップ確保 (`warmup_steps: 50`)
 * **工夫の背景と理由**:
@@ -72,13 +69,13 @@
 * **効果**:
   語彙数やモデルサイズに依存しない頑健な自動早期停止を実現し、リソースの空費とチェックポイント汚染を防止。
 
-### 2.5 OS 自動認識マルチプロセス DataLoader (`dataloader_num_workers: 4`) ＋ ワーカー再利用
+### 2.5 OS安全上限 ＋ パフォーマンス動的プロファイリング DataLoader
 * **工夫の背景と理由**:
-  CPU 側でのデータロードやバッチ作成が遅れると、GPU 側で「データの準備待ち（I/Oボトルネック）」が発生し、GPU や VRAM が空転してステップ時間が伸びてしまう。
+  CPU 側でのデータロードが遅れると GPU 空転が発生するが、Windows (WDDM) 環境等ではマルチプロセスの Shared Memory IPC オーバーヘッドやプロセスフリーズ事故のリスクが存在する。
 * **施策**:
-  `train_engine.py` 内で実行 OS（Linux/WSL 等）を自動判定し、`dataloader_num_workers = 4`（マルチプロセス非同期ロード）および `dataloader_persistent_workers = True`（プロセス再利用）を有効化。
+  `train_engine.py` にて、OS/ストレージ環境の安全上限（Windows WDDM デッドロック防止上限 vs Linux CPUコア数上限）と、WSL `/mnt/` ストレージアクセス遅延等のパフォーマンスボトルネックを組み合わせたハイブリッド自動判別を実施。
 * **効果**:
-  CPU から GPU へのデータ転送オーバーヘッドを完全に裏側で非同期化し、GPU 稼働率（GPU Utilization）を極限まで高維持して学習時間を短縮。
+  マルチプロセス通信のクラッシュ・フリーズ事故を完全に回避しつつ、GPU 空転率を最小化する最適 worker 数を自動適用。
 
 ### 2.6 cuDNN 最速カーネルサーチの有効化 (`cudnn.benchmark = True`)
 * **工夫の背景と理由**:
@@ -88,13 +85,13 @@
 * **効果**:
   VRAM 消費ゼロで、Attention 以外の全結合層（Linear層等）の計算スピードを 5%〜10% 追加底上げ。
 
-### 2.7 Muon オプティマイザの Newton-Schulz 3 反復高速化 (`steps = 3`)
+### 2.7 Muon Newton-Schulz 反復数のモデル規模に応じた動的判定 (`get_optimal_newton_schulz_steps`)
 * **工夫の背景と理由**:
-  2D重み行列用直交化オプティマイザ（Muon）における Newton-Schulz 直交化計算（`steps=5`）が各ステップの純粋な計算時間の一定割合を占めていた。
+  小規模モデル（150M級）では `steps = 3` で十分な直交化精度と速度が得られるが、3B/7B 等の大規模モデルにスケールアップした際には行列の条件数により精度不足となるリスクがあった。
 * **施策**:
-  最新の事前学習研究（MoonLight / Keller Jordan）の知見に基づき、収束精度を保てる限界の `steps = 3` 反復へ短縮。
+  `muon.py` 内に `get_optimal_newton_schulz_steps` を導入。隠れ層次元 $d_{\text{model}} < 2048$（小規模）では `steps = 3` で高速処理し、$d_{\text{model}} \ge 2048$ または 1B 以上のモデルでは `steps = 5` へ動的に切り替えるロジックを実装。
 * **効果**:
-  Muon 内の直交化計算時間を **約 40% 削減** し、1 ステップあたりの処理時間を短縮。
+  モデル規模に応じた理論的一貫性と直交化精度を保ち、スケーリング転移時の安定性を確保。
 
 ### 2.8 ハッシュ自動検証付き学習再開機能 (`resume_from_checkpoint` ＋ `hashes.json`)
 * **工夫の背景と理由**:

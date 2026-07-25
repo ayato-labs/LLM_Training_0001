@@ -8,6 +8,17 @@ import torch
 from torch.optim import Optimizer
 
 
+def get_optimal_newton_schulz_steps(hidden_size: int = 768, n_params: int = 150_000_000) -> int:
+    """モデルスケール（隠れ層次元/パラメータ数）に応じた Newton-Schulz 最適反復数の算出。
+
+    小規模モデル（150M級 / hidden_size < 2048）: 高速化重視で steps = 3
+    中・大規模モデル（3B/7B級 / hidden_size >= 2048 または n_params >= 1B）: 直交化精度重視で steps = 5
+    """
+    if hidden_size >= 2048 or n_params >= 1_000_000_000:
+        return 5
+    return 3
+
+
 class Muon(Optimizer):
     """Muon optimizer for 2D parameters (weight matrices).
 
@@ -16,15 +27,24 @@ class Muon(Optimizer):
         lr: 学習率（推奨: max_lr_2d と同一）
         momentum: モメンタム係数（デフォルト: 0.95）
         nesterov: ネステロフモメンタム（デフォルト: True）
+        ns_steps: Newton-Schulz 反復数（Noneの場合はモデルサイズから自動動的判定）
     """
 
-    def __init__(self, params, lr: float = 3e-4, momentum: float = 0.95, nesterov: bool = True):
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
+    def __init__(
+        self,
+        params,
+        lr: float = 3e-4,
+        momentum: float = 0.95,
+        nesterov: bool = True,
+        ns_steps: int | None = None,
+    ):
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps or 3)
         super().__init__(params, defaults)
 
     @torch.no_grad()
     def step(self, closure=None):
         for group in self.param_groups:
+            ns_steps = group.get("ns_steps", 3)
             for p in group["params"]:
                 if p.grad is None or p.ndim != 2:
                     continue  # 1Dはスキップ（AdamW担当）
@@ -46,7 +66,7 @@ class Muon(Optimizer):
                     update = buf
 
                 # Newton-Schulz直交化（JITコンパイル済み関数で高速化）
-                update = zeropower_via_newtonschulz(update, steps=3)
+                update = zeropower_via_newtonschulz(update, steps=ns_steps)
 
                 # パラメータ更新
                 p.add_(update, alpha=-group["lr"])

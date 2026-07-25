@@ -3,9 +3,10 @@
 from src.common.logger import logger
 
 # Learning Rate 安全上限値 (Step Law & Muon/AdamW 安定性基準)
-# Muon(2D): Newton-Schulz直交化に伴う高勾配更新に対応するため上限を 0.0025 に制限
+# Muon(2D): Keller Jordan実装/NorMuonの知見を踏まえ上限を 0.02 に緩和
+# (二重ガード設計 / Single Source of Truth: ConfigおよびStepLaw双方から本モジュールを参照)
 # AdamW(1D): 1次元パラメータ(Embedding/Norm/Bias)用の安全上限 0.0010
-MAX_LR_2D = 0.0025
+MAX_LR_2D = 0.02
 MAX_LR_1D = 0.0010
 
 
