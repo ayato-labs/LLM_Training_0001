@@ -4,9 +4,7 @@ Offline Hyperparameter Search Script
 分離された探索フェーズ。学習パイプライン(main.py)からは完全独立。
 
 Usage:
-  python -m scripts.find_hparams --model-size 150M \\
-    --data-path data/dataset.jsonl \\
-    --output configs/hparams_150M.yaml --n-trials 20
+  python -m scripts.find_hparams --data-path data/dataset.jsonl --output configs/hparams_150M.yaml
 """
 
 import argparse
@@ -28,17 +26,20 @@ os.environ["TMPDIR"] = str(Path("models/output/tmp").resolve())
 Path("models/output/tmp").mkdir(parents=True, exist_ok=True)
 
 # PyTorch CUDA メモリアロケータ設定（断片化対策・OOM緩和）
-# expandable_segments: True で小さな割り当てをまとめて管理し、VRAM断片化を抑制
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 
 disable_caching()
-
 
 from src.common.logger import log_exceptions, log_function_call, logger
 from src.hpo.hpo_manager import create_search_space, objective
 from src.hpo.step_law import compute_hpo_for_target
 from src.training.config import _detect_vram as detect_vram
-from src.training.model_utils import compute_file_hash, get_optimal_num_proc, parallel_tokenize
+from src.training.model_utils import (
+    calculate_optimal_batch_split,
+    compute_file_hash,
+    get_optimal_num_proc,
+    parallel_tokenize,
+)
 
 
 def _estimate_vram_from_arch(
@@ -46,11 +47,8 @@ def _estimate_vram_from_arch(
 ) -> float:
     """アーキテクチャ情報から理論 VRAM 使用量を簡易推定 (GB)"""
     n_params = arch["n_params"]
-    # bf16前提: weights 2B + grads 2B + optimizer 8bit 2B = 6B/param
     model_bytes = n_params * 6
-    # アクティベーション (gradient_checkpointing 前提)
     activation = batch_seqs * seq_len * arch["hidden"] * arch["layers"] * 2
-    # システムオーバーヘッド
     cuda_overhead = 0.7 + (0.3 if "linux" in sys.platform else 0.0)
     return (model_bytes + activation) / (1024**3) + cuda_overhead
 
@@ -59,14 +57,15 @@ def parse_args():
     p = argparse.ArgumentParser(description="Offline HPO for LLM Training")
     p.add_argument(
         "--proxy-model-size",
-        choices=["50M", "150M", "3B", "7B"],
-        default="150M",
-        help="Model size to run HPO proxy search on (defaults to 150M)",
+        type=str,
+        default=None,
+        help="Optional proxy model size for HPO (e.g. 50M, 150M, 1.5B). Auto-calculated via 10%% golden ratio if omitted.",
     )
     p.add_argument(
         "--target-model-size",
-        choices=["50M", "150M", "3B", "7B"],
-        help="Final target model size (defaults to proxy size if not specified)",
+        type=str,
+        default=None,
+        help="Optional target model size (e.g. 150M, 3B, 7B). Auto-resolved from config.yaml if omitted.",
     )
     p.add_argument(
         "--target-vram-gb",
@@ -91,10 +90,25 @@ def parse_args():
     return p.parse_args()
 
 
+def determine_optimal_proxy_size(target_params: int) -> str:
+    """
+    ターゲットモデルの 10% 規模（下限 50M ガード）を厳密計算し、
+    動的アーキテクチャ生成用のパラメータ表記文字列（例: "50M", "350M", "700M" 等）を自動返却する。
+    """
+    proxy_params = max(50_000_000, int(target_params * 0.10))
+    proxy_size_str = f"{int(proxy_params / 1e6)}M"
+
+    logger.info(
+        f"[Golden Ratio Proxy Selection] Target parameters: {target_params:,} -> "
+        f"Auto-calculated proxy size: '{proxy_size_str}' ({proxy_params:,} params, Min bound: 50M)"
+    )
+    return proxy_size_str
+
+
+
 @log_function_call(log_args=True)
 def get_base_config(model_size: str = None) -> dict:
     """ベース設定構築、または configs/config.yaml から動的に取得"""
-    # 1. model_size が明示的に指定されていない場合のみ config.yaml からのロードを試みる
     if model_size is None:
         try:
             from omegaconf import OmegaConf
@@ -120,8 +134,6 @@ def get_base_config(model_size: str = None) -> dict:
                 f"Could not load architecture from config.yaml: {e}. Falling back to default list."
             )
 
-    # 2. 指定された model_size、またはデフォルトのフォールバック
-    size_key = model_size or "150M"
     configs = {
         "50M": {
             "n_params": 50_000_000,
@@ -160,11 +172,44 @@ def get_base_config(model_size: str = None) -> dict:
             "rope_theta": 500000.0,
         },
     }
-    try:
+
+    size_key = model_size or "150M"
+    if size_key in configs:
         return configs[size_key]
-    except KeyError:
-        logger.error(f"Invalid model size: {size_key}")
-        raise
+
+    try:
+        size_upper = model_size.upper().strip()
+        if size_upper.endswith("M"):
+            n_params = int(float(size_upper[:-1]) * 1e6)
+        elif size_upper.endswith("B"):
+            n_params = int(float(size_upper[:-1]) * 1e9)
+        elif size_upper.endswith("K"):
+            n_params = int(float(size_upper[:-1]) * 1e3)
+        else:
+            n_params = int(size_upper)
+
+        hidden = max(128, (int((n_params / 1.5e5) ** 0.5) * 64))
+        layers = max(4, int(hidden / 64))
+        heads = max(4, hidden // 64)
+        kv_heads = max(1, heads // 4)
+        ffn = int(hidden * 4)
+
+        logger.info(
+            f"Dynamically generated custom architecture for '{model_size}': "
+            f"n_params={n_params:,}, hidden={hidden}, layers={layers}, heads={heads}"
+        )
+        return {
+            "n_params": n_params,
+            "hidden": hidden,
+            "layers": layers,
+            "heads": heads,
+            "kv_heads": kv_heads,
+            "ffn": ffn,
+            "rope_theta": 500000.0,
+        }
+    except Exception as e:
+        logger.error(f"Failed to parse custom model size '{model_size}': {e}")
+        raise ValueError(f"Invalid or unparseable model size: {model_size}")
 
 
 @log_function_call(log_args=True)
@@ -176,7 +221,7 @@ def estimate_tokens(data_path: str) -> int:
             for _line in f:
                 count += 1
         logger.debug(f"Estimated tokens from {data_path}: {count * 1024}")
-        return count * 1024  # 1行≒1024トークン想定
+        return count * 1024
     except FileNotFoundError:
         logger.exception(f"Dataset file not found: {data_path}")
         raise
@@ -195,11 +240,7 @@ def sync_config_yaml(target_arch: dict, target_size: str, hparams_output: str) -
         return
 
     cfg = OmegaConf.load(config_path)
-
-    # model.target_params 更新
     cfg.model.target_params = target_arch["n_params"]
-
-    # llama アーキテクチャ更新
     cfg.model.llama.hidden_size = target_arch["hidden"]
     cfg.model.llama.num_hidden_layers = target_arch["layers"]
     cfg.model.llama.num_attention_heads = target_arch["heads"]
@@ -207,10 +248,8 @@ def sync_config_yaml(target_arch: dict, target_size: str, hparams_output: str) -
     cfg.model.llama.intermediate_size = target_arch["ffn"]
     cfg.model.llama.rope_theta = target_arch.get("rope_theta", 500000.0)
 
-    # hparams ファイル名も更新 (config.yaml の defaults には hparams_<size>.yaml を期待)
     hparams_name = f"hparams_{target_size}"
     if cfg.defaults and isinstance(cfg.defaults[0], dict):
-        # 既存の defaults が dict 形式の場合はキーを更新
         if list(cfg.defaults[0].keys())[0] == "hparams_150M":
             cfg.defaults[0] = {hparams_name: ""}
     elif (
@@ -231,12 +270,15 @@ def main():
     args = parse_args()
     logger.info("Starting HPO search", extra={"args": vars(args)})
 
-    # 1. ベース設定構築
-    proxy_size = args.proxy_model_size
-    target_size = args.target_model_size or proxy_size
+    target_size = args.target_model_size
+    target_arch = get_base_config(target_size)
+
+    if args.proxy_model_size:
+        proxy_size = args.proxy_model_size
+    else:
+        proxy_size = determine_optimal_proxy_size(target_arch["n_params"])
 
     proxy_arch = get_base_config(proxy_size)
-    target_arch = get_base_config(target_size)
 
     n_tokens = estimate_tokens(args.data_path)
     proxy_vram = args.vram_gb or detect_vram()
@@ -246,7 +288,7 @@ def main():
         "HPO Search initialized",
         extra={
             "proxy_model_size": proxy_size,
-            "target_model_size": target_size,
+            "target_model_size": target_size or "from_config",
             "tokens": n_tokens,
             "proxy_vram": proxy_vram,
             "target_vram": target_vram,
@@ -254,7 +296,6 @@ def main():
         },
     )
 
-    # 2. Tokenize dataset once
     logger.info(f"Loading and tokenizing dataset from {args.data_path} once...")
     try:
         tokenizer = PreTrainedTokenizerFast(tokenizer_file="data/tokenizer.json")
@@ -265,7 +306,6 @@ def main():
 
         dataset = load_dataset("json", data_files=str(args.data_path))
 
-        # Apply data_fraction = 0.001 (0.1%) before tokenization to save massive RAM & time
         for split in dataset:
             n_samples = int(len(dataset[split]) * 0.001)
             n_samples = max(1, n_samples)
@@ -276,7 +316,6 @@ def main():
         all_cols = dataset["train"].column_names
         cols_to_remove = [c for c in all_cols if c not in ["input_ids", "attention_mask", "labels"]]
 
-        # プラットフォーム自動判定で並列トークナイズ (Windows: ThreadPool, Linux: multiprocessing)
         num_proc = get_optimal_num_proc()
         logger.info(f"Tokenizing dataset with parallelism={num_proc}")
 
@@ -296,7 +335,6 @@ def main():
         logger.exception(f"Error pre-tokenizing dataset: {e}")
         raise
 
-    # 3. Step Law で初期値・探索空間取得 (プロキシモデルに基づき算出)
     try:
         step_law_hpo = compute_hpo_for_target(
             n_params=proxy_arch["n_params"], n_tokens=n_tokens, seq_len=args.seq_len
@@ -306,7 +344,6 @@ def main():
         logger.exception(f"Error computing Step Law HPO: {e}")
         raise
 
-    # 4. Optuna Study with MedianPruner
     try:
         search_space = create_search_space(
             step_law_hpo, proxy_vram, n_params=proxy_arch["n_params"]
@@ -329,7 +366,7 @@ def main():
                 trial, proxy_arch, tokenized_dataset, args.seq_len, proxy_vram, step_law_hpo
             ),
             n_trials=args.n_trials,
-            timeout=86400,  # 24時間 (安全弁。フル本番は数日)
+            timeout=86400,
         )
         logger.info("Optuna optimization completed")
     except Exception as e:
@@ -341,9 +378,7 @@ def main():
         "Best proxy parameters found", extra={"best_params": best, "best_value": study.best_value}
     )
 
-    # 5. 派生パラメータ計算とスケーリング転移の実施
     try:
-        # プロキシモデルからターゲットモデルへの学習率スケーリング転移 (N_target / N_proxy)^(-0.713)
         n_proxy = proxy_arch["n_params"]
         n_target = target_arch["n_params"]
         scaling_ratio = (n_target / n_proxy) ** -0.713
@@ -360,15 +395,18 @@ def main():
             else:
                 scaled_best[k] = v
 
-        # ターゲット用のデバイスあたりバッチサイズと勾配累積ステップ数算出 (ターゲットVRAM基準)
         target_batch_seqs = scaled_best.get("batch_size_seqs", 16)
-        per_device = min(
-            target_batch_seqs, 1 if target_vram <= 4.5 else (4 if target_vram <= 8.5 else 8)
+        per_device, grad_accum = calculate_optimal_batch_split(
+            total_batch_size=target_batch_seqs,
+            vram_gb=target_vram,
+            n_params=target_arch["n_params"],
+            seq_len=args.seq_len,
+            hidden_size=target_arch["hidden"],
+            num_layers=target_arch["layers"],
+            precision="bf16",
+            selective_checkpointing=True,
         )
-        grad_accum = max(1, target_batch_seqs // per_device)
 
-        # Include fixed parameters in the final output configuration
-        # warmup_ratio は HPO 結果を尊重（探索されていない場合のみフォールバック）
         output = {
             "training": {
                 **scaled_best,
@@ -383,7 +421,6 @@ def main():
         logger.exception(f"Error calculating scaled derived parameters: {e}")
         raise
 
-    # 6. YAML出力
     try:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         with open(args.output, "w") as f:
@@ -393,7 +430,6 @@ def main():
         logger.exception(f"Error saving configuration to {args.output}: {e}")
         raise
 
-    # 7. 全試行 CSV 保存
     try:
         trials_df = study.trials_dataframe()
         csv_path = Path(args.output).with_suffix(".trials.csv")
@@ -402,13 +438,11 @@ def main():
     except Exception as e:
         logger.warning(f"Failed to save trials CSV: {e}")
 
-    # 8. VRAM 推定値の算出
     final_batch_seqs = output["training"].get("batch_size_seqs", 16)
     estimated_vram = _estimate_vram_from_arch(
         target_arch, final_batch_seqs, args.seq_len, target_vram
     )
 
-    # 9. 最終スケーリング値サマリ出力
     logger.info("=" * 60)
     logger.info("  [HPO Final Config] 本番学習で使用される最終設定")
     logger.info("=" * 60)
@@ -418,7 +452,6 @@ def main():
     logger.info(f"  step_law_scaling_ratio: {scaling_ratio:.6f}")
     logger.info(f"  best_proxy_loss: {study.best_value:.4f}")
 
-    # 10. スケーリング前後対比ログ
     logger.info("  [Scaling Trace] Step Law -> Proxy HPO -> Target Scaled")
     for k in ["max_lr_2d", "max_lr_1d", "warmup_ratio", "batch_size_seqs", "weight_decay"]:
         sl = step_law_hpo.get(k)
@@ -427,7 +460,6 @@ def main():
         logger.info(f"    {k}: StepLaw={sl} -> Proxy={proxy} -> Final={final}")
     logger.info("=" * 60)
 
-    # 11. メタ情報 JSON 保存
     try:
         git_commit = subprocess.getoutput("git rev-parse HEAD 2>/dev/null || echo unknown")
         data_hash = compute_file_hash(args.data_path) if Path(args.data_path).exists() else None
@@ -457,7 +489,6 @@ def main():
     except Exception as e:
         logger.warning(f"Failed to save run metadata: {e}")
 
-    # 12. config.yaml 同期 (--sync-config 指定時)
     if args.sync_config:
         try:
             sync_config_yaml(target_arch, target_size, args.output)
