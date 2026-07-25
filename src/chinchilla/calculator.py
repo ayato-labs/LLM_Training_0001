@@ -16,6 +16,66 @@ import yaml
 from src.common.logger import logger
 
 
+def detect_data_path_and_tokens() -> tuple[str, float | None]:
+    """configs/base_config.yaml から data_path と tokenizer_path を取得し、
+    本番と同一の PreTrainedTokenizerFast をファンクションコールして正確な総トークン数を算定
+    """
+    config_path = Path("configs/base_config.yaml")
+    data_path = "data/dataset.jsonl"
+    tokenizer_path = "data/tokenizer.json"
+
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            if isinstance(cfg, dict):
+                if "data_path" in cfg and cfg["data_path"]:
+                    data_path = str(cfg["data_path"])
+                if "tokenizer_path" in cfg and cfg["tokenizer_path"]:
+                    tokenizer_path = str(cfg["tokenizer_path"])
+        except Exception:
+            pass
+
+    path_obj = Path(data_path)
+    if not path_obj.exists():
+        return data_path, None
+
+    try:
+        from transformers import PreTrainedTokenizerFast
+
+        # 本番と同一の PreTrainedTokenizerFast をファンクションコールしてインスタンス化
+        tokenizer = None
+        if Path(tokenizer_path).exists():
+            tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
+
+        file_size_bytes = path_obj.stat().st_size
+
+        if tokenizer is not None:
+            # データセット先頭からサンプル行を抽出し、正確な 1 バイトあたりのトークン密度 (tokens_per_byte) を計算
+            sample_text = ""
+            sample_bytes = 0
+            with open(path_obj, "r", encoding="utf-8", errors="ignore") as f:
+                for idx, line in enumerate(f):
+                    sample_text += line
+                    sample_bytes += len(line.encode("utf-8"))
+                    if idx >= 200 or sample_bytes >= 200_000:
+                        break
+
+            if sample_bytes > 0 and sample_text:
+                sample_tokens = len(tokenizer.encode(sample_text))
+                tokens_per_byte = sample_tokens / sample_bytes
+                total_tokens = file_size_bytes * tokens_per_byte
+                return data_path, float(total_tokens)
+
+        # トークナイザー未ロード時の物理バックアップ
+        est_tokens = file_size_bytes / 3.5
+        return data_path, float(est_tokens)
+    except Exception as e:
+        logger.warning(f"Could not estimate dataset tokens via PreTrainedTokenizerFast from {data_path}: {e}")
+        return data_path, None
+
+
+
 def detect_seq_len_from_config() -> int:
     """configs/base_config.yaml から事前学習の基本 seq_len を一元取得"""
     config_path = Path("configs/base_config.yaml")
@@ -28,7 +88,6 @@ def detect_seq_len_from_config() -> int:
         except Exception as e:
             logger.warning(f"Failed to read seq_len from base_config.yaml: {e}")
     return 1024
-
 
 
 def detect_gpu_info() -> dict[str, Any]:
@@ -314,27 +373,45 @@ def calculate_chinchilla_scaling(
     # 2. 純粋なチンチラ最適比率 (D = 20 * N) からの理論 N
     chinchilla_n_pure = total_tokens_computable / 20.0
 
-    # 3. VRAM 容量に応じたパラメータ上限（全自動スケーリング）
-    # 4GB -> 250M, 8GB -> 600M, 12GB -> 1.5B, 24GB -> 3.5B, 80GB -> 15B
+    # 3. データセットの実効トークン数 D_actual の動的検知
+    data_path, actual_dataset_tokens = detect_data_path_and_tokens()
+
+    data_shortage_warn = False
+    data_capped_arch = None
+    data_sufficiency_ratio = 100.0
+
+    if actual_dataset_tokens is not None:
+        data_sufficiency_ratio = round((actual_dataset_tokens / total_tokens_computable) * 100.0, 1)
+        if total_tokens_computable > actual_dataset_tokens:
+            data_shortage_warn = True
+            # データ量制限ベースの最大過学習防止モデル規模 N_data_max = D_actual / 20
+            data_capped_n = max(20_000_000, actual_dataset_tokens / 20.0)
+            data_capped_arch = generate_universal_architecture(int(data_capped_n))
+
+            logger.warning(
+                f"⚠️ [WARN / DATA SHORTAGE] Target compute requires {total_tokens_computable/1e6:.1f}M tokens, "
+                f"but dataset '{data_path}' has only ~{actual_dataset_tokens/1e6:.1f}M tokens ({data_sufficiency_ratio}%)."
+            )
+
+    # 4. VRAM 容量に応じたパラメータ上限（全自動スケーリング）
     vram_based_max_n = (vram_cap / 4.0) * 250_000_000
     target_n = min(chinchilla_n_pure, vram_based_max_n)
     target_n = max(target_n, 20_000_000)
 
-    # 4. 汎用最適構造の生成
+    # 5. 理想的なコンピュート最適構造の生成
     arch = generate_universal_architecture(int(target_n))
 
-    # 5. VRAM ピーク値の検証
+    # 6. VRAM ピーク値の検証
     est_vram = estimate_peak_vram_gb(arch["n_params"], seq_len=seq_len)
     vram_safe = est_vram <= vram_cap
 
-    # 6. 推定ステップ数とステップ速度
+    # 7. 推定ステップ数とステップ速度
     grad_accum_steps = 32
     tokens_per_step = seq_len * grad_accum_steps
     est_total_steps = int(total_tokens_computable / tokens_per_step)
     est_sec_per_step = tokens_per_step / tps
 
-    # 7. HPO 探索所要時間の物理シミュレーション (全自動動的ロジック)
-    # find_hparams モジュールの動的関数および hpo_config / base_config を参照
+    # 8. HPO 探索所要時間の物理シミュレーション (全自動動的ロジック)
     hpo_n_trials = 150
     proxy_params = max(50_000_000, int(arch["n_params"] * 0.10))
     batch_size_seqs = 16
@@ -350,7 +427,6 @@ def calculate_chinchilla_scaling(
     except Exception as e:
         logger.debug(f"find_hparams dynamic calculation fallback: {e}")
 
-    # hpo_config.yaml が存在する場合は設定値を優先読み込み
     hpo_config_path = Path("configs/hpo_config.yaml")
     if hpo_config_path.exists():
         try:
@@ -366,13 +442,9 @@ def calculate_chinchilla_scaling(
     proxy_trial_tokens = seq_len * batch_size_seqs * hpo_trial_steps
     proxy_sec_per_trial = proxy_trial_tokens / tps
 
-    # 枝刈りなし（Worst Case）の総探索時間 (分)
     hpo_worst_case_sec = proxy_sec_per_trial * hpo_n_trials
     hpo_worst_case_min = round(hpo_worst_case_sec / 60.0, 1)
-
-    # MedianPruner 適用時の期待総探索時間 (早期枝刈りによる 65% 時間削減)
     hpo_expected_min = round(hpo_worst_case_min * 0.35, 1)
-
 
     return {
         "gpu_info": gpu_info,
@@ -381,8 +453,15 @@ def calculate_chinchilla_scaling(
         "measured_throughput_tps": round(tps, 1),
         "throughput_source": tp_source,
         "computable_tokens_million": round(total_tokens_computable / 1e6, 2),
+        "dataset_info": {
+            "data_path": data_path,
+            "actual_tokens_million": round(actual_dataset_tokens / 1e6, 2) if actual_dataset_tokens else None,
+            "sufficiency_ratio": data_sufficiency_ratio,
+            "is_data_shortage": data_shortage_warn,
+        },
         "chinchilla_pure_optimal_n_million": round(chinchilla_n_pure / 1e6, 2),
         "recommended_architecture": arch,
+        "data_capped_architecture": data_capped_arch,
         "estimated_peak_vram_gb": est_vram,
         "vram_limit_gb": vram_cap,
         "is_vram_safe": vram_safe,
@@ -395,6 +474,7 @@ def calculate_chinchilla_scaling(
             "expected_with_median_pruner_minutes": hpo_expected_min,
         },
     }
+
 
 
 

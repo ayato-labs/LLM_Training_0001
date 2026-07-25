@@ -87,8 +87,30 @@ def main():
     print(f"  [Throughput Source]   : {target_res['throughput_source']}")
     print(f"  [Measured Throughput] : {target_res['measured_throughput_tps']:,.1f} tokens/sec")
     print(f"  [Target Time]         : {target_res['target_hours']:.1f} hours ({target_res['target_hours']/24.0:.2f} days)")
+    # データセットのトークン充足度判定・警告表示
+    ds_info = target_res["dataset_info"]
+    print("  [Dataset Token Sufficiency Audit]")
+    print(f"    - Dataset Path          : {ds_info['data_path']}")
+    if ds_info["actual_tokens_million"] is not None:
+        print(f"    - Dataset Tokens        : ~{ds_info['actual_tokens_million']}M tokens")
+        print(f"    - Required Tokens       : ~{target_res['computable_tokens_million']}M tokens")
+        print(f"    - Sufficiency Ratio     : {ds_info['sufficiency_ratio']}%")
+    else:
+        print("    - Dataset Tokens        : (Dataset file not found - Skipped audit)")
+
+    if ds_info["is_data_shortage"]:
+        capped_a = target_res["data_capped_architecture"]
+        print("-" * 68)
+        print("  ⚠️ [WARN / DATA SHORTAGE DETECTED]")
+        print("    Target compute requires more tokens than available in dataset!")
+        print("    Training target model with insufficient dataset may cause Overfitting.")
+        print("    - Overfitting-Safe Model: ~" + f"{capped_a['n_params']/1e6:.1f}M params "
+              + f"(Layers: {capped_a['num_hidden_layers']}, Hidden: {capped_a['hidden_size']})")
+        print("    - Ideal Compute-Optimal : ~" + f"{arch['n_params']/1e6:.1f}M params "
+              + f"(Layers: {arch['num_hidden_layers']}, Hidden: {arch['hidden_size']}) [Sufficient Data Assumed]")
     print("-" * 68)
-    print("  [Target Architecture Configuration]")
+
+    print("  [Target Architecture Configuration (Ideal Compute-Optimal)]")
     print(f"    - Target Parameters     : ~{arch['n_params']/1e6:.1f}M ({arch['n_params']:,} params)")
     print(f"    - Layers (hidden_layers) : {arch['num_hidden_layers']}")
     print(f"    - Hidden Dim             : {arch['hidden_size']}")
@@ -132,12 +154,23 @@ def main():
     if should_apply:
         config_path = Path("configs/chinchilla_config.yaml")
         try:
-            # 日本語コメント入りの分かりやすい YAML 文字列を構築
+            # データ量情報文字列の準備
+            ds_text = (
+                f"~{ds_info['actual_tokens_million']}M tokens"
+                if ds_info['actual_tokens_million'] is not None
+                else "Unknown"
+            )
+            data_warn_comment = (
+                f"# ⚠️ [WARN] データ不足検知 (充足率: {ds_info['sufficiency_ratio']}%). "
+                f"過学習防止モデル規模: ~{target_res['data_capped_architecture']['n_params']/1e6:.1f}M\n"
+                if ds_info['is_data_shortage'] else ""
+            )
+
             yaml_content = f"""# @package _global_
 # -----------------------------------------------------------------------------
 # チンチラの法則 (src.chinchilla) による目標時間逆算成果物
 # -----------------------------------------------------------------------------
-
+{data_warn_comment}
 # [モデル構造設定] 目標時間 ({target_res['target_hours']}時間) で Loss が最も低くなる黄金比率アーキテクチャ
 model:
   target_params: {arch['n_params']}  # 推定パラメータ数 (~{arch['n_params']/1e6:.1f}M)
@@ -156,12 +189,17 @@ model:
 training:
   max_steps: {target_res['estimated_total_steps']}  # トータル学習ステップ数
 
-# [計算環境および HPO 探索時間シミュレーション (参考メタデータ)]
+# [計算環境・データセット監査および HPO 探索時間シミュレーション (参考メタデータ)]
 metadata:
   target_hours: {target_res['target_hours']}  # 目標学習時間 (hours)
   gpu: "{gpu['device_name']}"  # 検出されたGPU型番
   measured_throughput_tps: {target_res['measured_throughput_tps']}  # 実測スループット (tokens/sec)
   estimated_peak_vram_gb: {target_res['estimated_peak_vram_gb']}  # 訓練時推定 Peak VRAM (GB)
+  dataset:
+    data_path: "{ds_info['data_path']}"  # 使用データセットパス
+    actual_tokens: "{ds_text}"  # データセット内実測トークン数
+    sufficiency_ratio_pct: {ds_info['sufficiency_ratio']}  # 必要トークン数に対するデータ充足率 (%)
+    is_data_shortage: {str(ds_info['is_data_shortage']).lower()}  # データ不足警告フラグ
   hpo_simulation:
     proxy_params: {hpo_sim['proxy_params']}  # 探索に使用するプロキシモデル規模 (~10%)
     n_trials: {hpo_sim['n_trials']}  # 5次元探索の標準試行回数 (30 trials/dim)
@@ -181,6 +219,7 @@ metadata:
             logger.error(f"Failed to apply Chinchilla config to {config_path}: {e}")
     else:
         print("\n[NOTE] Run with 'apply=true' or '--apply' to automatically update configs/chinchilla_config.yaml")
+
 
 
 

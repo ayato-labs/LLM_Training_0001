@@ -244,9 +244,11 @@
     事前学習のコンテキスト長（`seq_len`）の参照先を `configs/base_config.yaml` のみに一元化し、単一の SSOT（基盤定義）として検知・シミュレーションを遂行。
   * **本番モデル構築エンジンのファンクションコール統合 (`create_model_config`)**:
     `src/chinchilla/calculator.py` 内で事前学習本番の `src.training.model_utils.create_model_config` を直接ファンクションコールしてモデル（`LlamaConfig`）を構築・検証。本番学習で投入される実データ構造と 100% 完全合致するモデル仕様でチンチラ法則を算定。
+  * **本番トークナイザーによるデータセット正確トークン監査 (`PreTrainedTokenizerFast`) ＆ デュアル最適化**:
+    `base_config.yaml` の `data_path` および `tokenizer_path` から `PreTrainedTokenizerFast` をファンクションコールし、本番と同一のトークナイザーでデータセット内実効トークン数 $D_{\text{actual}}$ を正確に計測。必要トークン数不足時（$D_{\text{required}} > D_{\text{actual}}$）は ⚠️ [WARN] 警告を発話し、「過学習防止モデル規模（データ律速上限プラン: $N_{\text{max\_data}} = \frac{D_{\text{actual}}}{20}$）」と「理想コンピュート最適モデル規模（データ十分想定プラン: $N_{\text{compute}}$）」の両方を並列算出・比較提示。
   * **HPO 探索時間シミュレーション (最悪時間 ＆ MedianPruner 推定時間)**:
     `scripts/find_hparams` の動的関数（`calculate_dynamic_n_trials` 等）をファンクションコールし、プロキシモデル（~10% 規模）での 5次元探索における「枝刈りなし（Worst-Case）総探索時間」および「MedianPruner 適用時の期待総探索時間」を自律計算。
   * **単一ファイル完全統合 (`configs/chinchilla_config.yaml`) ＋ 日本語インラインコメント**:
-    死にコードとなっていた旧 `chinchilla_result.json` および `chinchilla_config.meta.json` を完全撤去。CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、モデルアーキテクチャ、学習ステップ数、および計算環境・HPO探索時間シミュレーションの全メタデータを **分かりやすい日本語インラインコメント付きで `configs/chinchilla_config.yaml` 単一ファイルへ完全集約・保存**。
+    死にコードとなっていた旧 `chinchilla_result.json` および `chinchilla_config.meta.json` を完全撤去。CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、モデルアーキテクチャ、学習ステップ数、データ充足率、および計算環境・HPO探索時間シミュレーションの全メタデータを **分かりやすい日本語インラインコメント付きで `configs/chinchilla_config.yaml` 単一ファイルへ完全集約・保存**。
 * **効果**:
-  成果物ファイルの散らばりや二重出力を 100% 排除し、`python -m src.chinchilla.main hours=48 --apply` の一発コマンドで HPO 探索時間の見通し把握から本番設定ファイルへの反映・自己可読化までを完全自動化。
+  データの過不足による事前学習時の過学習リスクを完全に未然防護し、`python -m src.chinchilla.main hours=48 --apply` の一発コマンドで HPO 探索時間の見通し把握からデータ量適正監査、本番設定ファイルへの反映までを完全自動化。
