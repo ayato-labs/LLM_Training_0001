@@ -333,6 +333,18 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
 
 
 
+def adjust_tps_for_seq_len(base_tps: float, base_seq_len: int, target_seq_len: int) -> float:
+    """コンテキスト長 (seq_len) の変化に伴う SDPA / Memory バンド幅による実効スループットの物理変化を試算"""
+    if base_seq_len == target_seq_len:
+        return base_tps
+
+    # Memory Access / Attention 演算量の比率に基づくスループット減衰 (アルゴリズム倍率 gamma=0.15)
+    # 例: 1024 -> 4096 (4倍) の場合、TPS は約 80%~85% 程度に減少
+    ratio = target_seq_len / base_seq_len
+    scaling_factor = ratio ** (-0.15)
+    return base_tps * scaling_factor
+
+
 def calculate_chinchilla_scaling(
     target_hours: float = 48.0,
     user_throughput_tps: float | None = None,
@@ -366,9 +378,15 @@ def calculate_chinchilla_scaling(
         tps = run_quick_proxy_benchmark()
         tp_source = "Dynamic GPU Benchmark"
 
+    # コンテキスト長 (seq_len) に応じた実効スループット (tps) の物理的動的スケーリング補正
+    # 基準コンテキスト長 1024 との差分から tps を動的補正
+    base_seq_len = detect_seq_len_from_config()
+    tps = adjust_tps_for_seq_len(tps, base_seq_len, seq_len)
+
     # 1. 指定時間内で計算可能な最大トークン総数 D_avail
     total_seconds = target_hours * 3600.0
     total_tokens_computable = total_seconds * tps
+
 
     # 2. 純粋なチンチラ最適比率 (D = 20 * N) からの理論 N
     chinchilla_n_pure = total_tokens_computable / 20.0

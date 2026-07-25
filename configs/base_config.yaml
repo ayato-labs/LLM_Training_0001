@@ -14,7 +14,7 @@ tokenizer_path: "data/tokenizer.json"
 
 # 学習実行制御デフォルト
 training:
-  seq_len: 1024
+  seq_len: 512
   num_epochs: 1
   save_steps: 500
   eval_steps: 2500
@@ -39,5 +39,3 @@ tokenization:
   windows_max_workers: null
   windows_batch_size: 1000
   fallback_single_thread: true
-
-
