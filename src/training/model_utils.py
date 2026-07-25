@@ -422,37 +422,6 @@ def compute_dataset_fingerprint(dataset_path: str) -> dict:
     }
 
 
-def compute_db_fingerprint(db_path: str) -> dict:
-    path = Path(db_path)
-    if not path.exists():
-        return {"error": f"Database not found: {db_path}"}
-
-    import datetime
-    import sqlite3
-
-    stat = path.stat()
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM chapters")
-        chapter_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM novels")
-        novel_count = cursor.fetchone()[0]
-        conn.close()
-    except Exception:
-        chapter_count = -1
-        novel_count = -1
-
-    return {
-        "path": str(path.resolve()),
-        "sha256": compute_file_hash(str(path)),
-        "size_bytes": stat.st_size,
-        "chapter_count": chapter_count,
-        "novel_count": novel_count,
-        "mtime": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
-    }
-
-
 def get_checkpoints(output_dir=None, sort_by="step"):
     """有効なチェックポイントディレクトリを一覧表示（デフォルトはステップ番号順、'mtime'指定で更新日時順）。"""
     import re

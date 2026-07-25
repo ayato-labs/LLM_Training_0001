@@ -34,7 +34,6 @@ from src.training.model_utils import (
     PackedDatasetWrapper,
     apply_selective_attention_checkpointing,
     compute_dataset_fingerprint,
-    compute_db_fingerprint,
     compute_file_hash,
     create_model_config,
     get_optimal_num_proc,
@@ -218,9 +217,6 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # 4. データセットおよびデータベースのフィンガープリントを取得
     logger.info(f"Computing dataset fingerprint: {data_path_str}")
     data_fingerprint = compute_dataset_fingerprint(data_path_str)
-    db_path_str = config.get("db_path", "../Novel_Data_Collection/novels.db")
-    logger.info(f"Computing database fingerprint: {db_path_str}")
-    db_fingerprint = compute_db_fingerprint(db_path_str)
 
     logger.info(
         "Training initialization",
@@ -228,7 +224,6 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
             "seed": seed,
             "data_path": data_path_str,
             "dataset_fingerprint": data_fingerprint,
-            "db_fingerprint": db_fingerprint,
         },
     )
 
