@@ -166,9 +166,28 @@ def objective(
         "num_cycles": 0.5,
     }
 
-    # Map batch size to per_device_batch_size and grad_accum_steps (enforce gradient accumulation)
-    config["per_device_batch_size"] = 1
-    config["grad_accum_steps"] = hpo["batch_size_seqs"]
+    # トータルバッチサイズ (batch_size_seqs) を VRAM やモデルサイズに応じて最適に分割 (動的分割ヘルパー)
+    from src.training.model_utils import calculate_optimal_batch_split
+
+    per_device_batch, grad_accum = calculate_optimal_batch_split(
+        total_batch_size=hpo["batch_size_seqs"],
+        vram_gb=vram_gb,
+        n_params=arch["n_params"],
+        seq_len=seq_len,
+        hidden_size=arch["hidden"],
+        num_layers=arch["layers"],
+        precision="bf16",
+        selective_checkpointing=True,
+    )
+
+    config["per_device_batch_size"] = per_device_batch
+    config["grad_accum_steps"] = grad_accum
+    logger.info(
+        f"[Optuna HPO] Trial {trial.number}: Dynamically allocated batch size: "
+        f"per_device_batch_size={per_device_batch}, grad_accum_steps={grad_accum} "
+        f"(Total batch={hpo['batch_size_seqs']})"
+    )
+
 
     try:
         import multiprocessing

@@ -103,16 +103,42 @@ def _normalize_config(raw: dict) -> dict:
 
     clipped_lr_2d, clipped_lr_1d = clip_learning_rates(raw_lr_2d, raw_lr_1d, source="Config")
 
+    # トータルバッチサイズ (batch_size_seqs) が指定されており、per_device_batch_size が 1 固定の場合は動的に最適分割
+    total_batch = t.get("batch_size_seqs", 16)
+    configured_per_device = t.get("per_device_batch_size")
+
+    if configured_per_device is None or configured_per_device == 1:
+        from src.training.model_utils import calculate_optimal_batch_split
+
+        n_params = model_params.get("n_params", 150_000_000)
+        vram_gb = raw.get("vram_limit_gb", 4.0) or 4.0
+        seq_len = t.get("seq_len", 1024)
+        per_device_batch, grad_accum = calculate_optimal_batch_split(
+            total_batch_size=total_batch,
+            vram_gb=vram_gb,
+            n_params=n_params,
+            seq_len=seq_len,
+            hidden_size=model_params.get("hidden_size", 768),
+            num_layers=model_params.get("num_hidden_layers", 12),
+            precision=raw.get("precision", "bf16"),
+            selective_checkpointing=t.get("selective_checkpointing", True),
+            optimizer_type=t.get("optim", "adamw_bnb_8bit"),
+        )
+
+    else:
+        per_device_batch = configured_per_device
+        grad_accum = t.get("grad_accum_steps", max(1, total_batch // per_device_batch))
+
     training = {
         "seq_len": t.get("seq_len", 1024),
         "max_lr_2d": clipped_lr_2d,
         "max_lr_1d": clipped_lr_1d,
-        "batch_size_seqs": t.get("batch_size_seqs", 16),
+        "batch_size_seqs": total_batch,
         "weight_decay": t.get("weight_decay", 0.1),
         "beta2": t.get("beta2", 0.95),
         "grad_clip": t.get("grad_clip", 1.0),
-        "per_device_batch_size": t.get("per_device_batch_size", 1),
-        "grad_accum_steps": t.get("grad_accum_steps", 1),
+        "per_device_batch_size": per_device_batch,
+        "grad_accum_steps": grad_accum,
         "max_steps": t.get("max_steps", -1),
         "num_epochs": t.get("num_epochs", 3),
         "save_steps": t.get("save_steps", 1000),
@@ -138,6 +164,7 @@ def _normalize_config(raw: dict) -> dict:
 
     # トップレベルマージ
     return {
+
         **raw,  # seed, data_path, tokenizer_path, max_steps, num_epochs, etc.
         "model_params": model_params,
         "hpo": training,  # 互換性のため hpo キーも残す

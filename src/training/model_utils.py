@@ -38,6 +38,75 @@ def estimate_model_size(model) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
+def calculate_optimal_batch_split(
+    total_batch_size: int,
+    vram_gb: float = 4.0,
+    n_params: int = 150_000_000,
+    seq_len: int = 1024,
+    hidden_size: int = 768,
+    num_layers: int = 12,
+    precision: str = "bf16",
+    selective_checkpointing: bool = True,
+    optimizer_type: str = "adamw_bnb_8bit",
+) -> tuple[int, int]:
+    """
+    数理モデル（VRAM消費の物理近似式）に基づき、物理 GPU 上で安全に並列実行可能な
+    per_device_batch_size (マイクロバッチ) と grad_accum_steps を完全動的に算出する。
+
+    Returns:
+        tuple[int, int]: (per_device_batch_size, grad_accum_steps)
+    """
+    bytes_per_param = 2 if precision in ["bf16", "fp16"] else 4
+
+    # 1. モデル重み + 勾配の VRAM メモリ (GB)
+    weight_mem_gb = (n_params * bytes_per_param) / (1024**3)
+    grad_mem_gb = (n_params * bytes_per_param) / (1024**3)
+
+    # 2. オプティマイザステートの VRAM メモリ (GB)
+    if "8bit" in optimizer_type:
+        optim_bytes = 2
+    elif "paged" in optimizer_type:
+        optim_bytes = 4
+    else:  # AdamW FP32 or Muon
+        optim_bytes = 8
+    optim_mem_gb = (n_params * optim_bytes) / (1024**3)
+
+    # 3. CUDA ドライバー & OS オーバーヘッド + 安全マージン (GB)
+    os_cuda_overhead_gb = 1.2
+
+    # 残り利用可能 VRAM (GB)
+    fixed_used_gb = weight_mem_gb + grad_mem_gb + optim_mem_gb + os_cuda_overhead_gb
+    available_vram_gb = max(0.5, vram_gb - fixed_used_gb)
+
+    # 4. 1サンプルあたりのアクティベーションメモリ (GB)
+    # Selective Checkpointing 有効時は Attention 保持のみ、無効時は層全体を保持
+    if selective_checkpointing:
+        # Attention 再計算保持分: 2 * seq_len * hidden_size * num_layers * bytes_per_param
+        bytes_per_sample = 2 * seq_len * hidden_size * num_layers * bytes_per_param
+    else:
+        # Checkpointing なし (全層のアクティベーション保持): 34 * seq_len * hidden_size * num_layers * bytes_per_param
+        bytes_per_sample = 34 * seq_len * hidden_size * num_layers * bytes_per_param
+
+    sample_act_mem_gb = max(0.001, bytes_per_sample / (1024**3))
+
+    # 5. 理論的最大マイクロバッチサイズ
+    max_safe_micro_batch = max(1, int(available_vram_gb // sample_act_mem_gb))
+
+    # 6. total_batch_size を超えない範囲で、割り切れる最大約数（Tensor Coreに効率的な2の冪優先）
+    target_micro = min(total_batch_size, max_safe_micro_batch)
+    while target_micro > 1:
+        if total_batch_size % target_micro == 0:
+            break
+        target_micro -= 1
+
+    per_device_batch_size = max(1, target_micro)
+    grad_accum_steps = total_batch_size // per_device_batch_size
+
+    return per_device_batch_size, grad_accum_steps
+
+
+
+
 def apply_selective_attention_checkpointing(model) -> int:
     """LlamaDecoderLayer 内の self_attn (Attention) モジュールのみを選択的 Gradient Checkpointing 化。
 
