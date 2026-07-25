@@ -116,6 +116,58 @@ def main():
     print(f"  {'Step Processing Time':<26} | {time_str_0:<12} | {time_str_1:<12} | {time_str_2:<12}")
     print("=" * 68)
 
+    # 4. 成果物メタデータ JSON (chinchilla_result.json) の保存
+    import json
+
+    output_dir = Path("models/output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "chinchilla_result.json"
+
+    export_data = {
+        "target_hours": target_res["target_hours"],
+        "gpu_info": gpu,
+        "throughput_source": target_res["throughput_source"],
+        "measured_throughput_tps": target_res["measured_throughput_tps"],
+        "recommended_architecture": arch,
+        "estimated_peak_vram_gb": target_res["estimated_peak_vram_gb"],
+        "estimated_total_steps": target_res["estimated_total_steps"],
+        "seq_len": target_res["seq_len"],
+    }
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(export_data, f, indent=2, ensure_ascii=False)
+    logger.info(f"Saved Chinchilla calculation result to {json_path}")
+
+    # 5. --apply フラグ指定時、または適用命令時に configs/config.yaml を自動更新
+    should_apply = args.get("apply") == "true" or "--apply" in sys.argv
+    if should_apply:
+        config_path = Path("configs/config.yaml")
+        if config_path.exists():
+            try:
+                from omegaconf import OmegaConf
+
+                cfg = OmegaConf.load(config_path)
+                cfg.model.target_params = arch["n_params"]
+                cfg.model.llama.hidden_size = arch["hidden_size"]
+                cfg.model.llama.num_hidden_layers = arch["num_hidden_layers"]
+                cfg.model.llama.num_attention_heads = arch["num_attention_heads"]
+                cfg.model.llama.num_key_value_heads = arch["num_key_value_heads"]
+                cfg.model.llama.intermediate_size = arch["intermediate_size"]
+                cfg.training.max_steps = target_res["estimated_total_steps"]
+
+                OmegaConf.save(cfg, config_path)
+                logger.info(
+                    f"Successfully applied Chinchilla recommended architecture to {config_path} "
+                    f"(target_params={arch['n_params']:,}, max_steps={target_res['estimated_total_steps']:,})"
+                )
+                print(f"\n[APPLIED] Successfully synced Chinchilla recommendation to {config_path}!")
+            except Exception as e:
+                logger.error(f"Failed to apply Chinchilla config to {config_path}: {e}")
+        else:
+            logger.warning(f"Config file not found at {config_path}. Skipping --apply.")
+    else:
+        print("\n[NOTE] Run with 'apply=true' or '--apply' to automatically update configs/config.yaml")
+
 
 if __name__ == "__main__":
     main()
+
