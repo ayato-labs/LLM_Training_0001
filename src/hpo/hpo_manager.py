@@ -190,10 +190,15 @@ def objective(
                     trial.report(val, step=step)
                     if trial.should_prune():
                         logger.info(
-                            f"Trial {trial.number} should be pruned. Terminating subprocess..."
+                            f"[Optuna HPO] Trial {trial.number}: Pruned by early stopping (枝刈り発動 - 設定学習率の効率不良を静かに打ち切り)"
                         )
+                        try:
+                            queue.close()
+                            queue.cancel_join_thread()
+                        except Exception:
+                            pass
                         p.terminate()
-                        p.join()
+                        p.join(timeout=1.0)
                         pruned = True
                         break
                 elif msg[0] == "success":
