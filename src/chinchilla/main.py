@@ -118,54 +118,59 @@ def main():
     print(f"  {'Step Processing Time':<26} | {time_str_0:<12} | {time_str_1:<12} | {time_str_2:<12}")
     print("=" * 68)
 
-    # 4. 成果物メタデータ JSON (chinchilla_result.json) の保存
-    import json
+    # 4. HPO 探索時間シミュレーションの表示
+    hpo_sim = target_res["hpo_simulation"]
+    print("  [HPO Search Time Simulation (Proxy ~10% Size)]")
+    print(f"    - Proxy Model Size       : ~{hpo_sim['proxy_params']/1e6:.1f}M params")
+    print(f"    - Number of Trials       : {hpo_sim['n_trials']} trials (5D Space)")
+    print(f"    - Worst-Case (No Prune)  : ~{hpo_sim['worst_case_no_pruning_minutes']:.1f} minutes")
+    print(f"    - Expected (With Pruning): ~{hpo_sim['expected_with_median_pruner_minutes']:.1f} minutes (MedianPruner)")
+    print("=" * 68)
 
-    output_dir = Path("models/output")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "chinchilla_result.json"
-
-    export_data = {
-        "target_hours": target_res["target_hours"],
-        "gpu_info": gpu,
-        "throughput_source": target_res["throughput_source"],
-        "measured_throughput_tps": target_res["measured_throughput_tps"],
-        "recommended_architecture": arch,
-        "estimated_peak_vram_gb": target_res["estimated_peak_vram_gb"],
-        "estimated_total_steps": target_res["estimated_total_steps"],
-        "seq_len": target_res["seq_len"],
-    }
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(export_data, f, indent=2, ensure_ascii=False)
-    logger.info(f"Saved Chinchilla calculation result to {json_path}")
-
-    # 5. --apply フラグ指定時、または適用命令時に configs/chinchilla_config.yaml を自動更新
+    # 5. --apply フラグ指定時に configs/chinchilla_config.yaml 単一ファイルへ成果物・メタデータを完全統合
     should_apply = args.get("apply") == "true" or "--apply" in sys.argv
     if should_apply:
         config_path = Path("configs/chinchilla_config.yaml")
         try:
-            chinchilla_cfg = {
-                "model": {
-                    "target_params": arch["n_params"],
-                    "llama": {
-                        "hidden_size": arch["hidden_size"],
-                        "num_hidden_layers": arch["num_hidden_layers"],
-                        "num_attention_heads": arch["num_attention_heads"],
-                        "num_key_value_heads": arch["num_key_value_heads"],
-                        "intermediate_size": arch["intermediate_size"],
-                        "rope_theta": arch.get("rope_theta", 10000.0),
-                        "vocab_size": arch.get("vocab_size", 32000),
-                        "attn_implementation": arch.get("attn_implementation", "sdpa"),
-                        "tie_word_embeddings": arch.get("tie_word_embeddings", True),
-                    },
-                },
-                "training": {
-                    "max_steps": target_res["estimated_total_steps"],
-                },
-            }
+            # 日本語コメント入りの分かりやすい YAML 文字列を構築
+            yaml_content = f"""# @package _global_
+# -----------------------------------------------------------------------------
+# チンチラの法則 (src.chinchilla) による目標時間逆算成果物
+# -----------------------------------------------------------------------------
+
+# [モデル構造設定] 目標時間 ({target_res['target_hours']}時間) で Loss が最も低くなる黄金比率アーキテクチャ
+model:
+  target_params: {arch['n_params']}  # 推定パラメータ数 (~{arch['n_params']/1e6:.1f}M)
+  llama:
+    hidden_size: {arch['hidden_size']}  # 隠れ層ベクトル次元
+    num_hidden_layers: {arch['num_hidden_layers']}  # Transformerレイヤー数
+    num_attention_heads: {arch['num_attention_heads']}  # Attention Head数 (head_dim = {arch.get('head_dim', 64)})
+    num_key_value_heads: {arch['num_key_value_heads']}  # Key/Value Head数 (GQA 4:1)
+    intermediate_size: {arch['intermediate_size']}  # SwiGLU FFN中間層次元
+    rope_theta: {arch.get('rope_theta', 10000.0)}  # RoPE位置エンコーディング基準周波数
+    vocab_size: {arch.get('vocab_size', 32000)}  # 語彙数
+    attn_implementation: "{arch.get('attn_implementation', 'sdpa')}"  # PyTorch SDPA バックエンド
+    tie_word_embeddings: {str(arch.get('tie_word_embeddings', True)).lower()}  # 埋め込み層とLM Headの重み共有
+
+# [学習ステップ設定] 指定時間で到達すべき最適ステップ数
+training:
+  max_steps: {target_res['estimated_total_steps']}  # トータル学習ステップ数
+
+# [計算環境および HPO 探索時間シミュレーション (参考メタデータ)]
+metadata:
+  target_hours: {target_res['target_hours']}  # 目標学習時間 (hours)
+  gpu: "{gpu['device_name']}"  # 検出されたGPU型番
+  measured_throughput_tps: {target_res['measured_throughput_tps']}  # 実測スループット (tokens/sec)
+  estimated_peak_vram_gb: {target_res['estimated_peak_vram_gb']}  # 訓練時推定 Peak VRAM (GB)
+  hpo_simulation:
+    proxy_params: {hpo_sim['proxy_params']}  # 探索に使用するプロキシモデル規模 (~10%)
+    n_trials: {hpo_sim['n_trials']}  # 5次元探索の標準試行回数 (30 trials/dim)
+    worst_case_no_pruning_minutes: {hpo_sim['worst_case_no_pruning_minutes']}  # 枝刈りゼロ時の最悪総探索時間 (分)
+    expected_with_median_pruner_minutes: {hpo_sim['expected_with_median_pruner_minutes']}  # MedianPruner適用時の期待探索時間 (分)
+"""
 
             with open(config_path, "w", encoding="utf-8") as f:
-                yaml.dump(chinchilla_cfg, f, default_flow_style=False, sort_keys=False)
+                f.write(yaml_content)
 
             logger.info(
                 f"Successfully applied Chinchilla recommended architecture to {config_path} "
@@ -176,6 +181,9 @@ def main():
             logger.error(f"Failed to apply Chinchilla config to {config_path}: {e}")
     else:
         print("\n[NOTE] Run with 'apply=true' or '--apply' to automatically update configs/chinchilla_config.yaml")
+
+
+
 
 
 

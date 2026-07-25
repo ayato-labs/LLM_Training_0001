@@ -240,9 +240,13 @@
   `src/chinchilla/` を独立構築。
   * DeepMind の **チンチラの法則（Chinchilla Scaling Laws: $C \approx 6ND$）** と GPU 実効スループットから可習得最大トークン数 $D$ を導出。
   * VRAM ピーク領域（4GB）への収容安全性を物理シミュレーション。
-  * `configs/base_config.yaml` の `model_defaults`（語彙数, GQA比率, 重み共有等）に基づく自律的モデル生成。
+  * **`configs/base_config.yaml` からのコンテキスト長 (`seq_len`) 一元検知**:
+    事前学習のコンテキスト長（`seq_len`）の参照先を `configs/base_config.yaml` のみに一元化し、単一の SSOT（基盤定義）として検知・シミュレーションを遂行。
   * **本番モデル構築エンジンのファンクションコール統合 (`create_model_config`)**:
     `src/chinchilla/calculator.py` 内で事前学習本番の `src.training.model_utils.create_model_config` を直接ファンクションコールしてモデル（`LlamaConfig`）を構築・検証。本番学習で投入される実データ構造と 100% 完全合致するモデル仕様でチンチラ法則を算定。
-  * **Config 同期・自動適用 (`--apply`) と成果物出力 (`chinchilla_result.json`)**: CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、推奨モデルアーキテクチャ（`n_params`, `hidden_size`, `num_layers` 等）と推奨ステップ数（`max_steps`）を `configs/chinchilla_config.yaml` へ即座に保存。同時に試算結果のメタデータを `chinchilla_result.json` へ成果物として自動出力。
+  * **HPO 探索時間シミュレーション (最悪時間 ＆ MedianPruner 推定時間)**:
+    `scripts/find_hparams` の動的関数（`calculate_dynamic_n_trials` 等）をファンクションコールし、プロキシモデル（~10% 規模）での 5次元探索における「枝刈りなし（Worst-Case）総探索時間」および「MedianPruner 適用時の期待総探索時間」を自律計算。
+  * **単一ファイル完全統合 (`configs/chinchilla_config.yaml`) ＋ 日本語インラインコメント**:
+    死にコードとなっていた旧 `chinchilla_result.json` および `chinchilla_config.meta.json` を完全撤去。CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、モデルアーキテクチャ、学習ステップ数、および計算環境・HPO探索時間シミュレーションの全メタデータを **分かりやすい日本語インラインコメント付きで `configs/chinchilla_config.yaml` 単一ファイルへ完全集約・保存**。
 * **効果**:
-  独自モデル生成処理による重複・不一致リスクを全廃し、`python -m src.chinchilla.main hours=48 --apply` の一発コマンドで本番と 100% 同一仕様のモデル構成を `configs/chinchilla_config.yaml` へ自動反映可能に。
+  成果物ファイルの散らばりや二重出力を 100% 排除し、`python -m src.chinchilla.main hours=48 --apply` の一発コマンドで HPO 探索時間の見通し把握から本番設定ファイルへの反映・自己可読化までを完全自動化。

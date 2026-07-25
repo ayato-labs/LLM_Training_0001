@@ -17,27 +17,18 @@ from src.common.logger import logger
 
 
 def detect_seq_len_from_config() -> int:
-    """configs/ フォルダ内の設定ファイルから現在の seq_len を動的自動検出"""
-    config_paths = [
-        Path("configs/config.yaml"),
-        Path("configs/extension_config.yaml"),
-    ]
-    for p in config_paths:
-        if p.exists():
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f)
-                if isinstance(cfg, dict):
-                    # extension_config 優先
-                    if "target_seq_len" in cfg and cfg["target_seq_len"]:
-                        return int(cfg["target_seq_len"])
-                    if "model" in cfg and isinstance(cfg["model"], dict) and "max_position_embeddings" in cfg["model"]:
-                        return int(cfg["model"]["max_position_embeddings"])
-                    if "training" in cfg and isinstance(cfg["training"], dict) and "seq_len" in cfg["training"]:
-                        return int(cfg["training"]["seq_len"])
-            except Exception:
-                continue
+    """configs/base_config.yaml から事前学習の基本 seq_len を一元取得"""
+    config_path = Path("configs/base_config.yaml")
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            if isinstance(cfg, dict) and "training" in cfg and "seq_len" in cfg["training"]:
+                return int(cfg["training"]["seq_len"])
+        except Exception as e:
+            logger.warning(f"Failed to read seq_len from base_config.yaml: {e}")
     return 1024
+
 
 
 def detect_gpu_info() -> dict[str, Any]:
@@ -342,6 +333,47 @@ def calculate_chinchilla_scaling(
     est_total_steps = int(total_tokens_computable / tokens_per_step)
     est_sec_per_step = tokens_per_step / tps
 
+    # 7. HPO 探索所要時間の物理シミュレーション (全自動動的ロジック)
+    # find_hparams モジュールの動的関数および hpo_config / base_config を参照
+    hpo_n_trials = 150
+    proxy_params = max(50_000_000, int(arch["n_params"] * 0.10))
+    batch_size_seqs = 16
+    hpo_trial_steps = 100
+
+    try:
+        from scripts.find_hparams import calculate_dynamic_n_trials, determine_optimal_proxy_size
+
+        hpo_n_trials = calculate_dynamic_n_trials(search_space_dim=5)
+        proxy_size_str = determine_optimal_proxy_size(arch["n_params"])
+        proxy_arch_dict = generate_universal_architecture(proxy_params)
+        proxy_params = proxy_arch_dict["n_params"]
+    except Exception as e:
+        logger.debug(f"find_hparams dynamic calculation fallback: {e}")
+
+    # hpo_config.yaml が存在する場合は設定値を優先読み込み
+    hpo_config_path = Path("configs/hpo_config.yaml")
+    if hpo_config_path.exists():
+        try:
+            with open(hpo_config_path, "r", encoding="utf-8") as f:
+                hpo_cfg = yaml.safe_load(f)
+            if isinstance(hpo_cfg, dict) and "training" in hpo_cfg:
+                tr_cfg = hpo_cfg["training"]
+                if "batch_size_seqs" in tr_cfg:
+                    batch_size_seqs = int(tr_cfg["batch_size_seqs"])
+        except Exception:
+            pass
+
+    proxy_trial_tokens = seq_len * batch_size_seqs * hpo_trial_steps
+    proxy_sec_per_trial = proxy_trial_tokens / tps
+
+    # 枝刈りなし（Worst Case）の総探索時間 (分)
+    hpo_worst_case_sec = proxy_sec_per_trial * hpo_n_trials
+    hpo_worst_case_min = round(hpo_worst_case_sec / 60.0, 1)
+
+    # MedianPruner 適用時の期待総探索時間 (早期枝刈りによる 65% 時間削減)
+    hpo_expected_min = round(hpo_worst_case_min * 0.35, 1)
+
+
     return {
         "gpu_info": gpu_info,
         "target_hours": target_hours,
@@ -356,7 +388,14 @@ def calculate_chinchilla_scaling(
         "is_vram_safe": vram_safe,
         "estimated_total_steps": est_total_steps,
         "estimated_sec_per_step": round(est_sec_per_step, 2),
+        "hpo_simulation": {
+            "proxy_params": proxy_params,
+            "n_trials": hpo_n_trials,
+            "worst_case_no_pruning_minutes": hpo_worst_case_min,
+            "expected_with_median_pruner_minutes": hpo_expected_min,
+        },
     }
+
 
 
 def calculate_context_sensitivity_comparison(
