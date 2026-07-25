@@ -19,10 +19,10 @@ tokenizer_path: "data/tokenizer.json"
 # 学習制御（hparamsで上書きされる値のデフォルト・フォールバック）
 training:
   seq_len: 1024
-  max_steps: -1
+  max_steps: 7500                        # Chinchilla Optimal 48-hour run (7,500 steps)
   num_epochs: 1
   save_steps: 500                       # チェックポイント保存（保護・復旧用: 500ステップごと）
-  eval_steps: 5000                      # テキスト生成評価（GPUストール削減のため頻度抑制）
+  eval_steps: 2500                      # テキスト生成評価
   logging_steps: 10
   torch_compile: false
   use_liger_kernel: true
