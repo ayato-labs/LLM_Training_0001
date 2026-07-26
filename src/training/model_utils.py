@@ -59,7 +59,9 @@ def calculate_optimal_batch_split(
     より正確なバッチ分割を算出する。
     """
     from src.common.vram_estimator import (
-        VramCalibration, VramConfig, estimate_training_vram_with_calibration,
+        VramCalibration,
+        VramConfig,
+        estimate_training_vram_with_calibration,
     )
 
     cal = VramCalibration.load() if use_calibration else None
@@ -96,9 +98,9 @@ def apply_selective_attention_checkpointing(model) -> int:
     PyTorch Checkpoint の Unpack Hook が CheckpointError (メタデータ不一致によるAutogradデッドロック)
     を出してフリーズ・TDRクラッシュするのを防ぐため、_CheckpointFrame のメタデータチェックを安全に適用。
     """
-    import torch
-    import torch.utils.checkpoint
     from functools import wraps
+
+    import torch.utils.checkpoint
 
     # PyTorch 2.x の Checkpoint Unpack Hook の再計算メタデータチェックを Liger 互換化
     if hasattr(torch.utils.checkpoint, "_CheckpointFrame"):
@@ -192,7 +194,6 @@ import sys
 from pathlib import Path
 
 import psutil
-import torch
 from datasets import Dataset
 
 from src.common.logger import logger
@@ -429,20 +430,6 @@ def compute_file_hash(filepath: str, max_size_mb: int = _MAX_HASH_SIZE_MB) -> st
         while chunk := f.read(8192):
             sha256.update(chunk)
     return sha256.hexdigest()
-
-
-def detect_vram() -> float:
-    """VRAM検出: torch.cuda を使用（CUDAコンテキスト初期化済みの場合）。
-
-    nvidia-smi ベースの検出が不要な場合のフォールバックとして使用。
-    HPO プロセス等でCUDAコンテキスト未初期化の場合は _detect_vram_subprocess を推奨。
-    """
-    try:
-        if torch.cuda.is_available():
-            return round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
-    except Exception:
-        pass
-    return 4.0
 
 
 def compute_dataset_fingerprint(dataset_path: str) -> dict:

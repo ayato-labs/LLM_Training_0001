@@ -11,14 +11,12 @@
 
 import sys
 from pathlib import Path
-import yaml
-
-from src.common.logger import logger
 
 from src.chinchilla.calculator import (
     calculate_chinchilla_scaling,
     detect_seq_len_from_config,
 )
+from src.common.logger import logger
 from src.common.vram_estimator import auto_calibrate
 
 

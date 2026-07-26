@@ -34,7 +34,6 @@ from src.training.callbacks import (
 )
 from src.training.model_utils import (
     PackedDatasetWrapper,
-    apply_selective_attention_checkpointing,
     compute_dataset_fingerprint,
     compute_file_hash,
     create_model_config,
@@ -142,15 +141,15 @@ def _warmup_liger_kernels(config: dict) -> None:
 
 def _check_and_warn_tdr_delay() -> None:
     """WSL2 / Windows 環境において Windows TdrDelay 及び TdrDdiDelay レジストリ設定をチェックし、不足時にアクション案内ログを出力する。"""
-    import sys
-    import subprocess
     import shutil
+    import subprocess
+    import sys
 
     # WSL2 または Windows 環境のチェック
     is_wsl = False
     if sys.platform == "linux":
         try:
-            with open("/proc/version", "r") as f:
+            with open("/proc/version") as f:
                 if "microsoft" in f.read().lower():
                     is_wsl = True
         except Exception:
@@ -264,7 +263,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     """
     import time
     t_start = time.perf_counter()
-    logger.info(f"[Train Engine Diag t=0.000ms] train() entry point reached.")
+    logger.info("[Train Engine Diag t=0.000ms] train() entry point reached.")
 
     # 0. Windows / WSL2 環境下の TdrDelay 設定状態をチェック・警告表示
     _check_and_warn_tdr_delay()
@@ -564,7 +563,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
         # OS別の安全上限 (Windows Native/WDDMではIPCフリーズ回避のため上限2、LinuxではCPUコア数)
         max_safe_workers = 2 if sys.platform == "win32" else min(4, max(1, (os.cpu_count() or 2)))
-        
+
         # 11. DataLoader のマルチプロセス安全設定 (WSL2 WDDMデッドロック防止)
         # WSL2上での num_workers > 0 は CUDA IPC shared memory 転送時にステップ間で
         # H2D DMA衝突を起こし 'CUDA driver error' を引き起こすため 0 (メインプロセス) を指定

@@ -2,8 +2,9 @@
 main.py からは import されない。scripts/find_hparams.py からのみ使用。
 """
 
-import warnings
 import time
+import warnings
+
 import optuna
 import torch
 from transformers import TrainerCallback
@@ -62,7 +63,7 @@ def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_
 def _run_training_process(config, tokenized_dataset, queue):
     import time
     start_time = time.perf_counter()
-    logger.info(f"[HPO Subprocess Diag] Subprocess started at t=0.000s")
+    logger.info("[HPO Subprocess Diag] Subprocess started at t=0.000s")
     try:
         if torch.cuda.is_available():
             try:
@@ -122,7 +123,7 @@ def _run_training_process(config, tokenized_dataset, queue):
                 cuda_status = f"Allocated={allocated:.2f}MB, Reserved={reserved:.2f}MB"
             except Exception as c_err:
                 cuda_status = f"CUDA Query Failed ({c_err})"
-        
+
         logger.error(
             f"[HPO Subprocess Diag CRASH t={fail_time:.2f}ms] "
             f"Subprocess failed! CUDA Status: [{cuda_status}] | Error: {e}"
@@ -255,7 +256,9 @@ def objective(
     # VRAM Estimator ガードレール (Zero-Cost Pre-Pruning)
     # 不完全な設定で VRAM の 90% を超える推定値の場合、GPU プロセスを起動せずに事前枝刈り
     from src.common.vram_estimator import (
-        VramCalibration, VramConfig, estimate_training_vram_with_calibration,
+        VramCalibration,
+        VramConfig,
+        estimate_training_vram_with_calibration,
     )
 
     cal = VramCalibration.load()

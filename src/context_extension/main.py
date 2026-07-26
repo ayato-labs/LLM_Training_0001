@@ -7,8 +7,6 @@ Hydra CLI を経由して長文拡張エンジン (run_context_extension) を起
     python -m src.context_extension.main target_seq_len=8192 rope_scaling.type=yarn
 """
 
-import sys
-from pathlib import Path
 
 import hydra
 from omegaconf import DictConfig

@@ -20,7 +20,22 @@ import os
 import statistics
 import sys
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
+
+
+def detect_vram() -> float:
+    """GPU VRAM容量を検出（GB単位）。
+
+    torch.cuda が利用可能な場合は物理VRAMを返し、不可の場合は 4.0 GB をフォールバックとする。
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
+    except Exception:
+        pass
+    return 4.0
+
 
 Precision = Literal["bf16", "fp16", "fp32"]
 OptimizerType = Literal["adamw_bnb_8bit", "paged_adamw", "adamw_torch_fused"]
@@ -214,7 +229,7 @@ class VramCalibration:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
-    def load(cls, path: str = _CALIBRATION_FILE) -> Optional[VramCalibration]:
+    def load(cls, path: str = _CALIBRATION_FILE) -> VramCalibration | None:
         if not os.path.exists(path):
             return None
         try:
@@ -440,7 +455,7 @@ def _calc_wsl_overhead_gb() -> float:
 
 def estimate_training_vram_with_calibration(
     config: VramConfig,
-    calibration: Optional[VramCalibration] = None,
+    calibration: VramCalibration | None = None,
 ) -> VramEstimate:
     """実測キャリブレーション値を反映した推定。
 
@@ -699,7 +714,7 @@ def auto_calibrate(
             n_samples=n_samples, warmup=True, agg="median",
         )
         cal.save()
-        logger.info(f"[auto_calibrate] Saved vram_calibration.json")
+        logger.info("[auto_calibrate] Saved vram_calibration.json")
 
         model.cpu()
         del model, optimizer

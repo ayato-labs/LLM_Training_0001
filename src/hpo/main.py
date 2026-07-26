@@ -7,7 +7,6 @@ Usage:
     python -m src.hpo.main proxy=50M seq_len=1024 --apply
 """
 
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -17,23 +16,21 @@ import yaml
 from datasets import load_dataset
 from transformers import PreTrainedTokenizerFast
 
-from src.common.logger import logger
-from src.hpo.hpo_manager import (
-    calculate_dynamic_n_trials,
-    create_search_space,
-    determine_optimal_proxy_size,
-    objective,
-)
-from src.hpo.step_law import compute_hpo_for_target
-from src.training.config import _detect_vram as detect_vram
-from src.training.model_utils import (
-    calculate_optimal_batch_split,
-    get_optimal_num_proc,
-    parallel_tokenize,
-)
 from src.chinchilla.calculator import (
     detect_seq_len_from_config,
     generate_universal_architecture,
+)
+from src.common.logger import logger
+from src.common.vram_estimator import detect_vram
+from src.hpo.hpo_manager import (
+    calculate_dynamic_n_trials,
+    create_search_space,
+    objective,
+)
+from src.hpo.step_law import compute_hpo_for_target
+from src.training.model_utils import (
+    get_optimal_num_proc,
+    parallel_tokenize,
 )
 
 
@@ -144,7 +141,7 @@ def main():
     output_path = args.get("output", "configs/hpo_config.yaml")
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     n_pruned = len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])
-    
+
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("# ====================================================================\n")
         f.write("# HPO 探索結果 (src.hpo.main により自動生成)\n")

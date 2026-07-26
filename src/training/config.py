@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
-import torch
 from omegaconf import DictConfig, OmegaConf
+
+from src.common.vram_estimator import detect_vram
 
 
 def _resolve_wsl_paths(config_obj):
@@ -60,7 +61,7 @@ def load_config(cfg: DictConfig) -> dict:
 
     # VRAM自動検出（上書き可能）
     if "vram_limit_gb" not in normalized or normalized["vram_limit_gb"] is None:
-        normalized["vram_limit_gb"] = _detect_vram()
+        normalized["vram_limit_gb"] = detect_vram()
 
     # Precision既定値
     normalized.setdefault("precision", "bf16")
@@ -271,16 +272,3 @@ def _validate_config_consistency(config: dict) -> None:
             f"target_params={expected_n_params:,} "
             f"matches hparams {hparams_name}"
         )
-
-
-def _detect_vram() -> float:
-    """VRAM検出: ローカルのtorch.cuda使用版（config内部用）。
-
-    サブプロセス呼出しは不要（config読み込み時点では既にCUDA初期化済みの場合があるため）。
-    """
-    try:
-        if torch.cuda.is_available():
-            return round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
-    except Exception:
-        pass
-    return 4.0

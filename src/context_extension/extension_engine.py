@@ -6,7 +6,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import torch
 from datasets import load_dataset
@@ -44,7 +44,7 @@ def load_merged_config(cfg: DictConfig | dict) -> dict:
     hpo_override = {}
     if hpo_result_path.exists():
         try:
-            with open(hpo_result_path, "r", encoding="utf-8") as f:
+            with open(hpo_result_path, encoding="utf-8") as f:
                 hpo_data = json.load(f)
                 if "best_params" in hpo_data:
                     hpo_override = hpo_data["best_params"]

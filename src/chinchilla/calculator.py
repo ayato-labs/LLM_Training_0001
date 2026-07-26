@@ -9,10 +9,11 @@ import math
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 import yaml
+
 from src.common.logger import logger
 
 
@@ -26,7 +27,7 @@ def detect_data_path_and_tokens() -> tuple[str, float | None]:
 
     if config_path.exists():
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             if isinstance(cfg, dict):
                 if "data_path" in cfg and cfg["data_path"]:
@@ -54,7 +55,7 @@ def detect_data_path_and_tokens() -> tuple[str, float | None]:
             # データセット先頭からサンプル行を抽出し、正確な 1 バイトあたりのトークン密度 (tokens_per_byte) を計算
             sample_text = ""
             sample_bytes = 0
-            with open(path_obj, "r", encoding="utf-8", errors="ignore") as f:
+            with open(path_obj, encoding="utf-8", errors="ignore") as f:
                 for idx, line in enumerate(f):
                     sample_text += line
                     sample_bytes += len(line.encode("utf-8"))
@@ -81,7 +82,7 @@ def detect_seq_len_from_config() -> int:
     config_path = Path("configs/base_config.yaml")
     if config_path.exists():
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             if isinstance(cfg, dict) and "training" in cfg and "seq_len" in cfg["training"]:
                 return int(cfg["training"]["seq_len"])
@@ -125,7 +126,7 @@ def extract_throughput_from_recent_logs() -> float | None:
     pattern = re.compile(r"(\d+\.\d+)s/it")
     for log_path in log_paths[:3]:
         try:
-            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(log_path, encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
             for line in reversed(lines):
                 match = pattern.search(line)
@@ -154,7 +155,7 @@ def run_quick_proxy_benchmark(seq_len: int = 1024, batch_size: int = 16) -> tupl
     torch.cuda.synchronize()
 
     target_bs = max(1, batch_size)
-    
+
     while target_bs >= 1:
         try:
             from transformers import LlamaConfig
@@ -220,25 +221,43 @@ def estimate_peak_vram_gb(
     hidden_size: int = 768,
     num_layers: int = 12,
     vocab_size: int = 32000,
+    intermediate_size: int = 0,
+    precision: str = "bf16",
+    optimizer_type: str = "adamw_bnb_8bit",
+    use_liger_kernel: bool = True,
+    torch_compile: bool = False,
 ) -> float:
-    """本番の `src.training.model_utils.calculate_optimal_batch_split` 内で定義されている
-    Megatron-LM 物理メモリモデルに基づき、訓練時の正確な Peak VRAM 消費量 (GB) を算出。
+    """統一VRAM推定エンジン (src.common.vram_estimator) に委譲してピークVRAM (GB) を返す。
+
+    既存の呼び出し元との互換性のため、引数シグネチャは維持しつつ、
+    詳細見積もりパラメータ（intermediate_size, precision, optimizer_type等）をオプションで追加。
     """
-    bytes_per_param = 2.0  # bfloat16 / float16
+    from src.common.vram_estimator import VramConfig, estimate_training_vram
 
-    # 1. モデル重み (2B) + 勾配 (2B) + 8-bit AdamW オプティマイザ (2B)
-    model_state_bytes = n_params * (2.0 + 2.0 + 2.0)
+    # selective_checkpointing → checkpointing モード変換
+    checkpointing = "selective" if selective_checkpointing else "full"
 
-    # 2. Liger Fused CrossEntropy ワークスペース
-    liger_workspace_bytes = vocab_size * hidden_size * bytes_per_param
+    # intermediate_size=0 の場合は auto (4 * hidden_size) 扱い
+    eff_intermediate = intermediate_size if intermediate_size > 0 else 4 * hidden_size
 
-    # 3. 1サンプルあたりのアクティベーションメモリ (全層 Gradient Checkpointing 時: 2 * seq_len * hidden * num_layers * bytes)
-    activation_bytes = 2.0 * batch_size * seq_len * hidden_size * num_layers * bytes_per_param
+    cfg = VramConfig(
+        n_params=n_params,
+        hidden_size=hidden_size,
+        intermediate_size=eff_intermediate,
+        num_layers=num_layers,
+        vocab_size=vocab_size,
+        micro_batch_size=batch_size,
+        seq_len=seq_len,
+        precision=precision,  # type: ignore[arg-type]
+        optimizer_type=optimizer_type,  # type: ignore[arg-type]
+        checkpointing=checkpointing,  # type: ignore[arg-type]
+        use_liger_kernel=use_liger_kernel,
+        torch_compile=torch_compile,
+        total_vram_gb=vram_cap,
+    )
 
-    total_bytes = model_state_bytes + liger_workspace_bytes + activation_bytes
-    total_gb = total_bytes / (1024**3)
-
-    return round(total_gb, 2)
+    est = estimate_training_vram(cfg)
+    return round(est.breakdown.total_estimated_gb, 2)
 
 
 def load_base_model_defaults() -> dict[str, Any]:
@@ -310,7 +329,9 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
     exact_n_params = embed_params + (n_layers * params_per_layer)
     try:
         from unittest.mock import MagicMock
+
         from transformers import LlamaForCausalLM
+
         from src.training.model_utils import create_model_config, estimate_model_size
 
         dummy_tokenizer = MagicMock()
@@ -325,7 +346,7 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
         }
         # 本番と 100% 同一の LlamaConfig を動的生成
         llama_config = create_model_config(config_dict, dummy_tokenizer)
-        
+
         # 本番と同一の PyTorch パラメータ数カウント
         with torch.device("meta"):
             meta_model = LlamaForCausalLM(llama_config)
@@ -341,15 +362,10 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
     return arch_dict
 
 
-import math
-import time
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
-import torch
-import yaml
-from src.common.logger import logger
 from src.hpo.hpo_manager import calculate_dynamic_n_trials
+
 
 def detect_real_available_vram_gb(device_id: int = 0) -> float:
     """
@@ -364,14 +380,14 @@ def detect_real_available_vram_gb(device_id: int = 0) -> float:
         # これによりOSのWDDMやPyTorchのベースフットプリントがVRAMに確保される
         dummy = torch.zeros(1, device=f"cuda:{device_id}")
         del dummy
-        
+
         # 2. キャッシュをクリアし、純粋な空き状態を作る
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
         # 3. OS/ドライバレベルでの空きメモリを取得 (Bytes)
         free_bytes, total_bytes = torch.cuda.mem_get_info(device_id)
-        
+
         # 4. GB単位に変換
         free_vram_gb = free_bytes / (1024**3)
         return round(free_vram_gb, 2)
@@ -388,7 +404,9 @@ def _vram_estimate(
     checkpointing: str = "selective",
 ) -> "VramEstimate":
     from src.common.vram_estimator import (
-        VramConfig, estimate_training_vram_with_calibration,
+        VramConfig,
+        VramEstimate,
+        estimate_training_vram_with_calibration,
     )
 
     return estimate_training_vram_with_calibration(VramConfig(
@@ -412,7 +430,7 @@ def find_max_safe_batch_size(
     指定されたアーキテクチャと空きVRAMにおいて、OMMを起こさない最大のバッチサイズを自動探索する。
     """
     safe_limit_gb = true_free_vram_gb * 0.90
-    
+
     optimal_bs = 1
     for test_bs in range(max_search_bs, 0, -1):
         est_vram = _vram_estimate(
@@ -424,7 +442,7 @@ def find_max_safe_batch_size(
         if est_vram <= safe_limit_gb:
             optimal_bs = test_bs
             break
-            
+
     return optimal_bs
 
 
@@ -446,7 +464,7 @@ def calculate_chinchilla_scaling(
         force_benchmark: 強制的にGPUベンチマーク実行
         reference_n_params: スループット基準モデルのパラメータ数
     """
-    
+
     gpu_info = detect_gpu_info()
     seq_len = user_seq_len or detect_seq_len_from_config()
 
@@ -497,7 +515,7 @@ def calculate_chinchilla_scaling(
     data_shortage_warn = False
     data_capped_arch = None
     data_sufficiency_ratio = 100.0
-    
+
     max_allowed_n_by_data = float('inf')
 
     if actual_dataset_tokens is not None:
@@ -532,10 +550,10 @@ def calculate_chinchilla_scaling(
 
     # --- 5. 最適アーキテクチャの生成とバッチサイズの自動決定 ---
     arch = generate_universal_architecture(int(target_n))
-    
+
     # 決定されたアーキテクチャにおける「最大安全バッチサイズ」を算出
     optimal_batch_size = find_max_safe_batch_size(arch, seq_len, true_free_vram_gb, checkpointing="selective")
-    
+
     # 最終的なVRAM見積もり (ロギング用)
     est_vram = _vram_estimate(
         arch["n_params"], seq_len, optimal_batch_size,
@@ -578,12 +596,12 @@ def calculate_chinchilla_scaling(
         "gpu_info": gpu_info,
         "target_hours": target_hours,
         "seq_len": seq_len,
-        
+
         "measured_throughput_tps": round(tps, 1),
         "throughput_source": tp_source,
         "reference_model_params": ref_n,
         "effective_tflops": round(effective_flops_per_sec / 1e12, 2),
-        
+
         "computable_tokens": round(total_tokens_computable),
         "computable_tokens_million": round(total_tokens_computable / 1e6, 2),
         "dataset_info": {
@@ -595,15 +613,15 @@ def calculate_chinchilla_scaling(
         "chinchilla_pure_optimal_n_million": round(chinchilla_n_pure / 1e6, 2),
         "recommended_architecture": arch,
         "data_capped_architecture": data_capped_arch,
-        
+
         "true_free_vram_gb": true_free_vram_gb,
         "estimated_peak_vram_gb": est_vram,
         "vram_limit_gb": gpu_info.get("total_vram_gb", 4.0),
         "is_vram_safe": vram_safe,
-        
+
         # OMM防止のため動的算出された最適なバッチサイズをエクスポート
         "optimal_batch_size": optimal_batch_size,
-        
+
         "projected_target_tps": round(projected_target_tps, 1),
         "hpo_simulation": {
             "proxy_params": proxy_params,
