@@ -32,7 +32,8 @@ training:
 # ハードウェア最適化設定
 torch_compile: false
 use_liger_kernel: true
-selective_checkpointing: true
+selective_checkpointing: false
+gradient_checkpointing: true
 
 # トークナイズ並列化設定
 tokenization:

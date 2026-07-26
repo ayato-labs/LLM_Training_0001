@@ -1,0 +1,2 @@
+number,value,datetime_start,datetime_complete,duration,params_batch_size_seqs,params_max_lr_1d,params_max_lr_2d,params_warmup_ratio,params_weight_decay,state
+0,5.644585113525391,2026-07-26 14:57:34.282919,2026-07-26 14:59:36.973777,0 days 00:02:02.690858,29,0.0016149426973032898,0.017724943907943613,0.012323344486727979,0.06431879447396457,COMPLETE

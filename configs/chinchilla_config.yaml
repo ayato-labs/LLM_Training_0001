@@ -1,14 +1,39 @@
+# @package _global_
+# -----------------------------------------------------------------------------
+# チンチラの法則 (src.chinchilla) による目標時間逆算成果物
+# -----------------------------------------------------------------------------
+
+# [モデル構造設定] 目標時間 (24.0時間) で Loss が最も低くなる黄金比率アーキテクチャ
 model:
-  target_params: 116826112
+  target_params: 37364224  # 推定パラメータ数 (~37.4M)
   llama:
-    hidden_size: 832
-    num_hidden_layers: 11
-    num_attention_heads: 13
-    num_key_value_heads: 3
-    intermediate_size: 2176
-    rope_theta: 10000.0
-    vocab_size: 32000
-    attn_implementation: sdpa
-    tie_word_embeddings: true
+    hidden_size: 512  # 隠れ層ベクトル次元
+    num_hidden_layers: 8  # Transformerレイヤー数
+    num_attention_heads: 8  # Attention Head数 (head_dim = 64)
+    num_key_value_heads: 2  # Key/Value Head数 (GQA 4:1)
+    intermediate_size: 1280  # SwiGLU FFN中間層次元
+    rope_theta: 10000.0  # RoPE位置エンコーディング基準周波数
+    vocab_size: 32000  # 語彙数
+    attn_implementation: "sdpa"  # PyTorch SDPA バックエンド
+    tie_word_embeddings: true  # 埋め込み層とLM Headの重み共有
+
+# [学習ステップ設定] 指定時間で到達すべき最適ステップ数
 training:
-  max_steps: 17518
+  max_steps: 786  # トータル学習ステップ数
+
+# [計算環境・データセット監査および HPO 探索時間シミュレーション (参考メタデータ)]
+metadata:
+  target_hours: 24.0  # 目標学習時間 (hours)
+  gpu: "NVIDIA GeForce RTX 3050 Laptop GPU"  # 検出されたGPU型番
+  measured_throughput_tps: 14338.6  # 実測スループット (tokens/sec)
+  estimated_peak_vram_gb: 2.1707  # 訓練時推定 Peak VRAM (GB)
+  dataset:
+    data_path: "data/dataset.jsonl"  # 使用データセットパス
+    actual_tokens: "~1977.27M tokens"  # データセット内実測トークン数
+    sufficiency_ratio_pct: 239.8  # 必要トークン数に対するデータ充足率 (%)
+    is_data_shortage: false  # データ不足警告フラグ
+  hpo_simulation:
+    proxy_params: 34741760  # 探索に使用するプロキシモデル規模 (~10%)
+    n_trials: 100  # 5次元探索の標準試行回数 (30 trials/dim)
+    worst_case_no_pruning_minutes: 482.1  # 枝刈りゼロ時の最悪総探索時間 (分)
+    expected_with_median_pruner_minutes: 168.7  # MedianPruner適用時の期待探索時間 (分)
