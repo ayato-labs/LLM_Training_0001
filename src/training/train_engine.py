@@ -632,7 +632,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
             max_new_tokens=config.get("eval_max_new_tokens", 64),
             temperature=config.get("eval_temperature", 0.8),
             top_p=config.get("eval_top_p", 0.95),
-            divergence_threshold=config.get("divergence_threshold", 10.0),
+            divergence_threshold=config.get("divergence_threshold"),
             log_generations=config.get("eval_log_generations", True),
         ),  # 定期評価: perplexity + 生成サンプル + 発散検知
     ]
