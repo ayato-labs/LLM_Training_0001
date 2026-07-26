@@ -1,0 +1,175 @@
+"""HPO (Hyperparameter Optimization) CLI Entrypoint
+
+Reads configs/chinchilla_config.yaml and runs Step Law + Optuna search.
+
+Usage:
+    python -m src.hpo.main n_trials=50
+    python -m src.hpo.main proxy=50M seq_len=1024 --apply
+"""
+
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import optuna
+import yaml
+from datasets import load_dataset
+from transformers import PreTrainedTokenizerFast
+
+from src.common.logger import logger
+from src.hpo.hpo_manager import create_search_space, objective
+from src.hpo.step_law import compute_hpo_for_target
+from src.training.config import _detect_vram as detect_vram
+from src.training.model_utils import (
+    calculate_optimal_batch_split,
+    get_optimal_num_proc,
+    parallel_tokenize,
+)
+from src.chinchilla.calculator import generate_universal_architecture, calculate_dynamic_n_trials
+
+
+def load_target_arch(path: str = "configs/chinchilla_config.yaml") -> dict:
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    model_cfg = cfg.get("model", {})
+    llama = model_cfg.get("llama", {})
+    return {
+        "n_params": model_cfg["target_params"],
+        "hidden": llama["hidden_size"],
+        "layers": llama["num_hidden_layers"],
+        "heads": llama["num_attention_heads"],
+        "kv_heads": llama["num_key_value_heads"],
+        "ffn": llama["intermediate_size"],
+        "vocab_size": llama.get("vocab_size", 32000),
+    }
+
+
+def main():
+    args = {}
+    for arg in sys.argv[1:]:
+        if "=" in arg:
+            k, v = arg.split("=", 1)
+            args[k.strip().lower()] = v.strip()
+        elif arg.startswith("--"):
+            args[arg.lstrip("-").lower()] = "true"
+
+    # ---- Load target architecture ----
+    chinchilla_cfg = args.get("chinchilla_config", "configs/chinchilla_config.yaml")
+    target_arch = load_target_arch(chinchilla_cfg)
+    target_size = f'{target_arch["n_params"] / 1e6:.0f}M'
+
+    # ---- Proxy model ----
+    if "proxy" in args:
+        proxy_size = args["proxy"]
+    else:
+        proxy_n = max(50_000_000, int(target_arch["n_params"] * 0.1))
+        proxy_size = f"{proxy_n // 1_000_000}M"
+    proxy_n = int(proxy_size.replace("M", "")) * 1_000_000
+    proxy_arch = generate_universal_architecture(proxy_n)
+
+    # ---- Resources ----
+    data_path = args.get("data_path", "data/dataset.jsonl")
+    n_tokens = sum(1 for _ in open(data_path, encoding="utf-8"))
+    proxy_vram = float(args.get("vram_gb", 0)) or detect_vram()
+    seq_len = int(args.get("seq_len", "1024"))
+    n_trials = int(args.get("n_trials", "0")) or calculate_dynamic_n_trials(search_space_dim=5)
+
+    logger.info(f"Proxy={proxy_size}, Target={target_size}, Tokens={n_tokens}, VRAM={proxy_vram} GB")
+
+    # ---- Data prep ----
+    logger.info(f"Loading dataset from {data_path}...")
+    tokenizer = PreTrainedTokenizerFast(tokenizer_file="data/tokenizer.json")
+    for attr, val in [("unk_token", "<unk>"), ("bos_token", "<s>"), ("eos_token", "</s>"), ("pad_token", "<pad>")]:
+        setattr(tokenizer, attr, val)
+
+    dataset = load_dataset("json", data_files=str(data_path))
+    for split in dataset:
+        n_samples = max(1, int(len(dataset[split]) * 0.001))
+        if n_samples < len(dataset[split]):
+            dataset[split] = dataset[split].select(range(n_samples))
+
+    cols_to_remove = [c for c in dataset["train"].column_names if c not in ["input_ids", "attention_mask", "labels"]]
+    num_proc = get_optimal_num_proc()
+    tokenized_dataset = parallel_tokenize(
+        dataset, tokenizer, seq_len=seq_len, padding=True,
+        remove_columns=cols_to_remove, max_workers=num_proc, batch_size=1000,
+    )
+    tokenized_dataset.set_format("torch")
+
+    # ---- Step Law ----
+    step_law_hpo = compute_hpo_for_target(n_params=proxy_arch["n_params"], n_tokens=n_tokens, seq_len=seq_len)
+
+    # ---- Optuna ----
+    search_space = create_search_space(step_law_hpo, proxy_vram, n_params=proxy_arch["n_params"])
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=15, interval_steps=5),
+    )
+    study.set_user_attr("n_trials", n_trials)
+    study.optimize(
+        lambda trial: objective(trial, proxy_arch, tokenized_dataset, seq_len, proxy_vram, step_law_hpo),
+        n_trials=n_trials,
+    )
+
+    best = study.best_params
+
+    # ---- Scale to target ----
+    scaling_ratio = (target_arch["n_params"] / proxy_arch["n_params"]) ** -0.713
+    scaled_best = {
+        k: round(float(v * scaling_ratio), 6) if k in ["max_lr_2d", "max_lr_1d"] else v
+        for k, v in best.items()
+    }
+
+    target_batch_seqs = scaled_best.get("batch_size_seqs", 16)
+    per_device, grad_accum = calculate_optimal_batch_split(
+        total_batch_size=target_batch_seqs, vram_gb=proxy_vram,
+        n_params=target_arch["n_params"], seq_len=seq_len,
+        hidden_size=target_arch["hidden"], num_layers=target_arch["layers"],
+    )
+
+    output = {
+        "training": {
+            **scaled_best,
+            "warmup_ratio": scaled_best.get("warmup_ratio", 0.03),
+            "beta2": 0.95,
+            "grad_clip": 1.0,
+            "per_device_batch_size": per_device,
+            "grad_accum_steps": grad_accum,
+        }
+    }
+
+    # ---- Save ----
+    output_path = args.get("output", "configs/hpo_config.yaml")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write("# HPO result (generated by src.hpo.main)\n")
+        yaml.dump(output, f, default_flow_style=False, sort_keys=False)
+    logger.info(f"HPO config saved to {output_path}")
+
+    meta = {
+        "timestamp": datetime.now().isoformat(),
+        "proxy_model_size": proxy_size,
+        "target_model_size": target_size,
+        "n_tokens": n_tokens,
+        "proxy_vram_gb": proxy_vram,
+        "best_value": study.best_value,
+        "n_trials": len(study.trials),
+        "n_pruned": len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]),
+        "scaling_ratio": scaling_ratio,
+    }
+    json_path = Path(output_path).with_suffix(".meta.json")
+    with open(json_path, "w") as f:
+        json.dump(meta, f, indent=2)
+    logger.info(f"Metadata saved to {json_path}")
+
+    print("\n===== HPO Result =====")
+    print(f"  Best loss: {study.best_value:.4f}")
+    for k, v in output["training"].items():
+        print(f"  {k}: {v}")
+    print(f"\nSaved to {output_path}")
+
+
+if __name__ == "__main__":
+    main()

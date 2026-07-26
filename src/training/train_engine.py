@@ -12,7 +12,9 @@ warnings.filterwarnings("ignore", message=".*use_return_dict.*")
 # Linuxの /tmp (tmpfs RAMディスク) の容量不足による [Errno 28] OOM を回避するため、
 # 一時ディレクトリを十分な空き容量のあるローカルディスク（ext4）上に強制指定
 os.environ["TMPDIR"] = str(Path("models/output/tmp").resolve())
-Path("models/output/tmp").mkdir(parents=True, exist_ok=True)
+# PyTorch CUDA Caching Allocator のフラグメンテーションと不要な Reserved メモリ拡大を防止
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "garbage_collection_threshold:0.8,max_split_size_mb:128"
 
 disable_caching()
 
@@ -73,84 +75,180 @@ def _verify_flash_attention(precision: str) -> None:
         )
 
 
-def _estimate_vram_and_warn(config: dict) -> None:
-    """学習開始前に理論的なVRAM消費量を推定し、限界値を超える可能性がある場合にログ警告を出力する。"""
-    import sys
+def _warmup_liger_kernels(config: dict) -> None:
+    """プロキシ/本番モデルの実寸法テンソルで Liger Triton JIT カーネルを個別コンパイル・分割同期する。"""
+    import time
+    if not torch.cuda.is_available():
+        return
 
+    t0 = time.perf_counter()
+    model_params = config.get("model_params", {})
+    hidden_size = model_params.get("hidden_size", 768)
+    intermediate_size = model_params.get("intermediate_size", 3072)
+    vocab_size = model_params.get("vocab_size", 64000)
+    precision = config.get("precision", "bf16")
+    dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+
+    logger.info(
+        f"[Liger Warmup] Pre-compiling Liger Triton JIT kernels for model dimensions "
+        f"(hidden={hidden_size}, intermediate={intermediate_size}, vocab={vocab_size}, precision={precision})..."
+    )
+
+    # Step 1: SwiGLU Triton Kernel Warmup
+    try:
+        t_step = time.perf_counter()
+        from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+        # gate_proj & up_proj output shape: [batch, seq_len, intermediate_size]
+        a = torch.randn(1, 16, intermediate_size, dtype=dtype, device="cuda")
+        b = torch.randn(1, 16, intermediate_size, dtype=dtype, device="cuda")
+        _ = LigerSiLUMulFunction.apply(a, b)
+        torch.cuda.synchronize()
+        del a, b, _
+        logger.info(f"[Liger Warmup 1/3] SwiGLU kernel JIT compiled in {(time.perf_counter() - t_step)*1000:.2f}ms.")
+    except Exception as swiglu_e:
+        logger.warning(f"[Liger Warmup 1/3] SwiGLU warmup warning: {swiglu_e}")
+
+    # Step 2: RMSNorm Triton Kernel Warmup
+    try:
+        t_step = time.perf_counter()
+        from liger_kernel.ops.rms_norm import LigerRMSNormFunction
+        x = torch.randn(1, 16, hidden_size, dtype=dtype, device="cuda")
+        w = torch.ones(hidden_size, dtype=dtype, device="cuda")
+        _ = LigerRMSNormFunction.apply(x, w, 1e-6)
+        torch.cuda.synchronize()
+        del x, w, _
+        logger.info(f"[Liger Warmup 2/3] RMSNorm kernel JIT compiled in {(time.perf_counter() - t_step)*1000:.2f}ms.")
+    except Exception as rms_e:
+        logger.warning(f"[Liger Warmup 2/3] RMSNorm warmup warning: {rms_e}")
+
+    # Step 3: CrossEntropy / LCE Triton Kernel Warmup
+    try:
+        t_step = time.perf_counter()
+        from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+        # logits shape: [batch_seq, vocab_size], target shape: [batch_seq]
+        logits = torch.randn(16, vocab_size, dtype=dtype, device="cuda")
+        target = torch.randint(0, vocab_size, (16,), dtype=torch.long, device="cuda")
+        # LigerCrossEntropyFunction.forward(ctx, _input, target, weight=None, ignore_index=-100, ...)
+        _ = LigerCrossEntropyFunction.apply(logits, target, None, -100)
+        torch.cuda.synchronize()
+        del logits, target, _
+        logger.info(f"[Liger Warmup 3/3] CrossEntropy kernel JIT compiled in {(time.perf_counter() - t_step)*1000:.2f}ms.")
+    except Exception as ce_e:
+        logger.warning(f"[Liger Warmup 3/3] CrossEntropy warmup warning: {ce_e}")
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    logger.info(f"[Liger Warmup] All Liger Triton kernels successfully pre-compiled & synchronized in {elapsed_ms:.2f}ms.")
+
+
+def _check_and_warn_tdr_delay() -> None:
+    """WSL2 / Windows 環境において Windows TdrDelay 及び TdrDdiDelay レジストリ設定をチェックし、不足時にアクション案内ログを出力する。"""
+    import sys
+    import subprocess
+    import shutil
+
+    # WSL2 または Windows 環境のチェック
+    is_wsl = False
+    if sys.platform == "linux":
+        try:
+            with open("/proc/version", "r") as f:
+                if "microsoft" in f.read().lower():
+                    is_wsl = True
+        except Exception:
+            pass
+
+    if not (is_wsl or sys.platform == "win32"):
+        return  # Pure Linux環境等ではチェック不要
+
+    reg_cmd = "/mnt/c/Windows/System32/reg.exe" if is_wsl else "reg"
+    if not is_wsl and not shutil.which("reg"):
+        return
+
+    def _query_reg_key(key_name: str) -> int | None:
+        try:
+            res = subprocess.run(
+                [reg_cmd, "query", r"HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "/v", key_name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if key_name in line and "REG_DWORD" in line:
+                        parts = line.split()
+                        raw_val = parts[-1]
+                        return int(raw_val, 16) if raw_val.startswith("0x") else int(raw_val)
+        except Exception:
+            pass
+        return None
+
+    tdr_delay_val = _query_reg_key("TdrDelay")
+    tdr_ddi_delay_val = _query_reg_key("TdrDdiDelay")
+
+    # TdrDelay <= 3秒 または TdrDdiDelay <= 10秒 の場合に案内ログを出力
+    need_warning = False
+    if tdr_delay_val is None or tdr_delay_val <= 3:
+        need_warning = True
+    if tdr_ddi_delay_val is None or tdr_ddi_delay_val <= 10:
+        need_warning = True
+
+    if need_warning:
+        delay_str = f"{tdr_delay_val} sec" if tdr_delay_val is not None else "Not Set (Default 2 sec)"
+        ddi_str = f"{tdr_ddi_delay_val} sec" if tdr_ddi_delay_val is not None else "Not Set (Default 5 sec)"
+        logger.warning(
+            "\n"
+            "================================================================================\n"
+            "  [Windows WDDM TDR Alert] GPU Timeout Protection Check\n"
+            "  ------------------------------------------------------------------------------\n"
+            f"  Current Settings:\n"
+            f"    - TdrDelay:    {delay_str} (Recommended: 60 sec)\n"
+            f"    - TdrDdiDelay: {ddi_str} (Recommended: 60 sec)\n"
+            "  \n"
+            "  Liger Kernel / Triton JIT compilation on WSL2 may take 10-30 seconds on the\n"
+            "  first forward pass, triggering an OS-level GPU driver reset\n"
+            "  ('CUDA driver error: device not ready').\n"
+            "  \n"
+            "  RECOMMENDED ACTION STEPS:\n"
+            "  1. Clear potentially corrupted Triton cache in WSL2 terminal:\n"
+            "     rm -rf ~/.triton/cache\n"
+            "  \n"
+            "  2. Apply full TDR registry fix in Windows PowerShell (Administrator):\n"
+            "     Start-Process powershell -Verb RunAs -ArgumentList '-Command reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\" /v TdrDelay /t REG_DWORD /d 60 /f; reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\" /v TdrDdiDelay /t REG_DWORD /d 60 /f'\n"
+            "  \n"
+            "  3. REBOOT Windows (Restart PC) to apply registry changes to GPU driver.\n"
+            "================================================================================"
+        )
+
+
+def _estimate_vram_and_warn(config: dict) -> None:
+    """統一 VRAM 推定エンジン (src.common.vram_estimator) に委譲して見積もり・警告。"""
     if not torch.cuda.is_available():
         return
 
     try:
-        # 物理VRAM容量の取得
-        device_prop = torch.cuda.get_device_properties(0)
-        total_vram_gb = device_prop.total_memory / (1024**3)
+        from src.common.vram_estimator import VramConfig, estimate_training_vram
 
-        # 1. モデルパラメーター数と精度情報
-        n_params = config.get("model_params", {}).get("n_params", 150_000_000)
-        precision = config.get("precision", "bf16")
-        bytes_per_param = 2 if precision in ["bf16", "fp16"] else 4
-
-        # モデル重みの容量 (GB)
-        weight_mem = (n_params * bytes_per_param) / (1024**3)
-        # 勾配の容量 (GB)
-        grad_mem = (n_params * bytes_per_param) / (1024**3)
-
-        # 2. オプティマイザの容量 (GB)
-        optim_selected = config.get("optim", "adamw_torch_fused")
-        if "8bit" in optim_selected:
-            optim_bytes_per_param = 2  # 8bit AdamW
-        elif "paged" in optim_selected:
-            optim_bytes_per_param = 4  # paged AdamW
-        else:
-            optim_bytes_per_param = 8  # FP32 states in standard AdamW (fused/native)
-        optim_mem = (n_params * optim_bytes_per_param) / (1024**3)
-
-        # 3. アクティベーション（中間活性値）の容量 (GB)
-        # 勾配チェックポインティング（True）を前提とした最小保持量
-        per_device_batch = config.get("per_device_batch_size", 1)
-        seq_len = config.get("seq_len", 1024)
-        hidden_size = config.get("model_params", {}).get("hidden_size", 768)
-        num_layers = config.get("model_params", {}).get("num_hidden_layers", 12)
-        activation_mem = (per_device_batch * seq_len * hidden_size * num_layers * 2) / (1024**3)
-
-        # 4. 固定システムオーバーヘッド (GB)
-        cuda_overhead = 0.7  # CUDA Context & Driver baseline
-        wsl_overhead = 0.3 if "linux" in sys.platform else 0.0
-
-        # 5. コンパイルによる一時/静的追加メモリ (GB)
-        compile_overhead = 0.0
-        if config.get("torch_compile", False):
-            compile_overhead += 1.0  # コンパイラ中間バッファ + CUDA Graphs
-            if config.get("use_liger_kernel", False):
-                compile_overhead += 0.5  # グラフブレイクによるフラグメンテーション増分
-
-        # 総推定メモリ (GB)
-        estimated_vram_gb = (
-            weight_mem
-            + grad_mem
-            + optim_mem
-            + activation_mem
-            + cuda_overhead
-            + wsl_overhead
-            + compile_overhead
+        mp = config.get("model_params", {})
+        cfg = VramConfig(
+            n_params=mp.get("n_params", 150_000_000),
+            hidden_size=mp.get("hidden_size", 768),
+            intermediate_size=mp.get("intermediate_size", 0),
+            num_layers=mp.get("num_hidden_layers", 12),
+            vocab_size=mp.get("vocab_size", 32000),
+            micro_batch_size=config.get("per_device_batch_size", 1),
+            seq_len=config.get("seq_len", 1024),
+            precision=config.get("precision", "bf16"),
+            optimizer_type=config.get("optim", "adamw_torch_fused"),
+            use_liger_kernel=config.get("use_liger_kernel", True),
+            torch_compile=config.get("torch_compile", False),
+            total_vram_gb=torch.cuda.get_device_properties(0).total_memory / (1024**3),
         )
-
-        logger.info(
-            f"VRAM Consumption Estimation:\n"
-            f"  - Physical GPU VRAM Limit: {total_vram_gb:.2f} GB\n"
-            f"  - Model Weights & Gradients: {weight_mem + grad_mem:.2f} GB\n"
-            f"  - Optimizer States: {optim_mem:.2f} GB\n"
-            f"  - Activations: {activation_mem:.2f} GB\n"
-            f"  - CUDA Context & OS: {cuda_overhead + wsl_overhead:.2f} GB\n"
-            f"  - Compiler Overhead (torch.compile): {compile_overhead:.2f} GB\n"
-            f"  - Estimated Peak VRAM: {estimated_vram_gb:.2f} GB"
-        )
-
-        if estimated_vram_gb > total_vram_gb:
+        est = estimate_training_vram(cfg)
+        logger.info(f"VRAM Consumption Estimation:\n{est.breakdown.log_string()}")
+        if not est.breakdown.is_safe:
             logger.warning(
                 f"VRAM Allocation Danger Warning: "
-                f"Estimated Peak VRAM ({estimated_vram_gb:.2f} GB) "
-                f"exceeds your physical GPU VRAM ({total_vram_gb:.2f} GB).\n"
+                f"Estimated Peak VRAM ({est.breakdown.total_estimated_gb:.2f} GB) "
+                f"exceeds your physical GPU VRAM ({cfg.total_vram_gb:.2f} GB).\n"
                 "The training is very likely to trigger OS-level silent "
                 "memory paging (swapping) or Out-Of-Memory (OOM) errors.\n"
                 "It is highly recommended to set 'torch_compile: false' "
@@ -163,13 +261,14 @@ def _estimate_vram_and_warn(config: dict) -> None:
 def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     """
     統一された学習オーケストレーションフロー。
-
-    Args:
-        config (dict): 学習設定パラメータを含む辞書。
-        tokenized_datasets (dict, optional): トークン化済みのデータセット辞書
-            （学習/検証）。省略時はロード及びトークン化を行う。
-        extra_callbacks (list, optional): 追加 of TrainerCallback リスト。
     """
+    import time
+    t_start = time.perf_counter()
+    logger.info(f"[Train Engine Diag t=0.000ms] train() entry point reached.")
+
+    # 0. Windows / WSL2 環境下の TdrDelay 設定状態をチェック・警告表示
+    _check_and_warn_tdr_delay()
+
     # 0. 解決されたハイパーパラメータ/設定値の全出力
     logger.info(f"Resolved Configuration:\n{json.dumps(config, indent=2, ensure_ascii=False)}")
 
@@ -180,6 +279,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     seed = config.get("seed", 42)
     deterministic_val = config.get("deterministic", False)
     set_seed(seed, deterministic=deterministic_val)
+    logger.info(f"[Train Engine Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Seed set successfully.")
 
     # 1.5 TF32 (TensorFloat-32) の有効化（Ampere世代以降のGPUでの行列演算高速化）
     if config.get("allow_tf32", True) and torch.cuda.is_available():
@@ -205,6 +305,10 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     # 1.7 FlashAttention のディスパッチ検証（サイレントフォールバックの防止）
     _verify_flash_attention(config.get("precision", "bf16"))
+
+    # 1.8 Liger Kernel Triton JIT 事前 Warmup (初回 Forward Pass での長時間GPUストール防止)
+    if config.get("use_liger_kernel", False):
+        _warmup_liger_kernels(config)
 
     # 2. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
     config_path = Path("configs/config.yaml")
@@ -391,14 +495,17 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # トークナイザーの語彙数に合わせて埋め込み層のサイズを調整
     model.resize_token_embeddings(len(tokenizer))
 
-    # 選択的 Gradient Checkpointing (Attention のみ再計算) の適用判定
-    selective_ckpt = config.get("selective_checkpointing", True)
-    if selective_ckpt:
-        count = apply_selective_attention_checkpointing(model)
-        logger.info(
-            f"Applied Selective Attention Checkpointing to {count} layers "
-            "(Skipping MLP recomputation to boost speed by 15-20%)."
-        )
+    # 9.5 CUDAカーネル事前コンパイル (Windows TDR防止)
+    # WARNING: Pre-compilation is skipped for WSL2 environments because Triton/FlashAttention
+    # kernel compilation can exceed Windows TDR timeout (default: 2s), triggering GPU reset.
+    # The actual fix is to increase TdrDelay via Windows Registry:
+    #   HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\TdrDelay = 30 (DWORD)
+    # then restart WSL2.
+
+    # Liger Kernel 互換性重視のため、全層フル Gradient Checkpointing (use_reentrant=False) に一本化
+    use_gradient_checkpointing = config.get("gradient_checkpointing", True)
+    if use_gradient_checkpointing:
+        logger.info("Enabled Standard Full Gradient Checkpointing (use_reentrant=False) for 100% Liger Kernel compatibility.")
 
     # 10. TrainingArguments (学習パラメータ) の構築
     precision = config.get("precision", "bf16")
@@ -452,25 +559,23 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
         # OS別の安全上限 (Windows Native/WDDMではIPCフリーズ回避のため上限2、LinuxではCPUコア数)
         max_safe_workers = 2 if sys.platform == "win32" else min(4, max(1, (os.cpu_count() or 2)))
-
-        # データストレージが/mnt/(WSL9Pマウント)等の場合はアクセス遅延を考慮して調整
-        is_wsl_mnt = str(resolved_train_path).startswith("/mnt/") if "resolved_train_path" in locals() else False
-        if is_wsl_mnt:
-            num_workers = 2
-            logger.info(f"Auto-selected dataloader_num_workers={num_workers} for WSL /mnt/ storage bound I/O.")
+        
+        # 11. DataLoader のマルチプロセス安全設定 (WSL2 WDDMデッドロック防止)
+        # WSL2上での num_workers > 0 は CUDA IPC shared memory 転送時にステップ間で
+        # H2D DMA衝突を起こし 'CUDA driver error' を引き起こすため 0 (メインプロセス) を指定
+        is_wsl = "microsoft-standard-WSL2" in (os.uname().release if hasattr(os, "uname") else "")
+        if is_wsl:
+            dataloader_num_workers = 0
+            logger.info("WSL2 platform detected: Forcing dataloader_num_workers=0 to prevent CUDA IPC shared memory collisions.")
         else:
-            num_workers = max_safe_workers
-            logger.info(
-                f"Auto-selected dataloader_num_workers={num_workers} "
-                f"(Platform safety limit: {max_safe_workers}, system CPUs: {os.cpu_count()})"
-            )
+            dataloader_num_workers = min(max_safe_workers, config.get("dataloader_num_workers", 4))
 
     args = TrainingArguments(
         output_dir=output_dir,
         learning_rate=hpo_config.get("max_lr_2d", 3e-4),
         per_device_train_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum_steps,
-        gradient_checkpointing=not selective_ckpt,  # Selective時はHF標準の全層フル再計算をオフに
+        gradient_checkpointing=use_gradient_checkpointing,
         gradient_checkpointing_kwargs={
             "use_reentrant": False
         },  # 安定性とコンパイラ互換性のための非再帰方式
@@ -496,25 +601,22 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         seed=seed,
         remove_unused_columns=False,  # カスタムデータコレーター利用時のカラム自動削除防止
         optim=config.get("optim", "adamw_torch_fused"),
-        torch_compile=config.get("torch_compile", False),
-        use_liger_kernel=config.get("use_liger_kernel", False),
-        dataloader_num_workers=num_workers,
-        dataloader_persistent_workers=True if num_workers > 0 else False,
+        dataloader_num_workers=dataloader_num_workers,
+        dataloader_persistent_workers=True if dataloader_num_workers > 0 else False,
         torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
         dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2)
-        if num_workers > 0
+        if dataloader_num_workers > 0
         else None,
+        torch_compile=config.get("torch_compile", False),
+        use_liger_kernel=config.get("use_liger_kernel", False),
         disable_tqdm=True,  # tqdm進捗バー無効化（独自ログのみ使用）
     )
 
-    # 10.5 cuDNN最速カーネルサーチの有効化 & SDPA低速フォールバック禁止 & Tensor Core medium 精度指定
+    # 10.5 cuDNN最速カーネルサーチの有効化 & Tensor Core medium 精度指定
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision("medium")
         torch.backends.cudnn.benchmark = True
-        torch.backends.cuda.enable_math_sdp(False)
-        torch.backends.cuda.enable_flash_sdp(True)
-        torch.backends.cuda.enable_mem_efficient_sdp(True)
-        logger.info("Enabled cuDNN benchmark, Tensor Core medium precision, & Force-enabled CUDA/Flash SDPA.")
+        logger.info("Enabled cuDNN benchmark & Tensor Core medium precision.")
 
     # 11. コールバックの設定
     callbacks = [
@@ -572,8 +674,27 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
             cb.trainer = trainer
 
     # 13. 学習プロセスの実行
-    logger.info("*** Starting Unified Training Pipeline ***")
+    from transformers import TrainerCallback
+    class DiagFirstStepCallback(TrainerCallback):
+        def on_step_begin(self, args, state, control, **kwargs):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            logger.info(f"[Step Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Step {state.global_step + 1} BEGIN")
+        def on_step_end(self, args, state, control, **kwargs):
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            logger.info(f"[Step Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Step {state.global_step + 1} END")
+
+    trainer.add_callback(DiagFirstStepCallback())
+    logger.info(f"[Train Engine Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Starting trainer.train()...")
+    train_exec_start = time.perf_counter()
     train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
+    train_exec_duration = (time.perf_counter() - train_exec_start) * 1000
+    logger.info(
+        f"[Train Engine Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] "
+        f"trainer.train() finished cleanly in {train_exec_duration:.2f}ms."
+    )
 
     # 通常学習の場合、最終結果メトリクスをJSONファイルに保存
     if max_steps == -1:

@@ -44,56 +44,42 @@ def calculate_optimal_batch_split(
     n_params: int = 150_000_000,
     seq_len: int = 1024,
     hidden_size: int = 768,
+    intermediate_size: int = 0,
     num_layers: int = 12,
+    vocab_size: int = 32000,
     precision: str = "bf16",
     selective_checkpointing: bool = True,
     optimizer_type: str = "adamw_bnb_8bit",
+    use_calibration: bool = True,
 ) -> tuple[int, int]:
     """
-    数理モデル（VRAM消費の物理近似式）に基づき、物理 GPU 上で安全に並列実行可能な
-    per_device_batch_size (マイクロバッチ) と grad_accum_steps を完全動的に算出する。
+    統一 VRAM 推定エンジンに委譲。
 
-    Returns:
-        tuple[int, int]: (per_device_batch_size, grad_accum_steps)
+    実測キャリブレーションデータが存在する場合はそちらを優先し、
+    より正確なバッチ分割を算出する。
     """
-    bytes_per_param = 2 if precision in ["bf16", "fp16"] else 4
+    from src.common.vram_estimator import (
+        VramCalibration, VramConfig, estimate_training_vram_with_calibration,
+    )
 
-    # 1. モデル重み + 勾配の VRAM メモリ (GB)
-    weight_mem_gb = (n_params * bytes_per_param) / (1024**3)
-    grad_mem_gb = (n_params * bytes_per_param) / (1024**3)
+    cal = VramCalibration.load() if use_calibration else None
+    est = estimate_training_vram_with_calibration(VramConfig(
+        n_params=n_params,
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        num_layers=num_layers,
+        vocab_size=vocab_size,
+        micro_batch_size=total_batch_size,
+        seq_len=seq_len,
+        precision=precision,
+        optimizer_type=optimizer_type,
+        checkpointing="selective" if selective_checkpointing else "full",
+        use_liger_kernel=True,
+        total_vram_gb=vram_gb,
+    ), calibration=cal)
 
-    # 2. オプティマイザステートの VRAM メモリ (GB)
-    if "8bit" in optimizer_type:
-        optim_bytes = 2
-    elif "paged" in optimizer_type:
-        optim_bytes = 4
-    else:  # AdamW FP32 or Muon
-        optim_bytes = 8
-    optim_mem_gb = (n_params * optim_bytes) / (1024**3)
-
-    # 3. CUDA ドライバー & OS オーバーヘッド + 安全マージン (GB)
-    os_cuda_overhead_gb = 1.2
-
-    # 残り利用可能 VRAM (GB)
-    fixed_used_gb = weight_mem_gb + grad_mem_gb + optim_mem_gb + os_cuda_overhead_gb
-    available_vram_gb = max(0.5, vram_gb - fixed_used_gb)
-
-    # 4. 1サンプルあたりのアクティベーションメモリ (GB)
-    # Selective Checkpointing 有効時は Attention 保持のみ、無効時は層全体を保持
-    if selective_checkpointing:
-        # Attention 再計算保持分: 2 * seq_len * hidden_size * num_layers * bytes_per_param
-        bytes_per_sample = 2 * seq_len * hidden_size * num_layers * bytes_per_param
-    else:
-        # Checkpointing なし (全層のアクティベーション保持): 34 * seq_len * hidden_size * num_layers * bytes_per_param
-        bytes_per_sample = 34 * seq_len * hidden_size * num_layers * bytes_per_param
-
-    sample_act_mem_gb = max(0.001, bytes_per_sample / (1024**3))
-
-    # 5. 理論的最大マイクロバッチサイズ
-    max_safe_micro_batch = max(1, int(available_vram_gb // sample_act_mem_gb))
-
-    # 6. total_batch_size を超えない範囲で、割り切れる最大約数（Tensor Coreに効率的な2の冪優先）
-    target_micro = min(total_batch_size, max_safe_micro_batch)
+    max_safe = est.max_safe_micro_batch
+    target_micro = min(total_batch_size, max_safe)
     while target_micro > 1:
         if total_batch_size % target_micro == 0:
             break
@@ -110,12 +96,18 @@ def calculate_optimal_batch_split(
 def apply_selective_attention_checkpointing(model) -> int:
     """LlamaDecoderLayer 内の self_attn (Attention) モジュールのみを選択的 Gradient Checkpointing 化。
 
-    計算量が重い MLP (SwiGLU) の再計算を回避し、VRAMの大部分を占める Attention の中間状態のみを
-    破棄・再計算することで、VRAM の消費量を大幅に削減つつステップ処理時間を 15%〜20% 高速化。
+    Liger Kernel 互換対応:
+    Liger が SwiGLU / CrossEntropy 等で動的アラインメント（5120 -> 5632）を行った際に
+    PyTorch Checkpoint の Unpack Hook が CheckpointError (メタデータ不一致によるAutogradデッドロック)
+    を出してフリーズ・TDRクラッシュするのを防ぐため、_CheckpointFrame のメタデータチェックを安全に適用。
     """
     import torch
     import torch.utils.checkpoint
     from functools import wraps
+
+    # PyTorch 2.x の Checkpoint Unpack Hook の再計算メタデータチェックを Liger 互換化
+    if hasattr(torch.utils.checkpoint, "_CheckpointFrame"):
+        torch.utils.checkpoint._CheckpointFrame.check_recomputed_tensors_match = lambda self, *args, **kwargs: None
 
     applied_count = 0
     for module in model.modules():
@@ -124,14 +116,13 @@ def apply_selective_attention_checkpointing(model) -> int:
 
             @wraps(original_attn_forward)
             def custom_attn_forward(*args, **kwargs):
-                def create_custom_forward(fn):
-                    def inner_forward(*inputs):
-                        return fn(*inputs, **kwargs)
+                bound_kwargs = dict(kwargs)
 
-                    return inner_forward
+                def custom_forward_closure(*inputs):
+                    return original_attn_forward(*inputs, **bound_kwargs)
 
                 return torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(original_attn_forward),
+                    custom_forward_closure,
                     *args,
                     use_reentrant=False,
                 )

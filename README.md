@@ -1,6 +1,7 @@
 # Novel LLM Training System
 
-> 単一GPU（Single GPU）環境下での限界突破効率化と論文レベルのトレーサビリティを備えた、超高効率LLM事前学習パイプライン
+> 単一GPU環境向けLLMフルスクラッチ事前学習フレームワーク。
+> スケーリング則・自動VRAM実測・Step Law HPO による効率的な学習を実現する。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -8,142 +9,113 @@
 
 ## 概要
 
-本プロジェクトは、**単一GPU（Single GPU / エントリークラスGPU）環境下で最大効率のLLMフルスクラッチ事前学習**を実現するためのパイプラインである。最新のスケーリング則（Step Law, arXiv:2503.04715 / チンチラの法則）に基づくハイパーパラメータ・アーキテクチャ自動算定、選択的 Attention Checkpointing、Muon/AdamW 分離最適化、および**完全な実験再現性**を保証するトレーサビリティスタックを搭載している。
+本プロジェクトは**単一GPU環境でLLMをフルスクラッチ事前学習するためのフレームワーク**である。以下の4つのサブシステムで構成される：
+
+| サブシステム | モジュール | 役割 |
+|-------------|-----------|------|
+| Chinchilla | `src.chinchilla.main` | VRAM実測 + 最適モデル規模・バッチサイズ自動算定 |
+| HPO | `src.hpo.main` | Step Law + Optuna によるハイパーパラメータ探索 |
+| Training | `src.training.main` | Hydra設定駆動の事前学習エンジン |
+| Context Extension | `src.rope.main` | 事後コンテキストウィンドウ拡張 (RoPE) |
 
 ### 特徴
 
-- **条件付き事前学習**: メタデータプレフィックス（会話率・感情・ジャンル）で文体を制御
-- **Step Law HPO**: 代理モデル探索から本番モデルへの最適学習率外挿
-- **Universal Chinchilla Calculator**: チンチラの法則と GPU プロファイリングによる目標時間内での最適構成自律算定
-- **選択的 Attention Checkpointing**: SwiGLU (MLP) の重い再計算を回避し、Attention のみ再計算することで高速化と VRAM 節約を両立
-- **事後長文拡張 (Long-Context Extension)**: YaRN / Dynamic NTK による `seq_len: 4096~8192` への追加事前学習
-- **Muon/AdamW分離最適化**: 2DパラメータにMuon、1DにAdamWを適用
-- **軽量トレーサビリティ**: TensorBoard/Hydra/シード固定/環境スナップショットによる完全追跡
+- **Chinchilla Scaling Laws**: 目標時間・VRAM・データセットから最適パラメータ数を自律算定
+- **VRAM実測キャリブレーション**: GPU上で実測し推定精度を向上、OOM/TDR防止
+- **Step Law HPO**: 代理モデル探索 → 本番モデルへの学習率外挿 (arXiv:2503.04715)
+- **自動バッチ分割**: VRAM上限に応じて per_device / grad_accum を最適配分
+- **選択的 Attention Checkpointing**: VRAM効率と速度のバランス
+- **Muon/AdamW分離最適化**: 2D=Muon, 1D=AdamW
+- **軽量トレーサビリティ**: Hydra + TensorBoard + DVC + シード固定
 
 ## クイックスタート
 
-本プロジェクトは `uv` を使用して環境管理を行います。Windows ネイティブ（検証用）および WSL2/Linux（本番推奨）の双方に対応したランチャースクリプトを用意しています。
-
-### 1. 環境構築 (Setup)
-
-依存関係（CUDA対応PyTorch、liger-kernel、bitsandbytesなど）を一括インストールします。
-
-* **Windows**:
-  ```cmd
-  setup.bat
-  ```
-* **WSL2 / Linux**:
-  ```bash
-  # uv のインストール（未導入の場合のみ）
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  source $HOME/.local/bin/env
-
-  # 依存関係の同期（仮想環境の自動構築）
-  uv sync
-  ```
-
----
-
-### 2. 学習実行 (Training)
-
-150Mモデルの事前学習を実行します。デフォルト設定および HPO 探索済みの最適パラメータが適用されます。
-
-* **Windows**:
-  ```cmd
-  # 通常起動
-  run_train.bat
-
-  # 学習再開 (最新のチェックポイントからレジューム)
-  run_train.bat --resume
-
-  # デバッグ用軽量実行 (100ステップ限定)
-  run_train.bat --max-steps 100
-  ```
-* **WSL2 / Linux**:
-  ```bash
-  # 通常起動
-  uv run python -m src.training.main
-
-  # 学習再開 (最新のチェックポイントからレジューム)
-  uv run python -m src.training.main resume_from_checkpoint=true
-
-  # デバッグ用軽量実行 (100ステップ限定)
-  uv run python -m src.training.main training.max_steps=100
-  ```
-
----
-
-### 3. ハイパーパラメータ探索 (HPO)
-
-代理（プロキシ）モデルを用いて最適な学習率やパラメータを探索し、本番モデルへ Step Law に基づいて自動スケーリング転移します。
-
-* **Windows**:
-  ```cmd
-  run_hpo.bat 150M data/dataset.jsonl configs/hparams_150M.yaml 150 4 1024 --sync-config
-  ```
-* **WSL2 / Linux**:
-  ```bash
-  uv run python -m scripts.find_hparams \
-    --proxy-model-size 150M \
-    --target-model-size 150M \
-    --data-path data/dataset.jsonl \
-    --output configs/hparams_150M.yaml \
-    --n-trials 150 \
-    --seq-len 1024 \
-    --sync-config
-  ```
-
----
-
-### 4. チンチラの法則に基づく最適モデル規模の自動算定 (Chinchilla Calculator)
-
-目標学習時間（時間 / 日数）と GPU 性能プロファイリングに基づき、最も Loss が低くなる最適なモデルパラメータ数と構造を自動算定します。
-
-* **Windows**:
-  ```cmd
-  uv run python -m src.chinchilla.main hours=48
-  ```
-* **WSL2 / Linux**:
-  ```bash
-  uv run python -m src.chinchilla.main days=3
-  ```
-
----
-
-### 5. 事後長文拡張 (Long-Context Extension)
-
-事前学習（`seq_len=1024`）完了後、モデル重みを維持しながら RoPE Scaling (YaRN/Dynamic NTK) を注入し、コンテキストウィンドウを `seq_len=4096~8192` へ高速追加学習（Continued Pretraining）します。
-
-* **Windows**:
-  ```cmd
-  uv run python -m src.context_extension.main target_seq_len=4096
-  ```
-* **WSL2 / Linux**:
-  ```bash
-  uv run python -m src.context_extension.main base_model_path=models/output/checkpoint-latest target_seq_len=4096
-  ```
-
----
-
-### 6. TensorBoardの起動 (Monitoring)
-
-学習の進捗ロスやハイパーパラメータメトリクスをブラウザで可視化します。
-
-* **Windows**:
-  ```cmd
-  launch_tensorboard.bat
-  ```
-* **WSL2 / Linux**:
-  ```bash
-  uv run tensorboard --logdir=models/output --port=6006
-  ```
-  起動後、ブラウザで [http://localhost:6006](http://localhost:6006) にアクセスします。
-
-### 7. 評価・推論テスト
+### 1. 環境構築
 
 ```bash
-# 推論・テキスト生成テストの実行
-python -m src.eval_inference.evaluate_model
+# uv のインストール（未導入の場合）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+
+# 依存関係の同期
+uv sync
+```
+
+### 2. 学習の流れ（標準的な4ステップ）
+
+```bash
+# Step 1: Chinchilla — モデル規模・バッチサイズを自動算定
+uv run python -m src.chinchilla.main hours=48 --apply
+
+# Step 2: HPO — 最適ハイパーパラメータを探索
+uv run python -m src.hpo.main
+
+# Step 3: フルスクラッチ学習
+uv run python -m src.training.main
+
+# Step 4: コンテキスト拡張（任意）
+uv run python -m src.rope.main checkpoint=models/output/checkpoint-latest new_max=8192
+```
+
+各ステップは独立して実行可能。Chinchilla・HPO は初回のみ、もしくは設定変更時に再実行する。
+
+## コマンドリファレンス
+
+### Chinchilla
+
+GPU実測キャリブレーション → チンチラ最適モデル規模算定 → バッチ分割。
+
+```bash
+# 48時間学習に最適な構成を算定し適用
+uv run python -m src.chinchilla.main hours=48 --apply
+
+# 3日間、VRAM 4GB制限で
+uv run python -m src.chinchilla.main days=3 vram=4.0 --apply
+
+# コンテキスト長トレードオフ比較
+uv run python -m src.chinchilla.main hours=24 seq_len=2048
+```
+
+`--apply` で `configs/chinchilla_config.yaml` に反映される。
+
+### HPO (Hyperparameter Optimization)
+
+Step Law 事前分布 + Optuna TPE による5次元探索。試行回数は自動算出。
+
+```bash
+# デフォルト実行（自動試行回数）
+uv run python -m src.hpo.main
+
+# 試行回数を明示
+uv run python -m src.hpo.main n_trials=100
+
+# シーケンス長指定
+uv run python -m src.hpo.main seq_len=2048
+```
+
+結果は `configs/hpo_config.yaml` に保存される。
+
+### Training
+
+Hydra 設定駆動の事前学習。
+
+```bash
+# 通常起動
+uv run python -m src.training.main
+
+# 学習再開
+uv run python -m src.training.main resume_from_checkpoint=true
+
+# デバッグ用（100ステップ）
+uv run python -m src.training.main training.max_steps=100
+```
+
+### Context Extension
+
+学習済みモデルのコンテキストウィンドウを事後拡張する。
+
+```bash
+uv run python -m src.rope.main checkpoint=models/output/checkpoint-latest new_max=8192 method=ntk
 ```
 
 ## ディレクトリ構成
@@ -152,55 +124,57 @@ python -m src.eval_inference.evaluate_model
 LLM_Training/
 ├── configs/                    # Hydra設定ファイル
 │   ├── config.yaml            # メイン設定
-│   ├── extension_config.yaml  # 事後長文拡張用設定 (NEW)
-│   ├── multi_seed.yaml        # 複数シード実行用
-│   ├── scaling_3b.yaml        # 3Bモデル用（RTX 5090）
-│   └── scaling_7b.yaml        # 7Bモデル用（RTX 5090×2）
+│   ├── chinchilla_config.yaml # Chinchilla算定結果
+│   └── hpo_config.yaml        # HPO探索結果
 ├── src/
-│   ├── training/              # 事前学習エンジン & コールバック
-│   ├── chinchilla/            # チンチラ法則自動算定モジュール (NEW)
+│   ├── chinchilla/            # チンチラ法則算定
 │   │   ├── calculator.py      # プロファイリング・最適逆算コア
-│   │   └── main.py            # CLI エントリーポイント
-│   ├── context_extension/     # 事後長文拡張モジュール (NEW)
-│   │   ├── extension_engine.py# RoPE Scaling 注入・Continued Pretraining
-│   │   └── main.py            # CLI エントリーポイント
-│   ├── hpo/                   # Step Law HPO モジュール
-│   ├── eval_inference/        # 推論テスト
-│   ├── evaluation/            # レポート生成
-│   └── preprocessing/         # データ前処理
-├── docs/                      # ドキュメント & 工夫記録
+│   │   └── main.py            # CLIエントリーポイント
+│   ├── hpo/                   # Step Law + Optuna HPO
+│   │   ├── hpo_manager.py     # Optuna目的関数・探索空間
+│   │   ├── step_law.py        # Step Lawスケーリング則
+│   │   └── main.py            # CLIエントリーポイント
+│   ├── training/              # 事前学習エンジン
+│   │   ├── train_engine.py    # 学習ループ
+│   │   ├── config.py          # Hydra設定ロード
+│   │   ├── model_utils.py     # モデル構築・バッチ分割
+│   │   └── main.py            # CLIエントリーポイント
+│   ├── rope/                  # コンテキスト拡張
+│   │   └── main.py            # CLIエントリーポイント
+│   └── common/                # 共通ユーティリティ
+│       └── vram_estimator.py  # VRAM推定・実測キャリブレーション
+├── scripts/                   # 補助スクリプト
+├── tests/                     # 単体テスト
+├── docs/                      # ADR・設計ドキュメント
 ├── data/                      # 学習データ（DVC管理）
-├── models/                    # 学習済みモデル
-└── logs/                      # 学習ログ
+└── models/                    # チェックポイント・出力
 ```
 
 ## トレーサビリティ
 
-本プロジェクトは以下の軽量トレーサビリティ機能を搭載している：
-
-| 機能 | ツール | 設計仕様 |
-|------|--------|-----|
-| データ版管理 | DVC (SHA256) | ADR-014 |
-| 設定管理 | Hydra + OmegaConf | ADR-015 |
-| 乱数シード固定 | `set_seed()` | ADR-016 |
-| 環境記録 | `env_snapshot.py` | ADR-017 |
-| 実験追跡 | TensorBoard | ADR-016 (軽量化) |
-| 損失監視 | `PeriodicEvaluationCallback` | 自律発散防止 |
+| 機能 | ツール |
+|------|--------|
+| データ版管理 | DVC (SHA256) |
+| 設定管理 | Hydra + OmegaConf |
+| 乱数シード固定 | `set_seed()` |
+| 環境記録 | `env_snapshot.py` |
+| 実験追跡 | TensorBoard |
+| 損失監視 | `PeriodicEvaluationCallback` |
 
 ## スケーリング
 
-| モデルサイズ | 必要VRAM | 推奨GPU | 設定ファイル |
-|-------------|---------|---------|-------------|
-| 150M | 4GB | RTX 3050 | `configs/config.yaml` |
-| 3B | 24GB | RTX 5090 | `configs/scaling_3b.yaml` |
-| 7B | 48GB | RTX 5090×2 | `configs/scaling_7b.yaml` |
+| モデルサイズ | 必要VRAM | 推奨GPU |
+|-------------|---------|---------|
+| 150M | 4GB | RTX 3050 |
+| 3B | 24GB | RTX 5090 |
+| 7B | 48GB | RTX 5090×2 |
 
 ```bash
-# 3Bモデルで学習
-python main.py --config-name=scaling_3b
+# 3Bモデル
+uv run python -m src.training.main --config-name=scaling_3b
 
-# 7Bモデルで学習
-python main.py --config-name=scaling_7b
+# 7Bモデル
+uv run python -m src.training.main --config-name=scaling_7b
 ```
 
 ## ライセンス
@@ -219,9 +193,8 @@ MIT License
 
 ## 謝辞
 
-- [Step Law (arXiv:2503.04715)](https://arxiv.org/abs/2503.04715) - スケーリング則
-- [Muon Optimizer](https://github.com/KellerJordan/Muon) - 2D最適化
-- [HuggingFace Transformers](https://github.com/huggingface/transformers) - Llama実装
-- [Hydra](https://hydra.cc/) - 設定管理
-- [TensorBoard](https://www.tensorflow.org/tensorboard) - 実験追跡 (MLflow代替)
-- [DVC](https://dvc.org/) - データ版管理
+- [Step Law (arXiv:2503.04715)](https://arxiv.org/abs/2503.04715)
+- [Muon Optimizer](https://github.com/KellerJordan/Muon)
+- [HuggingFace Transformers](https://github.com/huggingface/transformers)
+- [Hydra](https://hydra.cc/)
+- [Liger Kernel](https://github.com/linkedin/Liger-Kernel)

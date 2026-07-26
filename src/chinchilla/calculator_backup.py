@@ -323,164 +323,88 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
     return arch_dict
 
 
-import math
-import time
-from pathlib import Path
-from typing import Any, Dict, Optional
-
-import torch
-import yaml
-from src.common.logger import logger
-
-def detect_real_available_vram_gb(device_id: int = 0) -> float:
-    """
-    CUDAコンテキストを強制初期化し、現在のシステムにおける
-    「純粋にモデル学習に使用可能な真の空きVRAM」を動的計測する。
-    """
-    if not torch.cuda.is_available():
-        return 4.0  # CPU Fallback
-
-    try:
-        # 1. 強制的にCUDAコンテキストを発火
-        # これによりOSのWDDMやPyTorchのベースフットプリントがVRAMに確保される
-        dummy = torch.zeros(1, device=f"cuda:{device_id}")
-        del dummy
-        
-        # 2. キャッシュをクリアし、純粋な空き状態を作る
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-
-        # 3. OS/ドライバレベルでの空きメモリを取得 (Bytes)
-        free_bytes, total_bytes = torch.cuda.mem_get_info(device_id)
-        
-        # 4. GB単位に変換
-        free_vram_gb = free_bytes / (1024**3)
-        return round(free_vram_gb, 2)
-    except Exception as e:
-        logger.warning(f"Failed to detect real VRAM, falling back to total VRAM estimation: {e}")
-        props = torch.cuda.get_device_properties(device_id)
-        return round((props.total_memory / (1024**3)) - 0.8, 2)  # 0.8GBを静的マージンとする
-
-
-def _vram_estimate(
-    n_params: int, seq_len: int, batch_size: int,
-    hidden_size: int, num_layers: int, vocab_size: int,
-    intermediate_size: int = 0,
-    checkpointing: str = "selective",
-) -> "VramEstimate":
-    from src.common.vram_estimator import (
-        VramConfig, estimate_training_vram_with_calibration,
-    )
-
-    return estimate_training_vram_with_calibration(VramConfig(
-        n_params=n_params, hidden_size=hidden_size, intermediate_size=intermediate_size,
-        num_layers=num_layers, vocab_size=vocab_size,
-        micro_batch_size=batch_size, seq_len=seq_len,
-        precision="bf16", optimizer_type="adamw_bnb_8bit",
-        use_liger_kernel=True, checkpointing=checkpointing,
-        total_vram_gb=999.0,
-    ))
-
-
-def find_max_safe_batch_size(
-    arch_dict: dict,
-    seq_len: int,
-    true_free_vram_gb: float,
-    max_search_bs: int = 64,
-    checkpointing: str = "selective",
-) -> int:
-    """
-    指定されたアーキテクチャと空きVRAMにおいて、OMMを起こさない最大のバッチサイズを自動探索する。
-    """
-    safe_limit_gb = true_free_vram_gb * 0.90
-    
-    optimal_bs = 1
-    for test_bs in range(max_search_bs, 0, -1):
-        est_vram = _vram_estimate(
-            arch_dict["n_params"], seq_len, test_bs,
-            arch_dict["hidden_size"], arch_dict["num_hidden_layers"],
-            arch_dict["vocab_size"], arch_dict.get("intermediate_size", 0),
-            checkpointing=checkpointing,
-        ).breakdown.total_estimated_gb
-        if est_vram <= safe_limit_gb:
-            optimal_bs = test_bs
-            break
-            
-    return optimal_bs
-
-
 def calculate_chinchilla_scaling(
     target_hours: float = 48.0,
     user_throughput_tps: float | None = None,
     user_seq_len: int | None = None,
     user_vram_limit_gb: float | None = None,
     force_benchmark: bool = False,
-    reference_n_params: int | None = None,
 ) -> dict[str, Any]:
-    """目標時間、実効FLOPs/sec、および動的VRAM検知から完全自律型の最適構成を算定"""
-    
+    """目標時間 (hours) および動的検出環境から、通用するチンチラ最適モデル構成を逆算"""
     gpu_info = detect_gpu_info()
+    vram_cap = user_vram_limit_gb or gpu_info["total_vram_gb"]
+
+    # コンテキスト長の動的解釈 (① ユーザー指定 -> ② config.yaml / extension_config.yaml -> ③ デフォルト 1024)
     seq_len = user_seq_len or detect_seq_len_from_config()
 
-    # --- 1. 動的VRAM検知 (Dynamic Provisioning) ---
-    if user_vram_limit_gb:
-        true_free_vram_gb = user_vram_limit_gb
-        logger.info(f"Using user-specified VRAM limit: {true_free_vram_gb} GB")
-    else:
-        true_free_vram_gb = detect_real_available_vram_gb()
-        logger.info(f"Detected true available VRAM (after CUDA init): {true_free_vram_gb} GB")
-
-    # --- 2. TPSと実効FLOPsの算定 ---
+    # スループットの自動決定順序:
+    # 1. ユーザー明示指定
+    # 2. 直近ログからの自動抽出
+    # 3. 動的プロキシベンチマーク (force_benchmark 時またはログ無し時)
+    # 4. デフォルト推定量
     tp_source = "User Specified"
     tps = user_throughput_tps
-    ref_n = reference_n_params
 
     if tps is None and not force_benchmark:
         extracted = extract_throughput_from_recent_logs()
         if extracted:
             tps = extracted
             tp_source = "Extracted from Recent Training Logs"
-            if ref_n is None:
-                ref_n = 1_000_000_000
-                logger.warning("Assuming 1B params for log TPS. Use force_benchmark=True for precision.")
 
-    if tps is None or ref_n is None:
-        logger.info(f"Running GPU proxy benchmark for seq_len={seq_len}...")
+    if tps is None:
+        logger.info(f"Running quick GPU proxy benchmark for seq_len={seq_len} to measure actual throughput...")
         tps = run_quick_proxy_benchmark(seq_len=seq_len)
         tp_source = f"Dynamic GPU Benchmark (seq_len={seq_len})"
-        ref_n = 27_450_000  # Proxy model param count
 
-    # C = 6 * N * TPS
-    effective_flops_per_sec = 6.0 * ref_n * tps
+    # 1. 指定時間内で計算可能な最大トークン総数 D_avail
     total_seconds = target_hours * 3600.0
-    total_flops_computable = effective_flops_per_sec * total_seconds
+    total_tokens_computable = total_seconds * tps
 
-    # Chinchilla Optimal: N = sqrt(C / 120), D = 20 * N
-    chinchilla_n_pure = math.sqrt(total_flops_computable / 120.0)
-    total_tokens_computable = 20.0 * chinchilla_n_pure
 
-    # --- 3. データセット限界の検知 ---
+
+    # 2. 純粋なチンチラ最適比率 (D = 20 * N) からの理論 N
+    chinchilla_n_pure = total_tokens_computable / 20.0
+
+    # 3. データセットの実効トークン数 D_actual の動的検知
     data_path, actual_dataset_tokens = detect_data_path_and_tokens()
+
     data_shortage_warn = False
     data_capped_arch = None
     data_sufficiency_ratio = 100.0
-    
-    max_allowed_n_by_data = float('inf')
 
     if actual_dataset_tokens is not None:
         data_sufficiency_ratio = round((actual_dataset_tokens / total_tokens_computable) * 100.0, 1)
         if total_tokens_computable > actual_dataset_tokens:
             data_shortage_warn = True
-            max_allowed_n_by_data = max(20_000_000, actual_dataset_tokens / 20.0)
-            data_capped_arch = generate_universal_architecture(int(max_allowed_n_by_data))
+            # データ量制限ベースの最大過学習防止モデル規模 N_data_max = D_actual / 20
+            data_capped_n = max(20_000_000, actual_dataset_tokens / 20.0)
+            data_capped_arch = generate_universal_architecture(int(data_capped_n))
 
-    # --- 4. VRAM上限 N の二分探索 (バッチサイズ >= 2 が担保できる最大サイズ) ---
+            logger.warning(
+                f"⚠️ [WARN / DATA SHORTAGE] Target compute requires {total_tokens_computable/1e6:.1f}M tokens, "
+                f"but dataset '{data_path}' has only ~{actual_dataset_tokens/1e6:.1f}M tokens ({data_sufficiency_ratio}%)."
+            )
+
+    # 4. 本番関数 (src.training.model_utils.calculate_optimal_batch_split) を使用した VRAM 物理上限 N の精密二分探索
+    # 手動の推定量や概算式を全排除し、本番の物理モデル式で per_device_batch_size >= 1 が成立する最大の N を探索
+    from src.training.model_utils import calculate_optimal_batch_split
+
     def is_n_vram_safe(test_n: int) -> bool:
         test_arch = generate_universal_architecture(test_n)
-        # 最低限のバッチサイズ(=2)で安全マージン内に収まるか判定
-        bs = find_max_safe_batch_size(test_arch, seq_len, true_free_vram_gb, checkpointing="selective")
-        return bs >= 2
+        est_peak = estimate_peak_vram_gb(
+            n_params=test_arch["n_params"],
+            seq_len=seq_len,
+            selective_checkpointing=False,
+            vram_cap=vram_cap,
+            hidden_size=test_arch["hidden_size"],
+            num_layers=test_arch["num_hidden_layers"],
+            vocab_size=test_arch["vocab_size"],
+        )
+        # Windows WDDM TDR 回避のため、Reserved メモリが VRAM 全体の 80% (または vram_cap - 0.8GB) 以内に収まる場合のみ Safe
+        safe_vram_limit = min(vram_cap * 0.85, vram_cap - 0.75)
+        return est_peak <= safe_vram_limit
 
+    # 20M 〜 10B の範囲で二分探索
     low_n, high_n = 20_000_000, 2_000_000_000
     max_vram_safe_n = low_n
     while low_n <= high_n:
@@ -493,67 +417,67 @@ def calculate_chinchilla_scaling(
         if high_n - low_n < 100_000:
             break
 
-    # 計算予算、データ上限、VRAM物理限界の3つから最終的なパラメータ数を決定
-    target_n = min(chinchilla_n_pure, max_vram_safe_n, max_allowed_n_by_data)
+    target_n = min(chinchilla_n_pure, max_vram_safe_n)
     target_n = max(target_n, 20_000_000)
 
-    # --- 5. 最適アーキテクチャの生成とバッチサイズの自動決定 ---
+    # 5. 理想的なコンピュート最適構造の生成
     arch = generate_universal_architecture(int(target_n))
-    
-    # 決定されたアーキテクチャにおける「最大安全バッチサイズ」を算出
-    optimal_batch_size = find_max_safe_batch_size(arch, seq_len, true_free_vram_gb, checkpointing="selective")
-    
-    # 最終的なVRAM見積もり (ロギング用)
-    est_vram = _vram_estimate(
-        arch["n_params"], seq_len, optimal_batch_size,
-        arch["hidden_size"], arch["num_hidden_layers"],
-        arch["vocab_size"], arch.get("intermediate_size", 0),
-    ).breakdown.total_estimated_gb
-    vram_safe = est_vram <= (true_free_vram_gb * 0.90)
 
-    # --- 6. ステップ数と速度の予測 ---
-    # 動的に決定されたバッチサイズを用いてステップあたりのトークン数を算出
+    # 6. VRAM ピーク値の検証
+    est_vram = estimate_peak_vram_gb(arch["n_params"], seq_len=seq_len)
+    vram_safe = est_vram <= vram_cap
+
+    # 7. 推定ステップ数とステップ速度
     grad_accum_steps = 32
-    tokens_per_step = seq_len * optimal_batch_size * grad_accum_steps
+    tokens_per_step = seq_len * grad_accum_steps
     est_total_steps = int(total_tokens_computable / tokens_per_step)
-    
-    # FLOPsからターゲットモデルのTPSを予測
-    projected_target_tps = effective_flops_per_sec / (6.0 * arch["n_params"])
-    est_sec_per_step = tokens_per_step / projected_target_tps
+    est_sec_per_step = tokens_per_step / tps
 
-    # --- 7. HPO (プロキシ) 用のシミュレーションとバッチサイズ調整 ---
-    proxy_params = arch["n_params"] if arch["n_params"] <= 50_000_000 else min(arch["n_params"], max(50_000_000, int(arch["n_params"] * 0.10)))
-    try:
-        hpo_n_trials = calculate_dynamic_n_trials(search_space_dim=5)
-        proxy_arch_dict = generate_universal_architecture(proxy_params)
-        proxy_params = proxy_arch_dict["n_params"]
-    except Exception:
-        hpo_n_trials = 150
-        proxy_arch_dict = generate_universal_architecture(proxy_params)
+    # 8. HPO 探索所要時間の物理シミュレーション (全自動動的ロジック)
+    hpo_n_trials = 150
+    if arch["n_params"] <= 50_000_000:
+        proxy_params = arch["n_params"]
+    else:
+        proxy_params = min(arch["n_params"], max(50_000_000, int(arch["n_params"] * 0.10)))
 
-    # プロキシモデルに対してもOMMを防ぐ安全なバッチサイズを自動計算
-    hpo_optimal_batch_size = find_max_safe_batch_size(proxy_arch_dict, seq_len, true_free_vram_gb, checkpointing="selective")
+    batch_size_seqs = 16
     hpo_trial_steps = 100
 
-    proxy_trial_tokens = seq_len * hpo_optimal_batch_size * hpo_trial_steps
-    projected_proxy_tps = effective_flops_per_sec / (6.0 * proxy_params)
-    proxy_sec_per_trial = proxy_trial_tokens / projected_proxy_tps
+    try:
+        from scripts.find_hparams import calculate_dynamic_n_trials, determine_optimal_proxy_size
+
+        hpo_n_trials = calculate_dynamic_n_trials(search_space_dim=5)
+        proxy_size_str = determine_optimal_proxy_size(arch["n_params"])
+        proxy_arch_dict = generate_universal_architecture(proxy_params)
+        proxy_params = proxy_arch_dict["n_params"]
+    except Exception as e:
+        logger.debug(f"find_hparams dynamic calculation fallback: {e}")
+
+    hpo_config_path = Path("configs/hpo_config.yaml")
+    if hpo_config_path.exists():
+        try:
+            with open(hpo_config_path, "r", encoding="utf-8") as f:
+                hpo_cfg = yaml.safe_load(f)
+            if isinstance(hpo_cfg, dict) and "training" in hpo_cfg:
+                tr_cfg = hpo_cfg["training"]
+                if "batch_size_seqs" in tr_cfg:
+                    batch_size_seqs = int(tr_cfg["batch_size_seqs"])
+        except Exception:
+            pass
+
+    proxy_trial_tokens = seq_len * batch_size_seqs * hpo_trial_steps
+    proxy_sec_per_trial = proxy_trial_tokens / tps
 
     hpo_worst_case_sec = proxy_sec_per_trial * hpo_n_trials
     hpo_worst_case_min = round(hpo_worst_case_sec / 60.0, 1)
     hpo_expected_min = round(hpo_worst_case_min * 0.35, 1)
 
-    # main.py との互換性を維持したフラットな返り値構造
     return {
         "gpu_info": gpu_info,
         "target_hours": target_hours,
         "seq_len": seq_len,
-        
         "measured_throughput_tps": round(tps, 1),
         "throughput_source": tp_source,
-        "reference_model_params": ref_n,
-        "effective_tflops": round(effective_flops_per_sec / 1e12, 2),
-        
         "computable_tokens_million": round(total_tokens_computable / 1e6, 2),
         "dataset_info": {
             "data_path": data_path,
@@ -564,27 +488,21 @@ def calculate_chinchilla_scaling(
         "chinchilla_pure_optimal_n_million": round(chinchilla_n_pure / 1e6, 2),
         "recommended_architecture": arch,
         "data_capped_architecture": data_capped_arch,
-        
-        "true_free_vram_gb": true_free_vram_gb,
         "estimated_peak_vram_gb": est_vram,
-        "vram_limit_gb": gpu_info.get("total_vram_gb", 4.0),
+        "vram_limit_gb": vram_cap,
         "is_vram_safe": vram_safe,
-        
-        # OMM防止のため動的算出された最適なバッチサイズをエクスポート
-        "optimal_batch_size": optimal_batch_size,
-        
         "estimated_total_steps": est_total_steps,
-        "projected_target_tps": round(projected_target_tps, 1),
         "estimated_sec_per_step": round(est_sec_per_step, 2),
         "hpo_simulation": {
             "proxy_params": proxy_params,
             "n_trials": hpo_n_trials,
-            "hpo_optimal_batch_size": hpo_optimal_batch_size,
             "worst_case_no_pruning_minutes": hpo_worst_case_min,
             "expected_with_median_pruner_minutes": hpo_expected_min,
         },
     }
-# ----
+
+
+
 
 def calculate_context_sensitivity_comparison(
     target_hours: float = 48.0,
@@ -618,12 +536,3 @@ def calculate_context_sensitivity_comparison(
         "comparison_results": comparison_results,
     }
 
-
-def determine_optimal_proxy_size(target_n_params: int) -> str:
-    ratio = 0.1
-    proxy_n = max(50_000_000, int(target_n_params * ratio))
-    return f"{proxy_n // 1_000_000}M"
-
-
-def calculate_dynamic_n_trials(search_space_dim: int = 5) -> int:
-    return max(20, search_space_dim * 20)

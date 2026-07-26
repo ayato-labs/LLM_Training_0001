@@ -54,7 +54,10 @@ url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
 [project.scripts]
-train = "src.main:main"
+chinchilla = "src.chinchilla.main:main"
+hpo = "src.hpo.main:main"
+train = "src.training.main:main"
+extend-context = "src.rope.main:main"
 
 [tool.ruff]
 line-length = 100

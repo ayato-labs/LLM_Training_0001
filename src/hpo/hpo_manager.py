@@ -3,6 +3,7 @@ main.py からは import されない。scripts/find_hparams.py からのみ使�
 """
 
 import warnings
+import time
 import optuna
 import torch
 from transformers import TrainerCallback
@@ -52,41 +53,96 @@ def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_
         lr_low, lr_high = 0.8, 1.3  # ±20~30%
         wd_low, wd_high = 0.06, 0.18
 
+    base_batch = step_law_hpo.get("batch_size_seqs", 4)
+    dynamic_batch_choices = sorted(list(set([max(2, base_batch // 2), base_batch, base_batch * 2])))
+
     return {
         "max_lr_2d": (lr_2d_center * lr_low, lr_2d_center * lr_high, "log"),
         "max_lr_1d": (lr_1d_center * lr_low, lr_1d_center * lr_high, "log"),
-        "batch_size_seqs": [8, 16, 32],
+        "batch_size_seqs": dynamic_batch_choices,
         "weight_decay": (wd_low, wd_high, ""),
-        "warmup_ratio": (0.01, 0.1, ""),  # 1%〜10% の範囲で探索 (据え置き)
+        "warmup_ratio": (0.01, 0.05, ""),
     }
 
 
 def _run_training_process(config, tokenized_dataset, queue):
+    import time
+    start_time = time.perf_counter()
+    logger.info(f"[HPO Subprocess Diag] Subprocess started at t=0.000s")
     try:
+        if torch.cuda.is_available():
+            try:
+                props = torch.cuda.get_device_properties(0)
+                logger.info(
+                    f"[HPO Subprocess Diag t={(time.perf_counter() - start_time)*1000:.2f}ms] "
+                    f"CUDA Device: {props.name} | Total VRAM: {props.total_memory / (1024**3):.2f}GB"
+                )
+            except Exception as cuda_e:
+                logger.warning(f"[HPO Subprocess Diag] GPU Query Warning: {cuda_e}")
+
         from transformers import TrainerCallback
 
         class SubprocessPruningCallback(TrainerCallback):
-            def __init__(self, queue):
+            def __init__(self, queue, start_time):
                 self.queue = queue
+                self.start_time = start_time
+                self.last_step_time = start_time
 
             def on_log(self, args, state, control, logs=None, **kwargs):
                 if logs and "loss" in logs:
                     loss = logs["loss"]
+                    now = time.perf_counter()
+                    step_duration = (now - self.last_step_time) * 1000
+                    total_elapsed = (now - self.start_time) * 1000
+                    self.last_step_time = now
+                    logger.info(
+                        f"[HPO Subprocess Diag t={total_elapsed:.2f}ms] "
+                        f"Step {state.global_step} logged: loss={loss:.4f} (step_duration={step_duration:.2f}ms)"
+                    )
                     self.queue.put(("report", state.global_step, loss))
 
-        pruning_callback = SubprocessPruningCallback(queue)
+        pruning_callback = SubprocessPruningCallback(queue, start_time)
+        logger.info(f"[HPO Subprocess Diag t={(time.perf_counter() - start_time)*1000:.2f}ms] Calling proxy_train()...")
+        train_start = time.perf_counter()
         loss = proxy_train(
             config,
             tokenized_datasets=tokenized_dataset,
             extra_callbacks=[pruning_callback],
+        )
+        train_duration = (time.perf_counter() - train_start) * 1000
+        logger.info(
+            f"[HPO Subprocess Diag t={(time.perf_counter() - start_time)*1000:.2f}ms] "
+            f"proxy_train() completed in {train_duration:.2f}ms"
         )
         if isinstance(loss, torch.Tensor):
             loss = loss.item()
         queue.put(("success", loss))
     except Exception as e:
         import traceback
+        fail_time = (time.perf_counter() - start_time) * 1000
+        cuda_status = "Unknown"
+        if torch.cuda.is_available():
+            try:
+                allocated = torch.cuda.memory_allocated() / (1024**2)
+                reserved = torch.cuda.memory_reserved() / (1024**2)
+                cuda_status = f"Allocated={allocated:.2f}MB, Reserved={reserved:.2f}MB"
+            except Exception as c_err:
+                cuda_status = f"CUDA Query Failed ({c_err})"
+        
+        logger.error(
+            f"[HPO Subprocess Diag CRASH t={fail_time:.2f}ms] "
+            f"Subprocess failed! CUDA Status: [{cuda_status}] | Error: {e}"
+        )
+        queue.put(("error", f"t={fail_time:.2f}ms | CUDA Status: [{cuda_status}] | {e}\n{traceback.format_exc()}"))
 
-        queue.put(("error", f"{e}\n{traceback.format_exc()}"))
+
+def _wait_for_cuda_ready(max_retries: int = 10, delay: float = 3.0) -> bool:
+    if not torch.cuda.is_available():
+        return True
+    # is_available() only checks driver presence, does NOT create CUDA context.
+    # Actual GPU health check runs inside the subprocess to avoid contaminating
+    # the parent process with a CUDA context (WSL2 TDR safety).
+    return True
 
 
 def objective(
@@ -124,26 +180,31 @@ def objective(
 
     from omegaconf import OmegaConf
 
-    # configs/config.yaml からVRAM最適化/ハードウェア設定を読み込んで再利用する
+    # SSOT 優先順位: 1. configs/chinchilla_config.yaml 2. configs/base_config.yaml 3. configs/config.yaml
+    chinchilla_path = Path("configs/chinchilla_config.yaml")
+    base_config_path = Path("configs/base_config.yaml")
     config_path = Path("configs/config.yaml")
     base_cfg = {}
-    if config_path.exists():
+
+    target_cfg_path = chinchilla_path if chinchilla_path.exists() else (base_config_path if base_config_path.exists() else config_path)
+    if target_cfg_path.exists():
         try:
-            base_cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+            base_cfg = OmegaConf.to_container(OmegaConf.load(target_cfg_path), resolve=True)
+            logger.info(f"[SSOT] HPO objective loaded hardware & model defaults from {target_cfg_path}")
         except Exception as e:
-            logger.warning(f"Failed to load config.yaml in HPO objective: {e}")
+            logger.warning(f"Failed to load {target_cfg_path} in HPO objective: {e}")
 
     # Build config matching normalize_config expectations
     config = {
         "model_params": {
             "n_params": arch["n_params"],
-            "hidden_size": arch["hidden"],
-            "num_hidden_layers": arch["layers"],
-            "num_attention_heads": arch["heads"],
-            "num_key_value_heads": arch["kv_heads"],
-            "intermediate_size": arch["ffn"],
+            "hidden_size": arch["hidden_size"],
+            "num_hidden_layers": arch["num_hidden_layers"],
+            "num_attention_heads": arch["num_attention_heads"],
+            "num_key_value_heads": arch["num_key_value_heads"],
+            "intermediate_size": arch["intermediate_size"],
             "rope_theta": arch.get("rope_theta", 500000.0),
-            "vocab_size": 64000,
+            "vocab_size": arch.get("vocab_size", 32000),
             "attn_implementation": base_cfg.get("model", {})
             .get("llama", {})
             .get("attn_implementation", "sdpa"),
@@ -166,7 +227,7 @@ def objective(
         "num_cycles": 0.5,
     }
 
-    # トータルバッチサイズ (batch_size_seqs) を VRAM やモデルサイズに応じて最適に分割 (動的分割ヘルパー)
+    # Chinchilla 物理 VRAM 自動分解エンジン: トータルバッチサイズを物理 VRAM 安全上限へ動的自動分割
     from src.training.model_utils import calculate_optimal_batch_split
 
     per_device_batch, grad_accum = calculate_optimal_batch_split(
@@ -174,16 +235,17 @@ def objective(
         vram_gb=vram_gb,
         n_params=arch["n_params"],
         seq_len=seq_len,
-        hidden_size=arch["hidden"],
-        num_layers=arch["layers"],
+        hidden_size=arch["hidden_size"],
+        num_layers=arch["num_hidden_layers"],
+        vocab_size=arch.get("vocab_size", 32000),
         precision="bf16",
-        selective_checkpointing=True,
+        selective_checkpointing=False,  # 全層標準 Gradient Checkpointing
     )
 
     config["per_device_batch_size"] = per_device_batch
     config["grad_accum_steps"] = grad_accum
     logger.info(
-        f"[Optuna HPO] Trial {trial.number}: Dynamically allocated batch size: "
+        f"[Optuna HPO] Trial {trial.number}: Chinchilla dynamic VRAM allocation -> "
         f"per_device_batch_size={per_device_batch}, grad_accum_steps={grad_accum} "
         f"(Total batch={hpo['batch_size_seqs']})"
     )
@@ -234,14 +296,34 @@ def objective(
             logger.info(f"Trial {trial.number} pruned.")
             raise optuna.TrialPruned()
 
-        p.join()
+        p.join(timeout=600)  # 10 min timeout to prevent indefinite hang on TDR
+        if p.is_alive():
+            p.terminate()
+            p.join(timeout=5)
+            logger.warning(
+                f"Trial {trial.number}: subprocess timed out and was terminated"
+            )
 
         if error_msg:
             logger.warning(f"Trial subprocess failed with exception:\n{error_msg}")
+            if "CUDA driver error" in error_msg or "device not ready" in error_msg:
+                logger.error(
+                    "=============================================================================\n"
+                    "  CUDA driver error detected - likely Windows TDR (Timeout Detection & Recovery)\n"
+                    "  \n"
+                    "  FIX: Increase TdrDelay in Windows Registry:\n"
+                    "    HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\\TdrDelay = 30\n"
+                    "    (DWORD, then restart WSL2)\n"
+                    "  \n"
+                    "  WORKAROUND: Set use_liger_kernel: false in config.yaml\n"
+                    "============================================================================="
+                )
+            time.sleep(5.0)  # GPU driver recovery cooldown after failure
             return 1e9
 
         if p.exitcode != 0:
             logger.warning(f"Trial subprocess crashed with exit code {p.exitcode}")
+            time.sleep(5.0)  # GPU driver recovery cooldown after failure
             return 1e9
 
         return (
@@ -255,7 +337,6 @@ def objective(
         import os
         import shutil
         import stat
-        import time
         from pathlib import Path
 
         def _handle_remove_readonly(func, path, exc):
@@ -284,22 +365,8 @@ def objective(
                     if attempt < max_retries - 1:
                         continue
 
-        # === GPU メモリ強制解放 ===
-        if torch.cuda.is_available():
-            # 1. Python GC でオブジェクト参照を切る
-            gc.collect()
-            # 2. PyTorch CUDA キャッシュを空にする
-            torch.cuda.empty_cache()
-            # 3. IPC 共有メモリも回収
-            torch.cuda.ipc_collect()
-            # 4. 再度GC（デストラクタで解放される分を拾う）
-            gc.collect()
-            # 5. 念のため同期
-            torch.cuda.synchronize()
-            logger.debug(
-                f"Trial {trial.number}: GPU memory released. "
-                f"Free: {torch.cuda.mem_get_info()[0] / 1024**3:.2f} GB"
-            )
+        # === CPUメモリのみクリーンアップ (親プロセスではCUDAコンテキストを作成しない) ===
+        gc.collect()
 
         # === ディスク上の中間生成物削除 ===
         output_dir = Path("models/output")

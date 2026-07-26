@@ -19,6 +19,7 @@ from src.chinchilla.calculator import (
     calculate_chinchilla_scaling,
     calculate_context_sensitivity_comparison,
 )
+from src.common.vram_estimator import auto_calibrate
 
 
 def print_banner():
@@ -37,6 +38,15 @@ def main():
             args[k.strip().lower()] = v.strip()
         elif arg.startswith("--"):
             args[arg.lstrip("-").lower()] = "true"
+
+    # 0. VRAM calibration (GPU-level: allocator_factor, cuda_context)
+    cal_label = args.get("cal_label", "proxy")
+    cal_seq_len = int(args.get("cal_seq_len", "1024"))
+    auto_calibrate(
+        hidden_size=512, intermediate_size=1280, num_layers=5,
+        seq_len=cal_seq_len, n_params=0,
+        n_samples=5, label=cal_label,
+    )
 
     # 1. 目標時間の指定処理 (hours または days)
     target_hours = 48.0

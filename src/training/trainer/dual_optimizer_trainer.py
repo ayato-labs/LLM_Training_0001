@@ -115,6 +115,9 @@ class SplitOptimizer(Optimizer):
         self._sync_param_groups()
         self.muon.step(closure)
         self.adamw.step(closure)
+        # 次のステップの Forward Pass (F.linear) との非同期 GPU カーネル衝突防止のための明示的同期
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
     def zero_grad(self, set_to_none: bool = True):
         self.muon.zero_grad(set_to_none)

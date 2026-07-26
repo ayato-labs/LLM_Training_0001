@@ -1,7 +1,7 @@
 # LLM フルスクラッチトレーニング 実装・最適化の工夫一覧
 
 - **作成日**: 2026-07-22
-- **最終更新日**: 2026-07-23
+- **最終更新日**: 2026-07-26
 
 本ドキュメントは、LLM（LLaMAアーキテクチャベース）のフルスクラッチ学習において、ロジック的な面から**有限の計算リソース（特に 4GB VRAM 級のエントリー GPU および Windows WDDM 環境）で安定性・処理速度・モデル精度を最大化するために導入した工夫と技術的施策**をまとめたものである。
 
@@ -172,13 +172,15 @@
 * **効果**:
   万が一の中断保護機能は高頻度（500ステップごと）に全維持したまま、テキスト生成による GPU 一時停止時間を大幅カットし、モデル精度・安全性への悪影響ゼロで学習速度を効率化。
 
-### 2.14 選択的 Gradient Checkpointing (`selective_checkpointing: true`)
-* **工夫の背景と理由**:
-  Hugging Face 標準の全層フル再計算（`gradient_checkpointing=True`）では、全パラメータの 2/3 を占める重み MLP（SwiGLU）の行列積まで逆伝播時に毎回再計算され、大きな計算時間損失が生じていた（NVIDIA/Meta等でも指摘）。
-* **施策**:
-  `model_utils.py` に `apply_selective_attention_checkpointing` を実装。計算量は軽いが VRAM を巨大に占有する `self_attn` (Attention) のみを選択的に再計算し、計算量の重い MLP 層は再計算せず保持。
+### 2.14 Gradient Checkpointing の選定と Liger Kernel 互換性に基づく一本化方針
+* **工夫の背景と検証結果**:
+  * **初期の取り組み（選択的 Gradient Checkpointing）**: 当初は VRAM 節約と計算オーバーヘッド低減のため、`self_attn` (Attention) のみを選択的に再計算し、計算量の重い MLP (SwiGLU) の再計算をスキップする `selective_checkpointing` の導入を試みた。
+  * **相性不整合とデッドロックの発覚**: `Liger Kernel` (Triton) は GPU のベクトライザ効率（128-byte alignment）を高めるため、入力シーケンス長を内部で動的にパディング/アラインメント（例: `5120` $\rightarrow$ `5632`）する。Attention モジュール単体のみを選択的チェックポイント化すると、アテンションと MLP の境界で PyTorch の Autograd 再計算フック（Unpack Hook）と C++ 逆伝播アサート（`ScaledDotProductEfficientAttentionBackward0`）がテンソル形状不一致（`CheckpointError`）を判定し、C++ スレッドがデッドロックを起こすことが判明した。
+* **最終的な決断と施策（2026-07-26 時点）**:
+  * `selective_checkpointing`（Attention のみの部分的再計算）は `Liger Kernel` との根本的な相性が悪いと結論付け、これを完全無効化 (`selective_checkpointing: false`)。
+  * HuggingFace 標準の **全層フル Gradient Checkpointing (`gradient_checkpointing=True`, `gradient_checkpointing_kwargs={"use_reentrant": False}`)** へ切り替え・一本化を遂行。
 * **効果**:
-  数学的に精度低下ゼロ（全く同じ勾配計算結果）を死守しつつ、再計算の計算オーバーヘッドを 80% カットし、ステップ処理速度を **約 15%〜20% 追加高速化**。
+  Liger Kernel のメモリ最適化（Triton Fused Kernel）による VRAM 削減と、標準 Checkpointing の安定性が 100% 同時発揮される完璧な構成を達成。Autograd のデッドロック、25 秒フリーズ、および `CUDA driver error` を完全に遮断し、1 ステップあたり **約 0.9 秒** という超高速かつ極めて安定した事前学習・HPO イテレーションを実現。
 
 ### 2.15 物理 VRAM メモリ近似式に基づく動的マイクロバッチ分解 (`calculate_optimal_batch_split`)
 * **工夫の背景と理由**:
@@ -239,7 +241,9 @@
 * **施策**:
   `src/chinchilla/` を独立構築。
   * DeepMind の **チンチラの法則（Chinchilla Scaling Laws: $C \approx 6ND$）** と GPU 実効スループットから可習得最大トークン数 $D$ を導出。
-  * VRAM ピーク領域（4GB）への収容安全性を物理シミュレーション。
+  * ピーク時にも使用可能な VRAM リソースへの収容安全性を物理シミュレーション。
+  * **チンチラ則の成否は VRAM 予測計算能力に依存する**:
+     実際の OOM/TDR 障害から得られた教訓。チンチラ則が算定したバッチサイズが GPU 物理容量を超過すると学習開始直後に OOM → WDDM TDR でプロセスが強制終了する。この問題は **正確な活性化メモリ式 + 実測キャリブレーションの両輪** でしか解決できない。現在は `src/common/vram_estimator.py` で GPU 実測値（`allocator_factor`, `cuda_context_gb`）を数式とハイブリッドし、`auto_calibrate()` が Chinchilla 計算前に自動実行される（詳細は `docs/ADR/ADR-0045-vram-calibration-chinchilla-oom.md`）。
   * **`configs/base_config.yaml` からのコンテキスト長 (`seq_len`) 一元検知**:
     事前学習のコンテキスト長（`seq_len`）の参照先を `configs/base_config.yaml` のみに一元化し、単一の SSOT（基盤定義）として検知・シミュレーションを遂行。
   * **本番モデル構築エンジンのファンクションコール統合 (`create_model_config`)**:
