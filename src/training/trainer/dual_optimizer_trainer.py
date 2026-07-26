@@ -40,7 +40,7 @@ class SplitOptimizer(Optimizer):
                 else:
                     adamw_decay_params.append(param)
 
-        from src.training.optimizers.muon import Muon, get_optimal_newton_schulz_steps
+        from src.training.optimizers.muon import get_optimal_newton_schulz_steps
 
         hidden_size = config.get("hidden_size", 768)
         n_params = config.get("n_params", 150_000_000)
@@ -153,6 +153,35 @@ class DualOptimizerTrainer(Trainer):
     def __init__(self, *args, split_optimizer_config: dict | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.split_optimizer_config = split_optimizer_config or {}
+        self._last_step_start_time = None
+        self._last_data_fetch_ms = 0.0
+        self._last_h2d_ms = 0.0
+        self._last_fwd_bwd_ms = 0.0
+
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        import time
+        t_start = time.perf_counter()
+        if self._last_step_start_time is not None:
+            self._last_data_fetch_ms = (t_start - self._last_step_start_time) * 1000.0
+
+        try:
+            t_h2d_start = time.perf_counter()
+            inputs = self._prepare_inputs(inputs)
+            t_h2d_end = time.perf_counter()
+            self._last_h2d_ms = (t_h2d_end - t_h2d_start) * 1000.0
+
+            t_fwd_start = time.perf_counter()
+            loss = super().training_step(model, inputs, num_items_in_batch=num_items_in_batch)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t_fwd_end = time.perf_counter()
+            self._last_fwd_bwd_ms = (t_fwd_end - t_fwd_start) * 1000.0
+            return loss
+        except Exception as e:
+            logger.error(f"Error in DualOptimizerTrainer.training_step: {e}")
+            raise
+        finally:
+            self._last_step_start_time = time.perf_counter()
 
     def create_optimizer(self):
         if self.optimizer is None:

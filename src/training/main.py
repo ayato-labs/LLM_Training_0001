@@ -22,6 +22,8 @@ from src.training.config import load_config
 from src.training.train_engine import train
 
 
+import torch.multiprocessing as mp
+
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 @log_exceptions
 def main(cfg: DictConfig) -> None:
@@ -30,4 +32,8 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    try:
+        mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
     main()

@@ -153,11 +153,24 @@ class DetailedLoggingCallback(TrainerCallback):
                 progress_str = f"Step {self.step_count}/{total_steps} ({pct:.1f}%)"
             elapsed_time = current_time - self.epoch_start_time
 
+            breakdown_str = ""
+            if self.trainer and hasattr(self.trainer, "_last_fwd_bwd_ms"):
+                data_ms = getattr(self.trainer, "_last_data_fetch_ms", 0.0)
+                h2d_ms = getattr(self.trainer, "_last_h2d_ms", 0.0)
+                fwd_ms = getattr(self.trainer, "_last_fwd_bwd_ms", 0.0)
+                total_ms = max(1.0, data_ms + h2d_ms + fwd_ms)
+                breakdown_str = (
+                    f" | Breakdown: DataFetch={data_ms:.1f}ms ({data_ms/total_ms*100:.1f}%), "
+                    f"H2D={h2d_ms:.1f}ms ({h2d_ms/total_ms*100:.1f}%), "
+                    f"FwdBwd={fwd_ms:.1f}ms ({fwd_ms/total_ms*100:.1f}%)"
+                )
+
             logger.info(
                 f"{progress_str} | "
                 f"loss={loss:.4f} | "
                 f"lr={lr_val}"
                 f"{speed_str if 'speed_str' in locals() else ''}"
+                f"{breakdown_str}"
                 f" | elapsed={elapsed_time:.1f}s"
                 f"{eta_str if 'eta_str' in locals() else ''}"
                 f"{gpu_info}"
@@ -215,7 +228,7 @@ class PeriodicEvaluationCallback(TrainerCallback):
         self.start_step = state.global_step
         if self.trainer is not None:
             self.tokenizer = self.trainer.tokenizer
-            
+
         # ユーザー明示指定がない場合、語彙数 V から初期理論上限 ln(V) * 1.5 を動的算定
         if self.user_divergence_threshold is None:
             vocab_size = None
@@ -223,7 +236,7 @@ class PeriodicEvaluationCallback(TrainerCallback):
                 vocab_size = self.tokenizer.vocab_size
             elif self.trainer and hasattr(self.trainer, "model") and hasattr(self.trainer.model, "config"):
                 vocab_size = getattr(self.trainer.model.config, "vocab_size", None)
-            
+
             if vocab_size and vocab_size > 0:
                 theory_init_loss = math.log(vocab_size)
                 self.divergence_threshold = max(12.0, theory_init_loss * 1.5)

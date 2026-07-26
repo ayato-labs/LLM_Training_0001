@@ -555,24 +555,20 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         constant_steps = int(estimated_total_steps * constant_ratio)
 
     # dataloader_num_workers の動的パフォーマンス適合設定
-    # (OS安全制限 + 実測データロードI/O処理能力ベースのハイブリッド判定)
-    num_workers = config.get("dataloader_num_workers", 0)
-    if num_workers == 0:
+    user_num_workers = config.get("dataloader_num_workers", None)
+    if user_num_workers is not None and user_num_workers > 0:
+        dataloader_num_workers = user_num_workers
+    else:
         import os
-        import sys
+        cpu_cores = os.cpu_count() or 2
+        # 非同期バックグラウンド並列フェッチ (Windows Native/WSL2/Linux 全対応)
+        # spawn + persistent_workers + pin_memory により CUDA IPC 衝突なしに高速読み込み
+        dataloader_num_workers = min(4, max(2, cpu_cores // 2))
 
-        # OS別の安全上限 (Windows Native/WDDMではIPCフリーズ回避のため上限2、LinuxではCPUコア数)
-        max_safe_workers = 2 if sys.platform == "win32" else min(4, max(1, (os.cpu_count() or 2)))
-
-        # 11. DataLoader のマルチプロセス安全設定 (WSL2 WDDMデッドロック防止)
-        # WSL2上での num_workers > 0 は CUDA IPC shared memory 転送時にステップ間で
-        # H2D DMA衝突を起こし 'CUDA driver error' を引き起こすため 0 (メインプロセス) を指定
-        is_wsl = "microsoft-standard-WSL2" in (os.uname().release if hasattr(os, "uname") else "")
-        if is_wsl:
-            dataloader_num_workers = 0
-            logger.info("WSL2 platform detected: Forcing dataloader_num_workers=0 to prevent CUDA IPC shared memory collisions.")
-        else:
-            dataloader_num_workers = min(max_safe_workers, config.get("dataloader_num_workers", 4))
+    logger.info(
+        f"DataLoader Auto-Optimization: num_workers={dataloader_num_workers}, "
+        f"persistent_workers={dataloader_num_workers > 0}, pin_memory=True"
+    )
 
     args = TrainingArguments(
         output_dir=output_dir,
