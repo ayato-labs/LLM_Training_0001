@@ -240,8 +240,10 @@ class PeriodicEvaluationCallback(TrainerCallback):
                 if self.min_loss is None or last_loss < self.min_loss:
                     self.min_loss = last_loss
 
-                # 3. 初期理論上限超過判定 (Warmup直後からの初期過大発散防止、Step > 20)
-                if step > 20 and last_loss > self.divergence_threshold:
+                # 3. 初期理論上限超過判定 (Warmup完了後からの初期過大発散防止)
+                # warmup_steps が設定されている場合はその完了後、未指定時は 20 ステップを猶予
+                warmup_grace = getattr(args, "warmup_steps", 20) or 20
+                if step > warmup_grace and last_loss > self.divergence_threshold:
                     logger.error(
                         f"DIVERGENCE DETECTED at step {step}: loss={last_loss:.4f} "
                         f"> dynamic_threshold={self.divergence_threshold:.4f}. Stopping training."
@@ -250,9 +252,10 @@ class PeriodicEvaluationCallback(TrainerCallback):
                     return control
 
                 # 4. 過去最小 Loss からの相対スパイク判定 (学習途中の局所発散検知)
-                # チェックポイント再開時やセッション開始から 50 ステップ経過するまではオプティマイザ再構築の過渡現象を猶予する
+                # warmup 完了およびセッション開始から一定ステップ経過するまでは過渡現象を猶予する
                 steps_since_start = step - getattr(self, "start_step", 0)
-                if step > 50 and steps_since_start > 50 and self.min_loss is not None:
+                grace_steps = max(warmup_grace * 2, 50)
+                if step > grace_steps and steps_since_start > grace_steps and self.min_loss is not None:
                     spike_limit = max(self.min_loss * 2.5, self.min_loss + 4.0)
                     if last_loss > spike_limit:
                         logger.error(

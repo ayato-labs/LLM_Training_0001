@@ -103,8 +103,17 @@ def _normalize_config(raw: dict) -> dict:
 
     clipped_lr_2d, clipped_lr_1d = clip_learning_rates(raw_lr_2d, raw_lr_1d, source="Config")
 
-    # トータルバッチサイズ (batch_size_seqs) が指定されており、per_device_batch_size が 1 固定の場合は動的に最適分割
-    total_batch = t.get("batch_size_seqs", 16)
+    # トータルバッチサイズ (batch_size_seqs) の決定
+    # 設定ファイルで未指定の場合は Step Law 推奨値を使用
+    if "batch_size_seqs" in t:
+        total_batch = t["batch_size_seqs"]
+    else:
+        from src.hpo.step_law import step_law_optimal_batch
+        n_tokens_est = raw.get("n_tokens", 10_000_000)
+        seq_len = t.get("seq_len", 1024)
+        calculated_tokens = step_law_optimal_batch(n_tokens_est)
+        total_batch = max(1, calculated_tokens // seq_len)
+
     configured_per_device = t.get("per_device_batch_size")
 
     if configured_per_device is None or configured_per_device == 1:
