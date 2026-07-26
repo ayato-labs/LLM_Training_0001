@@ -17,7 +17,7 @@ from src.common.logger import logger
 
 from src.chinchilla.calculator import (
     calculate_chinchilla_scaling,
-    calculate_context_sensitivity_comparison,
+    detect_seq_len_from_config,
 )
 from src.common.vram_estimator import auto_calibrate
 
@@ -39,9 +39,9 @@ def main():
         elif arg.startswith("--"):
             args[arg.lstrip("-").lower()] = "true"
 
-    # 0. VRAM calibration (GPU-level: allocator_factor, cuda_context)
+    # 0. VRAM calibration (base_config.yaml から seq_len を自動取得)
     cal_label = args.get("cal_label", "proxy")
-    cal_seq_len = int(args.get("cal_seq_len", "1024"))
+    cal_seq_len = int(args.get("cal_seq_len", "0")) or detect_seq_len_from_config()
     auto_calibrate(
         hidden_size=512, intermediate_size=1280, num_layers=5,
         seq_len=cal_seq_len, n_params=0,
@@ -78,17 +78,13 @@ def main():
 
     force_bench = args.get("benchmark") == "true" or args.get("bench") == "true"
 
-    # 3. 汎用逆算 ＆ 3段コンテキストトレードオフ比較の実行
-    comp_res = calculate_context_sensitivity_comparison(
+    # 3. Chinchilla Scaling計算の実行
+    target_res = calculate_chinchilla_scaling(
         target_hours=target_hours,
         user_throughput_tps=user_tps,
         user_seq_len=user_seq_len,
         force_benchmark=force_bench,
     )
-
-    base_seq_len = comp_res["base_seq_len"]
-    results = comp_res["comparison_results"]
-    target_res = results[1]  # 中央がターゲット基準
 
     gpu = target_res["gpu_info"]
     arch = target_res["recommended_architecture"]
@@ -103,7 +99,7 @@ def main():
     print(f"    - Dataset Path          : {ds_info['data_path']}")
     if ds_info["actual_tokens_million"] is not None:
         print(f"    - Dataset Tokens        : ~{ds_info['actual_tokens_million']}M tokens")
-        print(f"    - Required Tokens       : ~{target_res['computable_tokens_million']}M tokens")
+        print(f"    - Computable Tokens (D) : ~{target_res['computable_tokens_million']}M tokens")
         print(f"    - Sufficiency Ratio     : {ds_info['sufficiency_ratio']}%")
     else:
         print("    - Dataset Tokens        : (Dataset file not found - Skipped audit)")
@@ -127,27 +123,6 @@ def main():
     print(f"    - Attention Heads        : {arch['num_attention_heads']} (head_dim = {arch['head_dim']})")
     print(f"    - Key-Value Heads        : {arch['num_key_value_heads']} (GQA {arch['num_attention_heads']//arch['num_key_value_heads']}:1)")
     print(f"    - Intermediate Size (FFN): {arch['intermediate_size']}")
-    print("=" * 68)
-    print("  [Context Window Trade-off Comparison (-1 Step / Target / +1 Step)]")
-    print("-" * 68)
-    print(f"  {'Metric / Context Window':<26} | {'-1 Step (' + str(results[0]['seq_len']) + ')':<12} | {'Target (' + str(results[1]['seq_len']) + ')':<12} | {'+1 Step (' + str(results[2]['seq_len']) + ')':<12}")
-    print(f"  {'-'*26}-+-{'-'*12}-+-{'-'*12}-+-{'-'*12}")
-
-    vram_str_0 = f"{results[0]['estimated_peak_vram_gb']} GB {'[SAFE]' if results[0]['is_vram_safe'] else '[WARN]'}"
-    vram_str_1 = f"{results[1]['estimated_peak_vram_gb']} GB {'[SAFE]' if results[1]['is_vram_safe'] else '[WARN]'}"
-    vram_str_2 = f"{results[2]['estimated_peak_vram_gb']} GB {'[SAFE]' if results[2]['is_vram_safe'] else '[WARN]'}"
-
-    steps_str_0 = f"{results[0]['estimated_total_steps']:,} steps"
-    steps_str_1 = f"{results[1]['estimated_total_steps']:,} steps"
-    steps_str_2 = f"{results[2]['estimated_total_steps']:,} steps"
-
-    time_str_0 = f"~{results[0]['estimated_sec_per_step']}s/it"
-    time_str_1 = f"~{results[1]['estimated_sec_per_step']}s/it"
-    time_str_2 = f"~{results[2]['estimated_sec_per_step']}s/it"
-
-    print(f"  {'Est Peak VRAM (Reserved)':<26} | {vram_str_0:<12} | {vram_str_1:<12} | {vram_str_2:<12}")
-    print(f"  {'Total Steps Required':<26} | {steps_str_0:<12} | {steps_str_1:<12} | {steps_str_2:<12}")
-    print(f"  {'Step Processing Time':<26} | {time_str_0:<12} | {time_str_1:<12} | {time_str_2:<12}")
     print("=" * 68)
 
     # 4. HPO 探索時間シミュレーションの表示
@@ -195,9 +170,9 @@ model:
     attn_implementation: "{arch.get('attn_implementation', 'sdpa')}"  # PyTorch SDPA バックエンド
     tie_word_embeddings: {str(arch.get('tie_word_embeddings', True)).lower()}  # 埋め込み層とLM Headの重み共有
 
-# [学習ステップ設定] 指定時間で到達すべき最適ステップ数
+# [学習実行制御] VRAM容量限界まで計算速度（Tokens/sec）を最大化する物理最速バッチサイズ
 training:
-  max_steps: {target_res['estimated_total_steps']}  # トータル学習ステップ数
+  batch_size_seqs: {target_res['optimal_batch_size']}  # GPU最高速度バッチサイズ (b_max)
 
 # [計算環境・データセット監査および HPO 探索時間シミュレーション (参考メタデータ)]
 metadata:
@@ -205,6 +180,7 @@ metadata:
   gpu: "{gpu['device_name']}"  # 検出されたGPU型番
   measured_throughput_tps: {target_res['measured_throughput_tps']}  # 実測スループット (tokens/sec)
   estimated_peak_vram_gb: {target_res['estimated_peak_vram_gb']}  # 訓練時推定 Peak VRAM (GB)
+  computable_tokens: {target_res['computable_tokens']}  # Chinchilla理論計算可能トークン数 D=20N
   dataset:
     data_path: "{ds_info['data_path']}"  # 使用データセットパス
     actual_tokens: "{ds_text}"  # データセット内実測トークン数
@@ -222,7 +198,7 @@ metadata:
 
             logger.info(
                 f"Successfully applied Chinchilla recommended architecture to {config_path} "
-                f"(target_params={arch['n_params']:,}, max_steps={target_res['estimated_total_steps']:,})"
+                f"(target_params={arch['n_params']:,}, computable_tokens={target_res['computable_tokens']:,})"
             )
             print(f"\n[APPLIED] Successfully saved Chinchilla recommendation to {config_path}!")
         except Exception as e:

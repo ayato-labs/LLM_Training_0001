@@ -513,10 +513,15 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     hpo_config = config.get("hpo", config)
 
     max_steps = config.get("max_steps", -1)
-    num_epochs = config.get("num_epochs", 3) if max_steps == -1 else 0
-
     per_device_batch = config.get("per_device_batch_size", 1)
     grad_accum_steps = config.get("grad_accum_steps", 1)
+
+    if max_steps > 0:
+        import math
+        steps_per_epoch = max(1, len(train_ds) // (per_device_batch * grad_accum_steps))
+        num_epochs = max(100, math.ceil(max_steps / steps_per_epoch))
+    else:
+        num_epochs = config.get("num_epochs", 3)
 
     # Pagedオプティマイザが選択されている場合、性能低下の可能性を警告
     optim_selected = config.get("optim", "adamw_torch_fused")
@@ -593,7 +598,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         save_total_limit=config.get("save_total_limit", 2),  # ローカルチェックポイント保持数制限
         eval_strategy="steps" if eval_ds is not None else "no",
         eval_steps=config.get("eval_steps", 1000) if eval_ds is not None else None,
-        logging_steps=config.get("logging_steps", 10),
+        logging_steps=config.get("logging_steps", 200),
         report_to=["tensorboard"],  # TensorBoardによる学習監視の有効化
         load_best_model_at_end=eval_ds is not None,
         metric_for_best_model="eval_loss" if eval_ds is not None else None,
@@ -624,7 +629,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
             config_hash=current_config_hash, data_hash=current_data_hash
         ),  # hashes.jsonの自動作成
         DetailedLoggingCallback(
-            log_every_n_steps=config.get("logging_steps", 10)
+            log_every_n_steps=config.get("logging_steps", 200)
         ),  # 詳細なステップ別メトリクスのログ出力
         PeriodicEvaluationCallback(
             eval_every_n_steps=config.get("eval_steps", 1000),
@@ -680,11 +685,11 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
-            logger.info(f"[Step Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Step {state.global_step + 1} BEGIN")
+            logger.debug(f"[Step Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Step {state.global_step + 1} BEGIN")
         def on_step_end(self, args, state, control, **kwargs):
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            logger.info(f"[Step Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Step {state.global_step + 1} END")
+            logger.debug(f"[Step Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Step {state.global_step + 1} END")
 
     trainer.add_callback(DiagFirstStepCallback())
     logger.info(f"[Train Engine Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Starting trainer.train()...")

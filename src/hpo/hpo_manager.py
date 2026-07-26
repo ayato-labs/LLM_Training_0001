@@ -30,8 +30,20 @@ class OptunaPruningCallback(TrainerCallback):
                 raise optuna.TrialPruned()
 
 
+def determine_optimal_proxy_size(target_n_params: int) -> str:
+    """ターゲットモデルサイズに対する最良のプロキシモデルサイズ (約10%) を決定"""
+    ratio = 0.1
+    proxy_n = max(50_000_000, int(target_n_params * ratio))
+    return f"{proxy_n // 1_000_000}M"
+
+
+def calculate_dynamic_n_trials(search_space_dim: int = 4) -> int:
+    """探索パラメータ空間の自由度 (次元数: len(search_space)) から理論的最適試行回数を自律計算 (D * 30 trials)"""
+    return max(30, search_space_dim * 30)
+
+
 def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_000_000) -> dict:
-    """Step Law結果を中心とした探索空間定義 (5次元、モデルサイズ依存の動的範囲)
+    """Step Law結果を中心とした探索空間定義 (4次元: max_lr_2d, max_lr_1d, weight_decay, warmup_ratio)
 
     小モデルほどStep Law誤差が大きく→範囲を広めに
     大モデルほどStep Law信頼度が高く→範囲を絞り込む
@@ -53,13 +65,9 @@ def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_
         lr_low, lr_high = 0.8, 1.3  # ±20~30%
         wd_low, wd_high = 0.06, 0.18
 
-    base_batch = step_law_hpo.get("batch_size_seqs", 4)
-    dynamic_batch_choices = sorted(list(set([max(2, base_batch // 2), base_batch, base_batch * 2])))
-
     return {
         "max_lr_2d": (lr_2d_center * lr_low, lr_2d_center * lr_high, "log"),
         "max_lr_1d": (lr_1d_center * lr_low, lr_1d_center * lr_high, "log"),
-        "batch_size_seqs": dynamic_batch_choices,
         "weight_decay": (wd_low, wd_high, ""),
         "warmup_ratio": (0.01, 0.05, ""),
     }
@@ -194,6 +202,13 @@ def objective(
         except Exception as e:
             logger.warning(f"Failed to load {target_cfg_path} in HPO objective: {e}")
 
+    # Chinchilla / base_config で算定された最高速度バッチサイズを適用
+    batch_size_seqs = (
+        base_cfg.get("training", {}).get("batch_size_seqs")
+        or step_law_hpo.get("batch_size_seqs", 16)
+    )
+    hpo["batch_size_seqs"] = batch_size_seqs
+
     # Build config matching normalize_config expectations
     config = {
         "model_params": {
@@ -212,6 +227,7 @@ def objective(
         "hpo": hpo,
         "seq_len": seq_len,
         "max_steps": 50,  # 50 steps proxy run
+        "logging_steps": 10,  # HPO 50ステッププロキシ試行用の明示的10ステップログ間隔（Optuna MedianPruner判定用）
         "data_fraction": 0.001,  # Tiny fraction for speed
         "precision": "bf16",
         "vram_limit_gb": vram_gb,
@@ -249,6 +265,40 @@ def objective(
         f"per_device_batch_size={per_device_batch}, grad_accum_steps={grad_accum} "
         f"(Total batch={hpo['batch_size_seqs']})"
     )
+
+    # VRAM Estimator ガードレール (Zero-Cost Pre-Pruning)
+    # 不完全な設定で VRAM の 90% を超える推定値の場合、GPU プロセスを起動せずに事前枝刈り
+    from src.common.vram_estimator import (
+        VramCalibration, VramConfig, estimate_training_vram_with_calibration,
+    )
+
+    cal = VramCalibration.load()
+    vram_est = estimate_training_vram_with_calibration(
+        VramConfig(
+            n_params=arch["n_params"],
+            hidden_size=arch["hidden_size"],
+            intermediate_size=arch.get("intermediate_size", 0),
+            num_layers=arch["num_hidden_layers"],
+            vocab_size=arch.get("vocab_size", 32000),
+            micro_batch_size=per_device_batch,
+            seq_len=seq_len,
+            precision="bf16",
+            optimizer_type="adamw_bnb_8bit",
+            checkpointing="full",
+            use_liger_kernel=config.get("use_liger_kernel", True),
+            torch_compile=config.get("torch_compile", False),
+            total_vram_gb=vram_gb,
+        ),
+        calibration=cal,
+    )
+
+    if not vram_est.breakdown.is_safe or vram_est.breakdown.total_estimated_gb > (vram_gb * 0.90):
+        logger.warning(
+            f"[Optuna HPO Pre-Pruning] Trial {trial.number} pre-pruned by VRAM Estimator! "
+            f"Estimated: {vram_est.breakdown.total_estimated_gb:.2f} GB / Limit: {vram_gb:.2f} GB "
+            f"(Util: {vram_est.breakdown.util_pct:.1f}% > 90.0% Safety Threshold)"
+        )
+        raise optuna.TrialPruned()
 
 
     try:

@@ -184,14 +184,27 @@
 
 ### 2.15 物理 VRAM メモリ近似式に基づく動的マイクロバッチ分解 (`calculate_optimal_batch_split`)
 * **工夫の背景と理由**:
-  従来は `per_device_batch_size = 1` に固定（ハードコード）され、トータルバッチサイズ（例: 32）をすべて勾配蓄積（`grad_accum_steps = 32`）で処理していた。これにより GPU への小分け命令発行オーバーヘッドが大きくなり、GPU の並列演算器（Tensor Core）の充填率が低下していた。
+  バッチサイズは損失（Loss）を最小化するための探索変数ではなく、**GPUの物理VRAM容量と計算速度（Tensor Core MFU）によって定まるハードウェアパラメータ**である。従来は `per_device_batch_size = 1` に固定（ハードコード）され、トータルバッチサイズ（例: 32）をすべて勾配蓄積（`grad_accum_steps = 32`）で処理していたため、GPU への小分け命令発行オーバーヘッドが大きく、Tensor Core の並列演算器が充填されず実効速度が下振れしていた。
 * **施策**:
-  `model_utils.py` に `calculate_optimal_batch_split` を導入。手動の静的ルールを排除し、モデル重み・勾配・オプティマイザ・1サンプルあたりのアクティベーション消費量の物理計算式から余剰 VRAM 容量を算定。物理限界を超えない最大かつ最適な `per_device_batch_size`（マイクロバッチ）と `grad_accum_steps`（約数自動調整）を動的に逆算設定。
+  1. **バッチサイズの管轄権の一元化（Chinchilla管轄）**: バッチサイズの決定権を HPO の探索空間から完全排除し、Chinchilla / VRAM シミュレーション段階（Step 1）で即座に動的算定・確定する設計に変更。
+  2. **速度優先の直接最大化ロジック**: `model_utils.py` の `calculate_optimal_batch_split` を改修。ループ減算を全廃し、物理限界を超えない最大安全マイクロバッチ `per_device_batch_size = max(1, min(total_batch_size, max_safe))` を直接割り当て、GPU の Tensor Core を100%充填。
 * **効果**:
-  HPO や学習パイプラインにおいて、GPU への命令発行回数を 1/4〜1/8 に激減させ、モデル規模や VRAM 容量に応じた最高の実行効率・ステップ速度を自動達成。
+  HPO や学習パイプラインにおいて GPU 命令発行オーバーヘッドを最小化し、モデル規模や VRAM 容量に応じた最高の MFU（GPU計算効率）と超高速ステップ処理を自動達成。
+
+### 2.16 三位一体のバッチ・ステップ数自律最適化パイプライン (Chinchilla $D$ 保持 ＋ HPO事前枝刈り ＋ 動的ステップ数計算)
+* **工夫の背景と理由**:
+  従来の Chinchilla 計算では物理ステップ数 `max_steps` が固定出力されていたため、総消費トークン数（計算バジェット）が変動してしまう問題があった。またプロキシベンチマーク時に `batch_size = 1` でスループットを測定していたため、本番学習で大バッチ（`batch_size = 64` 等）を投入した際に Tensor Core が充填されて処理速度が 15倍に跳ね上がり、24時間設定の学習が1時間で終わる計算剥離が発生していた。
+* **一方通行パイプライン依存関係 (DAG)**:
+  `Step 1: Chinchilla ($N$, $D$, 物理最速 $batch\_size$ 算定)` $\rightarrow$ `Step 2: HPO (ハイパラ探索・VRAM事前枝刈り)` $\rightarrow$ `Step 3: 学習設定正規化 ($max\_steps$ 動的逆算・学習実行)`
+* **施策**:
+  1. **Tensor Core 飽和スループット実測 (`run_quick_proxy_benchmark`)**: VRAM 物理算定式で求めた物理最速バッチサイズ（`batch_size = 64` 等）と `LlamaModel` バックボーンを用いて、Tensor Core が飽和した状態の真の最大スループット（7.5万〜20万 tokens/sec）をダイレクトに実測。
+  2. **Chinchilla理論トークン数 $D$ の完全不変保持 (Step 1)**: 理論的目標トークン数 `computable_tokens` ($D = 20N$) と物理最速バッチサイズを `chinchilla_config.yaml` へ保存・固定（HPO 成果物への循環依存は一切なし）。
+  3. **`vram_estimator.py` による Zero-Cost Pre-Pruning（事前枝刈り） (Step 2)**: HPO マネージャー（`hpo_manager.py`）が試行評価直前に `vram_estimator.py` を呼び出し、推定 Peak VRAM が物理容量の 90%（`util_pct > 90.0%`）を超える危険設定を検知した瞬間に、GPU プロセスを起動せず 0 秒で `TrialPruned` を発動させてスキップ。
+  4. **学習設定正規化時の動的 `max_steps` 逆算 (Step 3)**: 本番学習直前の `config.py` にて、Step 1 の $D$ と `batch_size_seqs` を組み合わせ、$max\_steps = computable\_tokens / (batch\_size\_seqs \times seq\_len)$ を動的計算。
+* **効果**:
+  完全な一方通行（循環なし）のデータフローを保ちつつ、学習設定時間と実際の学習完了時間の剥離をゼロに補正。HPO での OOM クラッシュによる試行中断がゼロになり、バッチサイズ変動に伴う計算バジェットのブレを完全遮断。
 
 ---
-
 
 ## 3. 計算コストゼロでのモデル精度向上工夫
 
@@ -244,17 +257,15 @@
   * ピーク時にも使用可能な VRAM リソースへの収容安全性を物理シミュレーション。
   * **チンチラ則の成否は VRAM 予測計算能力に依存する**:
      実際の OOM/TDR 障害から得られた教訓。チンチラ則が算定したバッチサイズが GPU 物理容量を超過すると学習開始直後に OOM → WDDM TDR でプロセスが強制終了する。この問題は **正確な活性化メモリ式 + 実測キャリブレーションの両輪** でしか解決できない。現在は `src/common/vram_estimator.py` で GPU 実測値（`allocator_factor`, `cuda_context_gb`）を数式とハイブリッドし、`auto_calibrate()` が Chinchilla 計算前に自動実行される（詳細は `docs/ADR/ADR-0045-vram-calibration-chinchilla-oom.md`）。
-  * **`configs/base_config.yaml` からのコンテキスト長 (`seq_len`) 一元検知**:
+  * **`configs/base_config.yaml` からのコンテキスト長 (`seq_len`) 一元検知 (SSOT原則)**:
     事前学習のコンテキスト長（`seq_len`）の参照先を `configs/base_config.yaml` のみに一元化し、単一の SSOT（基盤定義）として検知・シミュレーションを遂行。
   * **本番モデル構築エンジンのファンクションコール統合 (`create_model_config`)**:
     `src/chinchilla/calculator.py` 内で事前学習本番の `src.training.model_utils.create_model_config` を直接ファンクションコールしてモデル（`LlamaConfig`）を構築・検証。本番学習で投入される実データ構造と 100% 完全合致するモデル仕様でチンチラ法則を算定。
   * **本番トークナイザーによるデータセット正確トークン監査 (`PreTrainedTokenizerFast`) ＆ デュアル最適化**:
     `base_config.yaml` の `data_path` および `tokenizer_path` から `PreTrainedTokenizerFast` をファンクションコールし、本番と同一のトークナイザーでデータセット内実効トークン数 $D_{\text{actual}}$ を正確に計測。必要トークン数不足時（$D_{\text{required}} > D_{\text{actual}}$）は ⚠️ [WARN] 警告を発話し、「過学習防止モデル規模（データ律速上限プラン: $N_{\text{max\_data}} = \frac{D_{\text{actual}}}{20}$）」と「理想コンピュート最適モデル規模（データ十分想定プラン: $N_{\text{compute}}$）」の両方を並列算出・比較提示。
-  * **HPO 探索時間シミュレーション (最悪時間 ＆ MedianPruner 推定時間)**:
-    `scripts/find_hparams` の動的関数（`calculate_dynamic_n_trials` 等）をファンクションコールし、プロキシモデル（~10% 規模）での 5次元探索における「枝刈りなし（Worst-Case）総探索時間」および「MedianPruner 適用時の期待総探索時間」を自律計算。
-  * **指定コンテキスト長でのプロキシモデル GPU リアルタイム実測デモプロファイリング (`run_quick_proxy_benchmark`)**:
-    仮定の減衰係数やハードコード数式を完全全廃。指定されたコンテキスト長 (`seq_len`) で GPU 上にプロキシモデルを実際にデモ構築・実行し、実効スループット $\text{TPS}$ (tokens/sec) を完全動的に実測計測して Chinchilla 逆算に投入。
-  * **単一ファイル完全統合 (`configs/chinchilla_config.yaml`) ＋ 日本語インラインコメント**:
-    死にコードとなっていた旧 `chinchilla_result.json` および `chinchilla_config.meta.json` を完全撤去。CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、モデルアーキテクチャ、学習ステップ数、データ充足率、および計算環境・HPO探索時間シミュレーションの全メタデータを **分かりやすい日本語インラインコメント付きで `configs/chinchilla_config.yaml` 単一ファイルへ完全集約・保存**。
+  * **HPO 探索空間・次元数からの理論的試行回数自律算定 (`src/hpo/hpo_manager.py`)**:
+    モジュールの責務分離（SoC）を徹底し、プロキシモデル規模決定（`determine_optimal_proxy_size`）および探索試行回数算定（`calculate_dynamic_n_trials`）の所有権を `src/hpo/hpo_manager.py` へ移管。探索パラメータ空間の自由度（次元数 $D = \text{len(search\_space)}$）から $T_{\text{trials}} = D \times 30$ 試行を直接算定。
+  * **単一パス高速実行 ＆ 単一ファイル完全統合 (`configs/chinchilla_config.yaml`)**:
+    非コアな複数コンテキスト比較を排し、単一パス（約7〜20秒）の高速・堅牢なパイプラインへスリム化。CLI コマンド末尾に `apply=true` または `--apply` を付与するだけで、モデルアーキテクチャ、学習ステップ数、データ充足率、および計算環境・HPO探索時間シミュレーションの全メタデータを **分かりやすい日本語インラインコメント付きで `configs/chinchilla_config.yaml` 単一ファイルへ完全集約・保存**。
 * **効果**:
   コンテキスト長ごとの実効スループットのハードコード依存を 100% 排除し、GPU 上でのダイレクトデモ実測値に基づいた最も高精度な チンチラ最適モデル構造を即座に特定可能に。

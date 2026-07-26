@@ -1,5 +1,5 @@
 import unittest
-from src.chinchilla.calculator import determine_optimal_proxy_size
+from src.hpo.hpo_manager import determine_optimal_proxy_size
 
 
 class TestDetermineOptimalProxySize(unittest.TestCase):

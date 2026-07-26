@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import torch
+from tqdm.auto import tqdm
 from transformers import (
     TrainerCallback,
 )
@@ -39,125 +40,135 @@ class HashSaveCallback(TrainerCallback):
 
 
 class DetailedLoggingCallback(TrainerCallback):
-    """詳細ログ出力用コールバック"""
+    """進捗バー + 定期ログ出力用コールバック
 
-    def __init__(self, log_every_n_steps=1):
-        self.log_every_n_steps = log_every_n_steps
+    - tqdm でリアルタイム進捗バー表示（loss, lr, speed, GPU）
+    - log_every_n_steps ごとに INFO ログ出力（メトリクス永続化）
+    """
+
+    def __init__(self, log_every_n_steps=200):
+        self.log_every_n_steps = max(1, log_every_n_steps)
         self.step_count = 0
         self.epoch_start_time = time.time()
         self.start_step = 0
-        self.trainer = None  # Reference injected after trainer instantiation
+        self.trainer = None
         self.last_step_time = None
+        self._pbar = None
 
     def on_train_begin(self, args, state, control, **kwargs):
         self.epoch_start_time = time.time()
         self.start_step = state.global_step
+        self.step_count = state.global_step
+
+        total = state.max_steps if state.max_steps and state.max_steps > 0 else None
+        self._pbar = tqdm(
+            total=total,
+            initial=self.step_count,
+            desc="Training",
+            unit="step",
+            dynamic_ncols=True,
+            leave=True,
+            disable=total is None,
+        )
 
     def on_step_end(self, args, state, control, **kwargs):
         self.step_count = state.global_step
         current_time = time.time()
 
-        if self.step_count % self.log_every_n_steps == 0:
-            loss = None
-            if state.log_history:
-                for entry in reversed(state.log_history):
-                    if "loss" in entry:
-                        loss = entry["loss"]
-                        break
-            lr_val = "N/A"
-            if self.trainer and self.trainer.optimizer:
-                lr_val = f"{self.trainer.optimizer.param_groups[0]['lr']:.2e}"
+        # ---- loss / lr 取得 ----
+        loss = None
+        if state.log_history:
+            for entry in reversed(state.log_history):
+                if "loss" in entry:
+                    loss = entry["loss"]
+                    break
+        lr_val = "N/A"
+        if self.trainer and self.trainer.optimizer:
+            lr_val = f"{self.trainer.optimizer.param_groups[0]['lr']:.2e}"
 
-            # 進捗割合とETAの算出
-            total_steps = state.max_steps
+        # ---- 速度 / ETA / GPU 計算 ----
+        total_steps = state.max_steps
+        elapsed_time = current_time - self.epoch_start_time
+        steps_in_session = self.step_count - self.start_step
+
+        speed_str = ""
+        eta_str = ""
+        gpu_info = ""
+
+        if steps_in_session > 0:
+            steps_per_sec = steps_in_session / elapsed_time
+
+            # local speed (直近インターバル)
+            if not hasattr(self, "last_logged_step") or self.last_logged_step is None:
+                self.last_logged_step = self.start_step
+                self.last_logged_time = self.epoch_start_time
+
+            local_steps = self.step_count - self.last_logged_step
+            local_elapsed = current_time - self.last_logged_time
+            local_speed_str = ""
+            if local_steps > 0 and local_elapsed > 0:
+                local_speed = local_steps / local_elapsed
+                local_speed_str = f" ({1.0 / local_speed:.2f}s/it local)"
+
+            self.last_logged_step = self.step_count
+            self.last_logged_time = current_time
+
+            speed_str = f" | {1.0 / (steps_in_session / elapsed_time):.2f}s/it{local_speed_str}"
+
+            if total_steps and total_steps > 0:
+                pct = (self.step_count / total_steps) * 100
+                remaining_steps = total_steps - self.step_count
+                remaining_time = remaining_steps * (elapsed_time / max(1, steps_in_session))
+                hrs, remainder = divmod(int(remaining_time), 3600)
+                mins, secs = divmod(remainder, 60)
+                if hrs > 0:
+                    eta_str = f" | ETA={hrs}h{mins}m"
+                elif mins > 0:
+                    eta_str = f" | ETA={mins}m{secs}s"
+                else:
+                    eta_str = f" | ETA={secs}s"
+
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            gpu_info = f" | GPU: {allocated:.2f}/{total:.1f}GB (peak={peak_reserved:.2f}GB)"
+
+        # ---- tqdm 更新 ----
+        postfix = {}
+        if loss is not None:
+            postfix["loss"] = f"{loss:.4f}"
+        postfix["lr"] = lr_val
+        if loss is not None:
+            self._pbar.set_postfix(postfix)
+
+        self._pbar.n = self.step_count
+        self._pbar.refresh()
+
+        # ---- logging_steps ごとに INFO ログ出力 ----
+        if self.step_count % self.log_every_n_steps == 0 and loss is not None:
             progress_str = f"Step {self.step_count}"
-            eta_str = ""
-            speed_str = ""
-
+            if total_steps and total_steps > 0:
+                pct = (self.step_count / total_steps) * 100
+                progress_str = f"Step {self.step_count}/{total_steps} ({pct:.1f}%)"
             elapsed_time = current_time - self.epoch_start_time
-            steps_in_session = self.step_count - self.start_step
-            if steps_in_session > 0:
-                steps_per_sec = steps_in_session / elapsed_time
 
-                # 直近インターバルの速度（local）を算出（コンパイル等の初期遅延による影響を排除）
-                if not hasattr(self, "last_logged_step") or self.last_logged_step is None:
-                    self.last_logged_step = self.start_step
-                    self.last_logged_time = self.epoch_start_time
+            logger.info(
+                f"{progress_str} | "
+                f"loss={loss:.4f} | "
+                f"lr={lr_val}"
+                f"{speed_str if 'speed_str' in locals() else ''}"
+                f" | elapsed={elapsed_time:.1f}s"
+                f"{eta_str if 'eta_str' in locals() else ''}"
+                f"{gpu_info}"
+            )
 
-                local_steps = self.step_count - self.last_logged_step
-                local_elapsed = current_time - self.last_logged_time
-
-                local_speed_str = ""
-                if local_steps > 0 and local_elapsed > 0:
-                    local_speed = local_steps / local_elapsed
-                    local_speed_str = f" ({1.0 / local_speed:.2f}s/it local)"
-
-                self.last_logged_step = self.step_count
-                self.last_logged_time = current_time
-
-                speed_str = f" | {1.0 / steps_per_sec:.2f}s/it{local_speed_str}"
-
-                if total_steps and total_steps > 0:
-                    pct = (self.step_count / total_steps) * 100
-                    progress_str = f"Step {self.step_count}/{total_steps} ({pct:.1f}%)"
-
-                    remaining_steps = total_steps - self.step_count
-                    remaining_time = remaining_steps * (elapsed_time / steps_in_session)
-
-                    # hh:mm:ss 形式にフォーマット
-                    hrs, remainder = divmod(int(remaining_time), 3600)
-                    mins, secs = divmod(remainder, 60)
-                    if hrs > 0:
-                        eta_str = f" | ETA={hrs}h{mins}m"
-                    elif mins > 0:
-                        eta_str = f" | ETA={mins}m{secs}s"
-                    else:
-                        eta_str = f" | ETA={secs}s"
-
-            gpu_info = ""
-            if torch.cuda.is_available():
-                allocated = torch.cuda.memory_allocated() / 1024**3
-                peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
-                total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                gpu_info = (
-                    f" | GPU: {allocated:.2f}/{total:.1f}GB (peak_reserved={peak_reserved:.2f}GB)"
-                )
-
-                # 4GB未満のエントリーGPU等で、CUDAコンテクスト（0.7GB）込みの
-                # 総量が物理VRAMの上限に迫っている場合に警告
-                estimated_total_vram = peak_reserved + 0.7
-                if total > 0 and estimated_total_vram > total and (allocated / total) <= 0.95:
-                    logger.warning(
-                        "Silent VRAM Paging Warning: "
-                        f"Peak reserved memory ({peak_reserved:.2f}GB) "
-                        f"plus estimated CUDA context/OS overhead (~0.7GB) "
-                        f"is {estimated_total_vram:.2f}GB, "
-                        f"which exceeds physical VRAM ({total:.1f}GB). "
-                        "The Windows WDDM driver has likely silently "
-                        "paged CUDA memory to system RAM, "
-                        "which will severely degrade steps speed "
-                        "(up to 5x-10x slower)."
-                    )
-                elif total > 0 and (allocated / total) > 0.95:
-                    logger.warning(
-                        f"High VRAM usage detected: "
-                        f"{allocated:.2f}/{total:.1f}GB "
-                        f"({allocated / total * 100:.1f}%). "
-                        "CPU offloading or Unified Memory paging may be "
-                        "active, which can severely degrade training speed."
-                    )
-
-            if loss is not None:
-                logger.info(
-                    f"{progress_str} | "
-                    f"loss={loss:.4f} | "
-                    f"lr={lr_val}"
-                    f"{speed_str}"
-                    f" | elapsed={elapsed_time:.1f}s"
-                    f"{eta_str}"
-                    f"{gpu_info}"
-                )
         return control
+
+    def on_train_end(self, args, state, control, **kwargs):
+        if self._pbar:
+            self._pbar.close()
+            self._pbar = None
 
 
 class PeriodicEvaluationCallback(TrainerCallback):

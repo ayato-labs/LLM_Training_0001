@@ -76,6 +76,8 @@ def load_config(cfg: DictConfig) -> dict:
 
 def _normalize_config(raw: dict) -> dict:
     """ネストしたYAML構造を学習パイプライン用フラットdictに変換"""
+    import copy
+    raw = copy.deepcopy(raw)
 
     # model_params 抽出
     model = raw.get("model", {})
@@ -138,8 +140,30 @@ def _normalize_config(raw: dict) -> dict:
         per_device_batch = configured_per_device
         grad_accum = t.get("grad_accum_steps", max(1, total_batch // per_device_batch))
 
+    # === max_steps 動的計算 (Chinchilla対応) ===
+    # Chinchilla から metadata.computable_tokens を取得
+    metadata = raw.get("metadata", {})
+    computable_tokens = metadata.get("computable_tokens")
+
+    # batch_size_seqs を取得（t または raw["training"] から）
+    batch_size_seqs = t.get("batch_size_seqs")
+    if batch_size_seqs is None:
+        batch_size_seqs = total_batch
+
+    seq_len = t.get("seq_len", 1024)
+
+    if computable_tokens and computable_tokens > 0:
+        # 理論トークン数 / (バッチ × シーケンス長) = ステップ数
+        calculated_max_steps = int(computable_tokens / (batch_size_seqs * seq_len))
+        # 設定ファイルに max_steps が明示されていない場合のみ上書き
+        if "max_steps" not in t or t["max_steps"] == -1:
+            t["max_steps"] = calculated_max_steps
+            from src.common.logger import logger
+            logger.info(f"[Chinchilla] Dynamic max_steps calculated: {calculated_max_steps:,} "
+                       f"(D={computable_tokens:,}, batch={batch_size_seqs}, seq_len={seq_len})")
+
     training = {
-        "seq_len": t.get("seq_len", 1024),
+        "seq_len": seq_len,
         "max_lr_2d": clipped_lr_2d,
         "max_lr_1d": clipped_lr_1d,
         "batch_size_seqs": total_batch,
@@ -152,7 +176,7 @@ def _normalize_config(raw: dict) -> dict:
         "num_epochs": t.get("num_epochs", 3),
         "save_steps": t.get("save_steps", 1000),
         "eval_steps": t.get("eval_steps", 1000),
-        "logging_steps": t.get("logging_steps", 10),
+        "logging_steps": t.get("logging_steps", 200),
         "packing": t.get("packing", False),
         "torch_compile": t.get("torch_compile", False),
         "use_liger_kernel": t.get("use_liger_kernel", False),
@@ -173,7 +197,6 @@ def _normalize_config(raw: dict) -> dict:
 
     # トップレベルマージ
     return {
-
         **raw,  # seed, data_path, tokenizer_path, max_steps, num_epochs, etc.
         "model_params": model_params,
         "hpo": training,  # 互換性のため hpo キーも残す

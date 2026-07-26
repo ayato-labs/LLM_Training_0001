@@ -141,55 +141,73 @@ def extract_throughput_from_recent_logs() -> float | None:
     return None
 
 
-def run_quick_proxy_benchmark(seq_len: int = 1024) -> float:
-    """指定の seq_len で GPU 上の最小プロキシモデルを実際にデモ動的実行し、
-    実効スループット (tokens/sec) をハードコードなしに完全リアルタイム実測計測。
+def run_quick_proxy_benchmark(seq_len: int = 1024, batch_size: int = 16) -> tuple[float, int]:
+    """指定の seq_len および batch_size で GPU 上のプロキシモデルを実際に動的実行し、
+    実効スループット (tokens/sec) および 実測パラメータ数を完全リアルタイム計測。
     """
     if not torch.cuda.is_available():
-        return 500.0
+        return 500.0, 27_450_000
 
-    try:
-        from transformers import LlamaConfig, LlamaForCausalLM
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
 
-        cfg = LlamaConfig(
-            vocab_size=32000,
-            hidden_size=512,
-            num_hidden_layers=4,
-            num_attention_heads=8,
-            num_key_value_heads=2,
-            intermediate_size=1376,
-        )
-        device = torch.device("cuda:0")
-        model = LlamaForCausalLM(cfg).to(device=device, dtype=torch.bfloat16)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    target_bs = max(1, batch_size)
+    
+    while target_bs >= 1:
+        try:
+            from transformers import LlamaConfig
+            from transformers.models.llama.modeling_llama import LlamaModel
 
-        # Warmup step (指定 seq_len でデモ実行)
-        dummy_input = torch.randint(0, 32000, (1, seq_len), device=device)
-        out = model(dummy_input, labels=dummy_input)
-        out.loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-        torch.cuda.synchronize()
+            cfg = LlamaConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                intermediate_size=1376,
+            )
+            device = torch.device("cuda:0")
+            model = LlamaModel(cfg).to(device=device, dtype=torch.bfloat16)
+            ref_n = sum(p.numel() for p in model.parameters())
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
-        # Benchmark 3 steps
-        start_t = time.time()
-        n_steps = 3
-        for _ in range(n_steps):
-            out = model(dummy_input, labels=dummy_input)
-            out.loss.backward()
+            # Warmup step (指定 seq_len と target_bs でデモ実行)
+            dummy_input = torch.randint(0, 32000, (target_bs, seq_len), device=device)
+            out = model(dummy_input)
+            loss = out.last_hidden_state.sum()
+            loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-        torch.cuda.synchronize()
-        elapsed = time.time() - start_t
-        sec_per_step = elapsed / n_steps
-        tps = seq_len / sec_per_step
+            torch.cuda.synchronize()
 
-        del model, optimizer
-        torch.cuda.empty_cache()
-        return round(tps, 1)
-    except Exception as e:
-        logger.error(f"run_quick_proxy_benchmark failed for seq_len={seq_len}: {e}")
-        raise
+            # Benchmark 3 steps
+            start_t = time.time()
+            n_steps = 3
+            for _ in range(n_steps):
+                out = model(dummy_input)
+                loss = out.last_hidden_state.sum()
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+            torch.cuda.synchronize()
+            elapsed = time.time() - start_t
+            sec_per_step = elapsed / n_steps
+            tps = (target_bs * seq_len) / sec_per_step
+
+            del model, optimizer
+            torch.cuda.empty_cache()
+            return round(tps, 1), ref_n
+        except torch.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            if target_bs <= 1:
+                raise
+            target_bs = target_bs // 2
+            logger.info(f"run_quick_proxy_benchmark OOM, retrying with batch_size={target_bs}...")
+        except Exception as e:
+            logger.error(f"run_quick_proxy_benchmark failed for seq_len={seq_len}, batch_size={target_bs}: {e}")
+            raise
 
 
 
@@ -331,6 +349,7 @@ from typing import Any, Dict, Optional
 import torch
 import yaml
 from src.common.logger import logger
+from src.hpo.hpo_manager import calculate_dynamic_n_trials
 
 def detect_real_available_vram_gb(device_id: int = 0) -> float:
     """
@@ -417,7 +436,16 @@ def calculate_chinchilla_scaling(
     force_benchmark: bool = False,
     reference_n_params: int | None = None,
 ) -> dict[str, Any]:
-    """目標時間、実効FLOPs/sec、および動的VRAM検知から完全自律型の最適構成を算定"""
+    """目標時間、実効FLOPs/sec、および動的VRAM検知から完全自律型の最適構成を算定
+    
+    Args:
+        target_hours: 目標学習時間 (hours)
+        user_throughput_tps: ユーザー指定スループット (tokens/sec)
+        user_seq_len: ユーザー指定シーケンス長
+        user_vram_limit_gb: ユーザー指定VRAM上限 (GB)
+        force_benchmark: 強制的にGPUベンチマーク実行
+        reference_n_params: スループット基準モデルのパラメータ数
+    """
     
     gpu_info = detect_gpu_info()
     seq_len = user_seq_len or detect_seq_len_from_config()
@@ -444,11 +472,16 @@ def calculate_chinchilla_scaling(
                 ref_n = 1_000_000_000
                 logger.warning("Assuming 1B params for log TPS. Use force_benchmark=True for precision.")
 
-    if tps is None or ref_n is None:
-        logger.info(f"Running GPU proxy benchmark for seq_len={seq_len}...")
-        tps = run_quick_proxy_benchmark(seq_len=seq_len)
-        tp_source = f"Dynamic GPU Benchmark (seq_len={seq_len})"
-        ref_n = 27_450_000  # Proxy model param count
+    if tps is not None and ref_n is None:
+        ref_n = 1_000_000_000
+
+    if tps is None or force_benchmark:
+        proxy_n = 27_450_000
+        proxy_arch_dict = generate_universal_architecture(proxy_n)
+        bench_bs = find_max_safe_batch_size(proxy_arch_dict, seq_len, true_free_vram_gb, checkpointing="selective")
+        logger.info(f"Running GPU proxy benchmark for seq_len={seq_len}, batch_size={bench_bs}...")
+        tps, ref_n = run_quick_proxy_benchmark(seq_len=seq_len, batch_size=bench_bs)
+        tp_source = f"Dynamic GPU Benchmark (seq_len={seq_len}, batch={bench_bs})"
 
     # C = 6 * N * TPS
     effective_flops_per_sec = 6.0 * ref_n * tps
@@ -511,15 +544,12 @@ def calculate_chinchilla_scaling(
     ).breakdown.total_estimated_gb
     vram_safe = est_vram <= (true_free_vram_gb * 0.90)
 
-    # --- 6. ステップ数と速度の予測 ---
-    # 動的に決定されたバッチサイズを用いてステップあたりのトークン数を算出
-    grad_accum_steps = 32
-    tokens_per_step = seq_len * optimal_batch_size * grad_accum_steps
-    est_total_steps = int(total_tokens_computable / tokens_per_step)
-    
+    # --- 6. 理論的計算量と速度の予測 ---
+    # Chinchilla最適トークン数 D（不変・batch_size非依存）
+    computable_tokens = total_tokens_computable
+
     # FLOPsからターゲットモデルのTPSを予測
     projected_target_tps = effective_flops_per_sec / (6.0 * arch["n_params"])
-    est_sec_per_step = tokens_per_step / projected_target_tps
 
     # --- 7. HPO (プロキシ) 用のシミュレーションとバッチサイズ調整 ---
     proxy_params = arch["n_params"] if arch["n_params"] <= 50_000_000 else min(arch["n_params"], max(50_000_000, int(arch["n_params"] * 0.10)))
@@ -554,6 +584,7 @@ def calculate_chinchilla_scaling(
         "reference_model_params": ref_n,
         "effective_tflops": round(effective_flops_per_sec / 1e12, 2),
         
+        "computable_tokens": round(total_tokens_computable),
         "computable_tokens_million": round(total_tokens_computable / 1e6, 2),
         "dataset_info": {
             "data_path": data_path,
@@ -573,9 +604,7 @@ def calculate_chinchilla_scaling(
         # OMM防止のため動的算出された最適なバッチサイズをエクスポート
         "optimal_batch_size": optimal_batch_size,
         
-        "estimated_total_steps": est_total_steps,
         "projected_target_tps": round(projected_target_tps, 1),
-        "estimated_sec_per_step": round(est_sec_per_step, 2),
         "hpo_simulation": {
             "proxy_params": proxy_params,
             "n_trials": hpo_n_trials,
@@ -584,46 +613,3 @@ def calculate_chinchilla_scaling(
             "expected_with_median_pruner_minutes": hpo_expected_min,
         },
     }
-# ----
-
-def calculate_context_sensitivity_comparison(
-    target_hours: float = 48.0,
-    user_throughput_tps: float | None = None,
-    user_seq_len: int | None = None,
-    user_vram_limit_gb: float | None = None,
-    force_benchmark: bool = False,
-) -> dict[str, Any]:
-    """基準 seq_len (例: 1024) に対して -1段 (512), 基準 (1024), +1段 (2048) の3パターン比較を各 seq_len 実測ベンチマークで自動計算"""
-    base_seq_len = user_seq_len or detect_seq_len_from_config()
-
-    down_seq_len = max(256, base_seq_len // 2)
-    up_seq_len = base_seq_len * 2
-    seq_len_list = [down_seq_len, base_seq_len, up_seq_len]
-
-    comparison_results = []
-    for s_len in seq_len_list:
-        # 各 seq_len について実際の GPU デモプロファイリングを実行し、実測 tps で試算
-        res = calculate_chinchilla_scaling(
-            target_hours=target_hours,
-            user_throughput_tps=user_throughput_tps if (s_len == base_seq_len) else None,
-            user_seq_len=s_len,
-            user_vram_limit_gb=user_vram_limit_gb,
-            force_benchmark=force_benchmark if (s_len == base_seq_len) else True,
-        )
-        comparison_results.append(res)
-
-    return {
-        "base_seq_len": base_seq_len,
-        "target_hours": target_hours,
-        "comparison_results": comparison_results,
-    }
-
-
-def determine_optimal_proxy_size(target_n_params: int) -> str:
-    ratio = 0.1
-    proxy_n = max(50_000_000, int(target_n_params * ratio))
-    return f"{proxy_n // 1_000_000}M"
-
-
-def calculate_dynamic_n_trials(search_space_dim: int = 5) -> int:
-    return max(20, search_space_dim * 20)

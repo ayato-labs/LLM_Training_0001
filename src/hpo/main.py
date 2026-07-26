@@ -18,7 +18,12 @@ from datasets import load_dataset
 from transformers import PreTrainedTokenizerFast
 
 from src.common.logger import logger
-from src.hpo.hpo_manager import create_search_space, objective
+from src.hpo.hpo_manager import (
+    calculate_dynamic_n_trials,
+    create_search_space,
+    determine_optimal_proxy_size,
+    objective,
+)
 from src.hpo.step_law import compute_hpo_for_target
 from src.training.config import _detect_vram as detect_vram
 from src.training.model_utils import (
@@ -26,15 +31,18 @@ from src.training.model_utils import (
     get_optimal_num_proc,
     parallel_tokenize,
 )
-from src.chinchilla.calculator import generate_universal_architecture, calculate_dynamic_n_trials
+from src.chinchilla.calculator import (
+    detect_seq_len_from_config,
+    generate_universal_architecture,
+)
 
 
-def load_target_arch(path: str = "configs/chinchilla_config.yaml") -> dict:
+def load_target_arch(path: str = "configs/chinchilla_config.yaml") -> tuple[dict, int]:
     with open(path) as f:
         cfg = yaml.safe_load(f)
     model_cfg = cfg.get("model", {})
     llama = model_cfg.get("llama", {})
-    return {
+    arch = {
         "n_params": model_cfg["target_params"],
         "hidden": llama["hidden_size"],
         "layers": llama["num_hidden_layers"],
@@ -43,6 +51,8 @@ def load_target_arch(path: str = "configs/chinchilla_config.yaml") -> dict:
         "ffn": llama["intermediate_size"],
         "vocab_size": llama.get("vocab_size", 32000),
     }
+    batch_size = cfg.get("training", {}).get("batch_size_seqs", 16)
+    return arch, batch_size
 
 
 def main():
@@ -56,7 +66,7 @@ def main():
 
     # ---- Load target architecture ----
     chinchilla_cfg = args.get("chinchilla_config", "configs/chinchilla_config.yaml")
-    target_arch = load_target_arch(chinchilla_cfg)
+    target_arch, chinchilla_batch_size = load_target_arch(chinchilla_cfg)
     target_size = f'{target_arch["n_params"] / 1e6:.0f}M'
 
     # ---- Proxy model ----
@@ -72,10 +82,7 @@ def main():
     data_path = args.get("data_path", "data/dataset.jsonl")
     n_tokens = sum(1 for _ in open(data_path, encoding="utf-8"))
     proxy_vram = float(args.get("vram_gb", 0)) or detect_vram()
-    seq_len = int(args.get("seq_len", "1024"))
-    n_trials = int(args.get("n_trials", "0")) or calculate_dynamic_n_trials(search_space_dim=5)
-
-    logger.info(f"Proxy={proxy_size}, Target={target_size}, Tokens={n_tokens}, VRAM={proxy_vram} GB")
+    seq_len = int(args.get("seq_len", "0")) or detect_seq_len_from_config()
 
     # ---- Data prep ----
     logger.info(f"Loading dataset from {data_path}...")
@@ -99,9 +106,14 @@ def main():
 
     # ---- Step Law ----
     step_law_hpo = compute_hpo_for_target(n_params=proxy_arch["n_params"], n_tokens=n_tokens, seq_len=seq_len)
+    step_law_hpo["batch_size_seqs"] = chinchilla_batch_size
 
     # ---- Optuna ----
     search_space = create_search_space(step_law_hpo, proxy_vram, n_params=proxy_arch["n_params"])
+    user_n_trials = int(args.get("n_trials", "0"))
+    n_trials = user_n_trials if user_n_trials > 0 else calculate_dynamic_n_trials(search_space_dim=len(search_space))
+
+    logger.info(f"Proxy={proxy_size}, Target={target_size}, Tokens={n_tokens}, VRAM={proxy_vram} GB, SpaceDim={len(search_space)}, Trials={n_trials}")
     study = optuna.create_study(
         direction="minimize",
         sampler=optuna.samplers.TPESampler(seed=42),
@@ -122,21 +134,9 @@ def main():
         for k, v in best.items()
     }
 
-    target_batch_seqs = scaled_best.get("batch_size_seqs", 16)
-    per_device, grad_accum = calculate_optimal_batch_split(
-        total_batch_size=target_batch_seqs, vram_gb=proxy_vram,
-        n_params=target_arch["n_params"], seq_len=seq_len,
-        hidden_size=target_arch["hidden"], num_layers=target_arch["layers"],
-    )
-
     output = {
         "training": {
             **scaled_best,
-            "warmup_ratio": scaled_best.get("warmup_ratio", 0.03),
-            "beta2": 0.95,
-            "grad_clip": 1.0,
-            "per_device_batch_size": per_device,
-            "grad_accum_steps": grad_accum,
         }
     }
 

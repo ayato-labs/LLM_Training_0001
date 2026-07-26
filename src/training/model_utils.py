@@ -79,14 +79,9 @@ def calculate_optimal_batch_split(
     ), calibration=cal)
 
     max_safe = est.max_safe_micro_batch
-    target_micro = min(total_batch_size, max_safe)
-    while target_micro > 1:
-        if total_batch_size % target_micro == 0:
-            break
-        target_micro -= 1
-
-    per_device_batch_size = max(1, target_micro)
-    grad_accum_steps = total_batch_size // per_device_batch_size
+    # GPU計算速度 (Tokens/sec) を最大化するため、VRAM容量が許す最大のマイクロバッチを優先設定
+    per_device_batch_size = max(1, min(total_batch_size, max_safe))
+    grad_accum_steps = max(1, total_batch_size // per_device_batch_size)
 
     return per_device_batch_size, grad_accum_steps
 
