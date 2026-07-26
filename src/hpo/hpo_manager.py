@@ -43,27 +43,13 @@ def calculate_dynamic_n_trials(search_space_dim: int = 4) -> int:
 
 
 def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_000_000) -> dict:
-    """Step Law結果を中心とした探索空間定義 (4次元: max_lr_2d, max_lr_1d, weight_decay, warmup_ratio)
-
-    小モデルほどStep Law誤差が大きく→範囲を広めに
-    大モデルほどStep Law信頼度が高く→範囲を絞り込む
-    """
+    """Step Law理論予測値を中心とした共通対数探索空間定義 (4次元: max_lr_2d, max_lr_1d, weight_decay, warmup_ratio)"""
     lr_2d_center = step_law_hpo["max_lr_2d"]
     lr_1d_center = step_law_hpo["max_lr_1d"]
 
-    # モデルサイズに応じたLR探索範囲の倍率 (小→大で狭くなる)
-    if n_params < 100_000_000:  # <100M
-        lr_low, lr_high = 0.6, 1.7  # ±40~70%
-        wd_low, wd_high = 0.03, 0.25
-    elif n_params < 500_000_000:  # 100M-500M
-        lr_low, lr_high = 0.7, 1.5  # ±30~50%
-        wd_low, wd_high = 0.04, 0.22
-    elif n_params < 2_000_000_000:  # 500M-2B
-        lr_low, lr_high = 0.75, 1.4  # ±25~40%
-        wd_low, wd_high = 0.05, 0.20
-    else:  # ≥2B
-        lr_low, lr_high = 0.8, 1.3  # ±20~30%
-        wd_low, wd_high = 0.06, 0.18
+    # Step Law 中心値に対する対数探索倍率 [0.5x, 2.0x] ＋ Weight Decay ＋ Warmup
+    lr_low, lr_high = 0.5, 2.0
+    wd_low, wd_high = 0.01, 0.20
 
     return {
         "max_lr_2d": (lr_2d_center * lr_low, lr_2d_center * lr_high, "log"),
