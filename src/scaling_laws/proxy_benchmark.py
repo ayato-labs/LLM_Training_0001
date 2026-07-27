@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import yaml
 
+from src.common.config_utils import load_base_config_yaml
 from src.common.logger import logger
 
 
@@ -20,21 +20,9 @@ def detect_data_path_and_tokens() -> tuple[str, float | None]:
     """configs/base_config.yaml から data_path と tokenizer_path を取得し、
     本番と同一の PreTrainedTokenizerFast をファンクションコールして正確な総トークン数を算定
     """
-    config_path = Path("configs/base_config.yaml")
-    data_path = "data/dataset.jsonl"
-    tokenizer_path = "data/tokenizer.json"
-
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            if isinstance(cfg, dict):
-                if "data_path" in cfg and cfg["data_path"]:
-                    data_path = str(cfg["data_path"])
-                if "tokenizer_path" in cfg and cfg["tokenizer_path"]:
-                    tokenizer_path = str(cfg["tokenizer_path"])
-        except Exception:
-            pass
+    cfg = load_base_config_yaml()
+    data_path = str(cfg.get("data_path", "data/dataset.jsonl"))
+    tokenizer_path = str(cfg.get("tokenizer_path", "data/tokenizer.json"))
 
     path_obj = Path(data_path)
     if not path_obj.exists():
@@ -76,15 +64,9 @@ def detect_data_path_and_tokens() -> tuple[str, float | None]:
 
 def detect_seq_len_from_config() -> int:
     """configs/base_config.yaml から事前学習の基本 seq_len を一元取得"""
-    config_path = Path("configs/base_config.yaml")
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            if isinstance(cfg, dict) and "training" in cfg and "seq_len" in cfg["training"]:
-                return int(cfg["training"]["seq_len"])
-        except Exception as e:
-            logger.warning(f"Failed to read seq_len from base_config.yaml: {e}")
+    cfg = load_base_config_yaml()
+    if "training" in cfg and "seq_len" in cfg["training"]:
+        return int(cfg["training"]["seq_len"])
     return 1024
 
 

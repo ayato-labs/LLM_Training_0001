@@ -30,9 +30,9 @@ def main(cfg: DictConfig) -> None:
     train(config)
 
 
+import contextlib
+
 if __name__ == "__main__":
-    try:
+    with contextlib.suppress(RuntimeError):
         mp.set_start_method("spawn", force=True)
-    except RuntimeError:
-        pass
     main()

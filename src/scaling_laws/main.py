@@ -8,6 +8,7 @@ Examples:
     uv run python -m src.scaling_laws.main target_hours=12 --apply
 """
 
+import contextlib
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,10 +25,8 @@ def main():
 
     for arg in sys.argv[1:]:
         if arg.startswith("target_hours="):
-            try:
+            with contextlib.suppress(ValueError):
                 target_hours = float(arg.split("=")[1])
-            except ValueError:
-                pass
         elif arg in ("apply=true", "--apply", "-a"):
             apply = True
 

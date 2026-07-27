@@ -184,9 +184,8 @@ def objective(
 
     from omegaconf import OmegaConf
 
-    # SSOT 優先順位: 1. configs/scaling_config.yaml 2. configs/chinchilla_config.yaml 3. configs/base_config.yaml
+    # SSOT 優先順位: 1. configs/scaling_config.yaml 2. configs/base_config.yaml 3. configs/config.yaml
     scaling_path = Path("configs/scaling_config.yaml")
-    chinchilla_path = Path("configs/chinchilla_config.yaml")
     base_config_path = Path("configs/base_config.yaml")
     config_path = Path("configs/config.yaml")
     base_cfg = {}
@@ -194,11 +193,7 @@ def objective(
     target_cfg_path = (
         scaling_path
         if scaling_path.exists()
-        else (
-            chinchilla_path
-            if chinchilla_path.exists()
-            else (base_config_path if base_config_path.exists() else config_path)
-        )
+        else (base_config_path if base_config_path.exists() else config_path)
     )
     if target_cfg_path.exists():
         try:

@@ -4,7 +4,10 @@ Chinchilla (Hoffmann et al.), Critical Batch Size (Kaplan/OpenAI),
 および Dynamic Proxy Benchmark を統括するファサード (Orchestrator) モジュール。
 """
 
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from src.common.logger import logger
 from src.common.vram_estimator import (
@@ -12,6 +15,23 @@ from src.common.vram_estimator import (
     VramEstimate,
     estimate_training_vram_with_calibration,
 )
+
+
+def load_scaling_config(config_path: str = "configs/scaling_config.yaml") -> dict[str, Any]:
+    """configs/scaling_config.yaml を SSOT としてロードする共通関数。"""
+    path_obj = Path(config_path)
+    if not path_obj.exists():
+        return {}
+
+    try:
+        with open(path_obj, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception as e:
+        logger.warning(f"Could not load scaling config from {config_path}: {e}")
+        return {}
+
+
 from src.hpo.hpo_manager import calculate_dynamic_n_trials
 from src.scaling_laws.chinchilla_law import (
     calculate_compute_optimal_n_d,

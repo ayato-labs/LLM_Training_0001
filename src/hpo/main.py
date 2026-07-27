@@ -28,6 +28,7 @@ from src.hpo.hpo_manager import (
     objective,
 )
 from src.hpo.step_law import compute_hpo_for_target
+from src.scaling_laws.calculator import load_scaling_config
 from src.training.model_utils import (
     get_optimal_num_proc,
     parallel_tokenize,
@@ -35,22 +36,16 @@ from src.training.model_utils import (
 
 
 def load_target_arch(path: str = "configs/scaling_config.yaml") -> tuple[dict, int]:
-    p = Path(path)
-    if not p.exists():
-        fallback_p = Path("configs/chinchilla_config.yaml")
-        if fallback_p.exists():
-            p = fallback_p
-    with open(p, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_scaling_config(path)
     model_cfg = cfg.get("model", {})
     llama = model_cfg.get("llama", {})
     arch = {
-        "n_params": model_cfg["target_params"],
-        "hidden": llama["hidden_size"],
-        "layers": llama["num_hidden_layers"],
-        "heads": llama["num_attention_heads"],
-        "kv_heads": llama["num_key_value_heads"],
-        "ffn": llama["intermediate_size"],
+        "n_params": model_cfg.get("target_params", 86523648),
+        "hidden": llama.get("hidden_size", 768),
+        "layers": llama.get("num_hidden_layers", 10),
+        "heads": llama.get("num_attention_heads", 12),
+        "kv_heads": llama.get("num_key_value_heads", 3),
+        "ffn": llama.get("intermediate_size", 2048),
         "vocab_size": llama.get("vocab_size", 32000),
     }
     batch_size = cfg.get("training", {}).get("batch_size_seqs", 16)

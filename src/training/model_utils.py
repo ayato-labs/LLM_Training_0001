@@ -53,42 +53,27 @@ def calculate_optimal_batch_split(
     use_calibration: bool = True,
 ) -> tuple[int, int]:
     """
-    統一 VRAM 推定エンジンに委譲。
+    スケーリング法則エンジンの select_decoupled_batch_split に委譲。
 
-    実測キャリブレーションデータが存在する場合はそちらを優先し、
-    より正確なバッチ分割を算出する。
+    VRAM 90% 安全上限以内で勾配蓄積オーバーヘッドを最小化するマイクロバッチを算出。
     """
-    from src.common.vram_estimator import (
-        VramCalibration,
-        VramConfig,
-        estimate_training_vram_with_calibration,
+    from src.scaling_laws.critical_batch_law import select_decoupled_batch_split
+
+    arch_dict = {
+        "n_params": n_params,
+        "hidden_size": hidden_size,
+        "intermediate_size": intermediate_size if intermediate_size > 0 else 4 * hidden_size,
+        "num_hidden_layers": num_layers,
+        "vocab_size": vocab_size,
+    }
+    b_micro, grad_accum, _ = select_decoupled_batch_split(
+        arch_dict=arch_dict,
+        seq_len=seq_len,
+        true_free_vram_gb=vram_gb,
+        checkpointing="selective" if selective_checkpointing else "full",
+        override_total_batch_size=total_batch_size,
     )
-
-    cal = VramCalibration.load() if use_calibration else None
-    est = estimate_training_vram_with_calibration(
-        VramConfig(
-            n_params=n_params,
-            hidden_size=hidden_size,
-            intermediate_size=intermediate_size,
-            num_layers=num_layers,
-            vocab_size=vocab_size,
-            micro_batch_size=total_batch_size,
-            seq_len=seq_len,
-            precision=precision,
-            optimizer_type=optimizer_type,
-            checkpointing="selective" if selective_checkpointing else "full",
-            use_liger_kernel=True,
-            total_vram_gb=vram_gb,
-        ),
-        calibration=cal,
-    )
-
-    max_safe = est.max_safe_micro_batch
-    # GPU計算速度 (Tokens/sec) を最大化するため、VRAM容量が許す最大のマイクロバッチを優先設定
-    per_device_batch_size = max(1, min(total_batch_size, max_safe))
-    grad_accum_steps = max(1, total_batch_size // per_device_batch_size)
-
-    return per_device_batch_size, grad_accum_steps
+    return b_micro, grad_accum
 
 
 def apply_selective_attention_checkpointing(model) -> int:

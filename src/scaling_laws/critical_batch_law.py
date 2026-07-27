@@ -24,13 +24,8 @@ def calculate_critical_batch_size(
     ref_n = 86_523_648
     ref_batch_seqs = 64
 
-    # scaling_config.yaml (または chinchilla_config.yaml) から動的ロード (SSOT原則)
+    # scaling_config.yaml から動的ロード (SSOT原則)
     path = Path(config_path)
-    if not path.exists():
-        fallback_path = Path("configs/chinchilla_config.yaml")
-        if fallback_path.exists():
-            path = fallback_path
-
     if path.exists():
         try:
             with open(path, encoding="utf-8") as f:
@@ -94,6 +89,7 @@ def select_decoupled_batch_split(
     seq_len: int,
     true_free_vram_gb: float,
     checkpointing: str = "selective",
+    override_total_batch_size: int | None = None,
 ) -> tuple[int, int, int]:
     """2段階完全分離型バッチ設計 (Decoupled Batch Architecture):
     1. Critical Batch Size スケーリング法則で理論最適トータルバッチ B_total を算定。
@@ -108,7 +104,7 @@ def select_decoupled_batch_split(
     n_params = arch_dict["n_params"]
 
     # Step 1: スケーリング法則による理論最適トータルバッチサイズ算定
-    target_b_total = calculate_critical_batch_size(n_params, seq_len)
+    target_b_total = override_total_batch_size or calculate_critical_batch_size(n_params, seq_len)
 
     # Step 2: VRAM 物理限界を満たす最速マイクロバッチ選定 (256, 128, 64, 32, 16, 8, 4, 2, 1)
     safe_limit_gb = true_free_vram_gb * 0.90
@@ -117,8 +113,11 @@ def select_decoupled_batch_split(
     candidates = []
     curr = 1
     while curr <= max_bs:
-        candidates.append(curr)
+        if curr <= target_b_total:
+            candidates.append(curr)
         curr *= 2
+    if target_b_total not in candidates:
+        candidates.append(target_b_total)
     candidates.sort(reverse=True)
 
     best_micro_bs = 1
@@ -145,6 +144,8 @@ def select_decoupled_batch_split(
         if est_vram <= safe_limit_gb:
             best_micro_bs = test_bs
             break
+
+    best_micro_bs = min(best_micro_bs, target_b_total)
 
     # Step 3: 自動結合 (Gradient Accumulation 計算)
     grad_accum_steps = max(1, round(target_b_total / best_micro_bs))

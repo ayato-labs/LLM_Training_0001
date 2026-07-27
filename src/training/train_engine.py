@@ -665,7 +665,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         remove_unused_columns=False,  # カスタムデータコレーター利用時のカラム自動削除防止
         optim=config.get("optim", "adamw_torch_fused"),
         dataloader_num_workers=dataloader_num_workers,
-        dataloader_persistent_workers=True if dataloader_num_workers > 0 else False,
+        dataloader_persistent_workers=dataloader_num_workers > 0,
         torch_empty_cache_steps=config.get("torch_empty_cache_steps", 100),
         dataloader_prefetch_factor=config.get("dataloader_prefetch_factor", 2)
         if dataloader_num_workers > 0
