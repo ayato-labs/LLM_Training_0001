@@ -77,6 +77,7 @@ def _verify_flash_attention(precision: str) -> None:
 def _warmup_liger_kernels(config: dict) -> None:
     """プロキシ/本番モデルの実寸法テンソルで Liger Triton JIT カーネルを個別コンパイル・分割同期する。"""
     import time
+
     if not torch.cuda.is_available():
         return
 
@@ -97,13 +98,16 @@ def _warmup_liger_kernels(config: dict) -> None:
     try:
         t_step = time.perf_counter()
         from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+
         # gate_proj & up_proj output shape: [batch, seq_len, intermediate_size]
         a = torch.randn(1, 16, intermediate_size, dtype=dtype, device="cuda")
         b = torch.randn(1, 16, intermediate_size, dtype=dtype, device="cuda")
         _ = LigerSiLUMulFunction.apply(a, b)
         torch.cuda.synchronize()
         del a, b, _
-        logger.info(f"[Liger Warmup 1/3] SwiGLU kernel JIT compiled in {(time.perf_counter() - t_step)*1000:.2f}ms.")
+        logger.info(
+            f"[Liger Warmup 1/3] SwiGLU kernel JIT compiled in {(time.perf_counter() - t_step) * 1000:.2f}ms."
+        )
     except Exception as swiglu_e:
         logger.warning(f"[Liger Warmup 1/3] SwiGLU warmup warning: {swiglu_e}")
 
@@ -111,12 +115,15 @@ def _warmup_liger_kernels(config: dict) -> None:
     try:
         t_step = time.perf_counter()
         from liger_kernel.ops.rms_norm import LigerRMSNormFunction
+
         x = torch.randn(1, 16, hidden_size, dtype=dtype, device="cuda")
         w = torch.ones(hidden_size, dtype=dtype, device="cuda")
         _ = LigerRMSNormFunction.apply(x, w, 1e-6)
         torch.cuda.synchronize()
         del x, w, _
-        logger.info(f"[Liger Warmup 2/3] RMSNorm kernel JIT compiled in {(time.perf_counter() - t_step)*1000:.2f}ms.")
+        logger.info(
+            f"[Liger Warmup 2/3] RMSNorm kernel JIT compiled in {(time.perf_counter() - t_step) * 1000:.2f}ms."
+        )
     except Exception as rms_e:
         logger.warning(f"[Liger Warmup 2/3] RMSNorm warmup warning: {rms_e}")
 
@@ -124,6 +131,7 @@ def _warmup_liger_kernels(config: dict) -> None:
     try:
         t_step = time.perf_counter()
         from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+
         # logits shape: [batch_seq, vocab_size], target shape: [batch_seq]
         logits = torch.randn(16, vocab_size, dtype=dtype, device="cuda")
         target = torch.randint(0, vocab_size, (16,), dtype=torch.long, device="cuda")
@@ -131,12 +139,16 @@ def _warmup_liger_kernels(config: dict) -> None:
         _ = LigerCrossEntropyFunction.apply(logits, target, None, -100)
         torch.cuda.synchronize()
         del logits, target, _
-        logger.info(f"[Liger Warmup 3/3] CrossEntropy kernel JIT compiled in {(time.perf_counter() - t_step)*1000:.2f}ms.")
+        logger.info(
+            f"[Liger Warmup 3/3] CrossEntropy kernel JIT compiled in {(time.perf_counter() - t_step) * 1000:.2f}ms."
+        )
     except Exception as ce_e:
         logger.warning(f"[Liger Warmup 3/3] CrossEntropy warmup warning: {ce_e}")
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    logger.info(f"[Liger Warmup] All Liger Triton kernels successfully pre-compiled & synchronized in {elapsed_ms:.2f}ms.")
+    logger.info(
+        f"[Liger Warmup] All Liger Triton kernels successfully pre-compiled & synchronized in {elapsed_ms:.2f}ms."
+    )
 
 
 def _check_and_warn_tdr_delay() -> None:
@@ -165,7 +177,13 @@ def _check_and_warn_tdr_delay() -> None:
     def _query_reg_key(key_name: str) -> int | None:
         try:
             res = subprocess.run(
-                [reg_cmd, "query", r"HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "/v", key_name],
+                [
+                    reg_cmd,
+                    "query",
+                    r"HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers",
+                    "/v",
+                    key_name,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -191,8 +209,14 @@ def _check_and_warn_tdr_delay() -> None:
         need_warning = True
 
     if need_warning:
-        delay_str = f"{tdr_delay_val} sec" if tdr_delay_val is not None else "Not Set (Default 2 sec)"
-        ddi_str = f"{tdr_ddi_delay_val} sec" if tdr_ddi_delay_val is not None else "Not Set (Default 5 sec)"
+        delay_str = (
+            f"{tdr_delay_val} sec" if tdr_delay_val is not None else "Not Set (Default 2 sec)"
+        )
+        ddi_str = (
+            f"{tdr_ddi_delay_val} sec"
+            if tdr_ddi_delay_val is not None
+            else "Not Set (Default 5 sec)"
+        )
         logger.warning(
             "\n"
             "================================================================================\n"
@@ -211,7 +235,7 @@ def _check_and_warn_tdr_delay() -> None:
             "     rm -rf ~/.triton/cache\n"
             "  \n"
             "  2. Apply full TDR registry fix in Windows PowerShell (Administrator):\n"
-            "     Start-Process powershell -Verb RunAs -ArgumentList '-Command reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\" /v TdrDelay /t REG_DWORD /d 60 /f; reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers\" /v TdrDdiDelay /t REG_DWORD /d 60 /f'\n"
+            '     Start-Process powershell -Verb RunAs -ArgumentList \'-Command reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers" /v TdrDelay /t REG_DWORD /d 60 /f; reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers" /v TdrDdiDelay /t REG_DWORD /d 60 /f\'\n'
             "  \n"
             "  3. REBOOT Windows (Restart PC) to apply registry changes to GPU driver.\n"
             "================================================================================"
@@ -262,6 +286,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     統一された学習オーケストレーションフロー。
     """
     import time
+
     t_start = time.perf_counter()
     logger.info("[Train Engine Diag t=0.000ms] train() entry point reached.")
 
@@ -278,7 +303,9 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     seed = config.get("seed", 42)
     deterministic_val = config.get("deterministic", False)
     set_seed(seed, deterministic=deterministic_val)
-    logger.info(f"[Train Engine Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Seed set successfully.")
+    logger.info(
+        f"[Train Engine Diag t={(time.perf_counter() - t_start) * 1000:.2f}ms] Seed set successfully."
+    )
 
     # 1.5 TF32 (TensorFloat-32) の有効化（Ampere世代以降のGPUでの行列演算高速化）
     if config.get("allow_tf32", True) and torch.cuda.is_available():
@@ -504,7 +531,9 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     # Liger Kernel 互換性重視のため、全層フル Gradient Checkpointing (use_reentrant=False) に一本化
     use_gradient_checkpointing = config.get("gradient_checkpointing", True)
     if use_gradient_checkpointing:
-        logger.info("Enabled Standard Full Gradient Checkpointing (use_reentrant=False) for 100% Liger Kernel compatibility.")
+        logger.info(
+            "Enabled Standard Full Gradient Checkpointing (use_reentrant=False) for 100% Liger Kernel compatibility."
+        )
 
     # 10. TrainingArguments (学習パラメータ) の構築
     precision = config.get("precision", "bf16")
@@ -512,19 +541,27 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     hpo_config = config.get("hpo", config)
 
     max_steps = config.get("max_steps", -1)
-    
+
     # configs/scaling_config.yaml または HPO からのマイクロバッチ解決
-    batch_size_seqs = config.get("batch_size_seqs", config.get("training", {}).get("batch_size_seqs", 64))
-    per_device_batch = config.get("per_device_batch_size", config.get("training", {}).get("per_device_batch_size", None))
-    grad_accum_steps = config.get("grad_accum_steps", config.get("training", {}).get("grad_accum_steps", None))
+    batch_size_seqs = config.get(
+        "batch_size_seqs", config.get("training", {}).get("batch_size_seqs", 64)
+    )
+    per_device_batch = config.get(
+        "per_device_batch_size", config.get("training", {}).get("per_device_batch_size", None)
+    )
+    grad_accum_steps = config.get(
+        "grad_accum_steps", config.get("training", {}).get("grad_accum_steps", None)
+    )
 
     if per_device_batch is None or grad_accum_steps is None:
         from src.training.model_utils import calculate_optimal_batch_split
+
         vram_cap = config.get("vram_limit_gb", 4.0)
         per_device_batch, grad_accum_steps = calculate_optimal_batch_split(
             total_batch_size=batch_size_seqs,
             vram_gb=vram_cap,
-            n_params=model_config.vocab_size * model_config.hidden_size + model_config.num_hidden_layers * 12 * (model_config.hidden_size**2),
+            n_params=model_config.vocab_size * model_config.hidden_size
+            + model_config.num_hidden_layers * 12 * (model_config.hidden_size**2),
             seq_len=model_config.max_position_embeddings,
             hidden_size=model_config.hidden_size,
             num_layers=model_config.num_hidden_layers,
@@ -541,6 +578,7 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     if max_steps > 0:
         import math
+
         steps_per_epoch = max(1, len(train_ds) // (per_device_batch * grad_accum_steps))
         num_epochs = max(100, math.ceil(max_steps / steps_per_epoch))
     else:
@@ -579,11 +617,12 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
         constant_steps = int(estimated_total_steps * constant_ratio)
 
     # dataloader_num_workers の動的パフォーマンス適合設定
-    user_num_workers = config.get("dataloader_num_workers", None)
+    user_num_workers = config.get("dataloader_num_workers")
     if user_num_workers is not None and user_num_workers > 0:
         dataloader_num_workers = user_num_workers
     else:
         import os
+
         cpu_cores = os.cpu_count() or 2
         # 非同期バックグラウンド並列フェッチ (Windows Native/WSL2/Linux 全対応)
         # spawn + persistent_workers + pin_memory により CUDA IPC 衝突なしに高速読み込み
@@ -699,24 +738,32 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
     # 13. 学習プロセスの実行
     from transformers import TrainerCallback
+
     class DiagFirstStepCallback(TrainerCallback):
         def on_step_begin(self, args, state, control, **kwargs):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
-            logger.debug(f"[Step Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Step {state.global_step + 1} BEGIN")
+            logger.debug(
+                f"[Step Diag t={(time.perf_counter() - t_start) * 1000:.2f}ms] Step {state.global_step + 1} BEGIN"
+            )
+
         def on_step_end(self, args, state, control, **kwargs):
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            logger.debug(f"[Step Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Step {state.global_step + 1} END")
+            logger.debug(
+                f"[Step Diag t={(time.perf_counter() - t_start) * 1000:.2f}ms] Step {state.global_step + 1} END"
+            )
 
     trainer.add_callback(DiagFirstStepCallback())
-    logger.info(f"[Train Engine Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] Starting trainer.train()...")
+    logger.info(
+        f"[Train Engine Diag t={(time.perf_counter() - t_start) * 1000:.2f}ms] Starting trainer.train()..."
+    )
     train_exec_start = time.perf_counter()
     train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
     train_exec_duration = (time.perf_counter() - train_exec_start) * 1000
     logger.info(
-        f"[Train Engine Diag t={(time.perf_counter() - t_start)*1000:.2f}ms] "
+        f"[Train Engine Diag t={(time.perf_counter() - t_start) * 1000:.2f}ms] "
         f"trainer.train() finished cleanly in {train_exec_duration:.2f}ms."
     )
 

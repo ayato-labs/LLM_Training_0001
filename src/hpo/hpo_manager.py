@@ -62,6 +62,7 @@ def create_search_space(step_law_hpo: dict, vram_gb: float, n_params: int = 150_
 
 def _run_training_process(config, tokenized_dataset, queue):
     import time
+
     start_time = time.perf_counter()
     logger.info("[HPO Subprocess Diag] Subprocess started at t=0.000s")
     try:
@@ -69,7 +70,7 @@ def _run_training_process(config, tokenized_dataset, queue):
             try:
                 props = torch.cuda.get_device_properties(0)
                 logger.info(
-                    f"[HPO Subprocess Diag t={(time.perf_counter() - start_time)*1000:.2f}ms] "
+                    f"[HPO Subprocess Diag t={(time.perf_counter() - start_time) * 1000:.2f}ms] "
                     f"CUDA Device: {props.name} | Total VRAM: {props.total_memory / (1024**3):.2f}GB"
                 )
             except Exception as cuda_e:
@@ -97,7 +98,9 @@ def _run_training_process(config, tokenized_dataset, queue):
                     self.queue.put(("report", state.global_step, loss))
 
         pruning_callback = SubprocessPruningCallback(queue, start_time)
-        logger.info(f"[HPO Subprocess Diag t={(time.perf_counter() - start_time)*1000:.2f}ms] Calling proxy_train()...")
+        logger.info(
+            f"[HPO Subprocess Diag t={(time.perf_counter() - start_time) * 1000:.2f}ms] Calling proxy_train()..."
+        )
         train_start = time.perf_counter()
         loss = proxy_train(
             config,
@@ -106,7 +109,7 @@ def _run_training_process(config, tokenized_dataset, queue):
         )
         train_duration = (time.perf_counter() - train_start) * 1000
         logger.info(
-            f"[HPO Subprocess Diag t={(time.perf_counter() - start_time)*1000:.2f}ms] "
+            f"[HPO Subprocess Diag t={(time.perf_counter() - start_time) * 1000:.2f}ms] "
             f"proxy_train() completed in {train_duration:.2f}ms"
         )
         if isinstance(loss, torch.Tensor):
@@ -114,6 +117,7 @@ def _run_training_process(config, tokenized_dataset, queue):
         queue.put(("success", loss))
     except Exception as e:
         import traceback
+
         fail_time = (time.perf_counter() - start_time) * 1000
         cuda_status = "Unknown"
         if torch.cuda.is_available():
@@ -128,7 +132,12 @@ def _run_training_process(config, tokenized_dataset, queue):
             f"[HPO Subprocess Diag CRASH t={fail_time:.2f}ms] "
             f"Subprocess failed! CUDA Status: [{cuda_status}] | Error: {e}"
         )
-        queue.put(("error", f"t={fail_time:.2f}ms | CUDA Status: [{cuda_status}] | {e}\n{traceback.format_exc()}"))
+        queue.put(
+            (
+                "error",
+                f"t={fail_time:.2f}ms | CUDA Status: [{cuda_status}] | {e}\n{traceback.format_exc()}",
+            )
+        )
 
 
 def _wait_for_cuda_ready(max_retries: int = 10, delay: float = 3.0) -> bool:
@@ -182,18 +191,27 @@ def objective(
     config_path = Path("configs/config.yaml")
     base_cfg = {}
 
-    target_cfg_path = scaling_path if scaling_path.exists() else (chinchilla_path if chinchilla_path.exists() else (base_config_path if base_config_path.exists() else config_path))
+    target_cfg_path = (
+        scaling_path
+        if scaling_path.exists()
+        else (
+            chinchilla_path
+            if chinchilla_path.exists()
+            else (base_config_path if base_config_path.exists() else config_path)
+        )
+    )
     if target_cfg_path.exists():
         try:
             base_cfg = OmegaConf.to_container(OmegaConf.load(target_cfg_path), resolve=True)
-            logger.info(f"[SSOT] HPO objective loaded hardware & model defaults from {target_cfg_path}")
+            logger.info(
+                f"[SSOT] HPO objective loaded hardware & model defaults from {target_cfg_path}"
+            )
         except Exception as e:
             logger.warning(f"Failed to load {target_cfg_path} in HPO objective: {e}")
 
     # Chinchilla / base_config で算定された最高速度バッチサイズを適用
-    batch_size_seqs = (
-        base_cfg.get("training", {}).get("batch_size_seqs")
-        or step_law_hpo.get("batch_size_seqs", 16)
+    batch_size_seqs = base_cfg.get("training", {}).get("batch_size_seqs") or step_law_hpo.get(
+        "batch_size_seqs", 16
     )
     hpo["batch_size_seqs"] = batch_size_seqs
 
@@ -290,7 +308,6 @@ def objective(
         )
         raise optuna.TrialPruned()
 
-
     try:
         import multiprocessing
 
@@ -340,9 +357,7 @@ def objective(
         if p.is_alive():
             p.terminate()
             p.join(timeout=5)
-            logger.warning(
-                f"Trial {trial.number}: subprocess timed out and was terminated"
-            )
+            logger.warning(f"Trial {trial.number}: subprocess timed out and was terminated")
 
         if error_msg:
             logger.warning(f"Trial subprocess failed with exception:\n{error_msg}")

@@ -4,7 +4,8 @@ Compute-Optimalモデルパラメータ数 N および計算可能トークン�
 の数学的導出および標準 LLaMA 幾何学的モデルアーキテクチャの動的生成モジュール。
 """
 
-from typing import Any, Dict
+from typing import Any
+
 from src.common.logger import logger
 
 
@@ -32,9 +33,10 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
       - SwiGLU FFN: 3 * H * I  (中間層 I = 2.67 * H)
       - RMSNorm + RoPE: ~4 * H
     """
+    from pathlib import Path
+
     import torch
     import yaml
-    from pathlib import Path
 
     # 1. デフォルト基準アーキテクチャ (37M 規模)
     vocab_size = 32000
@@ -51,7 +53,9 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
                 llama_cfg = cfg["model"]["llama"]
                 vocab_size = llama_cfg.get("vocab_size", vocab_size)
         except Exception as e:
-            logger.warning(f"Could not load base_config.yaml in generate_universal_architecture: {e}")
+            logger.warning(
+                f"Could not load base_config.yaml in generate_universal_architecture: {e}"
+            )
 
     # パラメータ比率によるスケール
     scale = (target_n_params / base_n) ** (1 / 3)
@@ -78,7 +82,9 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
     # PyTorch meta device による高精度計測検証
     try:
         from unittest.mock import MagicMock
+
         from transformers import LlamaForCausalLM
+
         from src.training.model_utils import create_model_config
 
         dummy_tokenizer = MagicMock()
@@ -122,8 +128,9 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
 
 def load_base_model_defaults() -> dict[str, Any]:
     """`base_config.yaml` からベースモデルのデフォルトパラメータ数とアーキテクチャ構造を安全にロード。"""
-    import yaml
     from pathlib import Path
+
+    import yaml
 
     defaults = {
         "n_params": 86_523_648,

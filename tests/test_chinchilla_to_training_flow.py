@@ -1,8 +1,9 @@
-import pytest
 import tempfile
-import yaml
 from pathlib import Path
-from src.chinchilla.calculator import calculate_chinchilla_scaling
+
+import yaml
+
+from src.scaling_laws.calculator import calculate_chinchilla_scaling
 from src.training.config import _normalize_config
 
 
@@ -87,6 +88,6 @@ def test_chinchilla_computable_tokens_not_overridden_by_hpo():
             raw = yaml.safe_load(f)
 
         config = _normalize_config(raw)
-        
+
         # computable_tokens は metadata に保持される（上書きされない）
         assert raw["metadata"]["computable_tokens"] == 1_240_000_000

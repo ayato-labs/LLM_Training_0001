@@ -160,6 +160,7 @@ class DualOptimizerTrainer(Trainer):
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         import time
+
         t_start = time.perf_counter()
         if self._last_step_start_time is not None:
             self._last_data_fetch_ms = (t_start - self._last_step_start_time) * 1000.0
@@ -224,4 +225,3 @@ class DualOptimizerTrainer(Trainer):
                 "This is expected when model architecture or optimizer parameter groups have changed. "
                 "Training will safely resume using checkpoint model weights with freshly initialized optimizer states."
             )
-

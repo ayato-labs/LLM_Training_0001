@@ -31,7 +31,9 @@ def main():
         elif arg in ("apply=true", "--apply", "-a"):
             apply = True
 
-    logger.info(f"Calculating Scaling Laws & Compute-Optimal Architecture for target_hours={target_hours}...")
+    logger.info(
+        f"Calculating Scaling Laws & Compute-Optimal Architecture for target_hours={target_hours}..."
+    )
     res = calculate_chinchilla_scaling(target_hours=target_hours)
 
     arch = res["recommended_architecture"]
@@ -41,22 +43,34 @@ def main():
     print("\n" + "=" * 70)
     print(f" Scaling Laws & Compute-Optimal Architecture Report ({target_hours:.1f} Hours Target)")
     print("=" * 70)
-    print(f"  GPU Hardware         : {res['gpu_info']['device_name']} (Total VRAM: {res['gpu_info']['total_vram_gb']} GB)")
-    print(f"  Measured Throughput  : {res['measured_throughput_tps']} tokens/sec (Source: {res['throughput_source']})")
-    print(f"  Total Tokens (D)     : {res['computable_tokens']:,} tokens ({res['computable_tokens_million']:.2f}M)")
+    print(
+        f"  GPU Hardware         : {res['gpu_info']['device_name']} (Total VRAM: {res['gpu_info']['total_vram_gb']} GB)"
+    )
+    print(
+        f"  Measured Throughput  : {res['measured_throughput_tps']} tokens/sec (Source: {res['throughput_source']})"
+    )
+    print(
+        f"  Total Tokens (D)     : {res['computable_tokens']:,} tokens ({res['computable_tokens_million']:.2f}M)"
+    )
     print(f"  Context Length       : {res['seq_len']} tokens")
 
     print("\n[Recommended Model Architecture (Pure Chinchilla Golden Ratio: D = 20N)]")
-    print(f"  Model Parameters (N) : {arch['n_params']:,} (~{arch['n_params']/1e6:.2f}M)")
+    print(f"  Model Parameters (N) : {arch['n_params']:,} (~{arch['n_params'] / 1e6:.2f}M)")
     print(f"  Hidden Size          : {arch['hidden_size']}")
     print(f"  Num Layers           : {arch['num_hidden_layers']}")
-    print(f"  Attention Heads      : {arch['num_attention_heads']} (KV Heads: {arch['num_key_value_heads']})")
+    print(
+        f"  Attention Heads      : {arch['num_attention_heads']} (KV Heads: {arch['num_key_value_heads']})"
+    )
     print(f"  Intermediate Size    : {arch['intermediate_size']}")
 
     print("\n[VRAM & Physical Micro-Batch Split Safety]")
     print(f"  Real Free VRAM       : {res['true_free_vram_gb']} GB")
-    print(f"  Estimated Peak VRAM  : {res['estimated_peak_vram_gb']} GB / {res['vram_limit_gb']} GB")
-    print(f"  Physical Micro-Batch : per_device_batch_size={res['optimal_batch_size']}, grad_accum_steps={res['grad_accum_steps']} -> Total Batch={res['batch_size_seqs']}")
+    print(
+        f"  Estimated Peak VRAM  : {res['estimated_peak_vram_gb']} GB / {res['vram_limit_gb']} GB"
+    )
+    print(
+        f"  Physical Micro-Batch : per_device_batch_size={res['optimal_batch_size']}, grad_accum_steps={res['grad_accum_steps']} -> Total Batch={res['batch_size_seqs']}"
+    )
 
     print("\n[Dataset Audit]")
     print(f"  Data Path            : {data_info['data_path']}")
@@ -66,11 +80,17 @@ def main():
     if data_info["is_data_shortage"]:
         capped_arch = res["data_capped_architecture"]
         print("\n  [WARN] Dataset tokens are insufficient for pure compute-optimal training!")
-        print(f"         Recommended Data-Capped Model Size: {capped_arch['n_params']:,} (~{capped_arch['n_params']/1e6:.2f}M)")
+        print(
+            f"         Recommended Data-Capped Model Size: {capped_arch['n_params']:,} (~{capped_arch['n_params'] / 1e6:.2f}M)"
+        )
 
     print("\n[HPO Simulation]")
-    print(f"  Proxy Model Size     : {hpo_sim['proxy_params']:,} (~{hpo_sim['proxy_params']/1e6:.2f}M)")
-    print(f"  Estimated Search Time: ~{hpo_sim['expected_with_median_pruner_minutes']} mins (MedianPruner) / ~{hpo_sim['worst_case_no_pruning_minutes']} mins (Worst-Case)")
+    print(
+        f"  Proxy Model Size     : {hpo_sim['proxy_params']:,} (~{hpo_sim['proxy_params'] / 1e6:.2f}M)"
+    )
+    print(
+        f"  Estimated Search Time: ~{hpo_sim['expected_with_median_pruner_minutes']} mins (MedianPruner) / ~{hpo_sim['worst_case_no_pruning_minutes']} mins (Worst-Case)"
+    )
     print("=" * 70 + "\n")
 
     if apply:
@@ -115,10 +135,14 @@ def main():
 
         with open(output_yaml, "w", encoding="utf-8") as f:
             f.write("# @package _global_\n")
-            f.write("# -----------------------------------------------------------------------------\n")
+            f.write(
+                "# -----------------------------------------------------------------------------\n"
+            )
             f.write("# スケーリング法則 (src.scaling_laws) による自動算定成果物\n")
             f.write(f"# タイムスタンプ: {datetime.now().isoformat()}\n")
-            f.write("# -----------------------------------------------------------------------------\n\n")
+            f.write(
+                "# -----------------------------------------------------------------------------\n\n"
+            )
             yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
 
         logger.info(f"Scaling laws configuration successfully saved to {output_yaml}")

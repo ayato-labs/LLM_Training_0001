@@ -8,7 +8,7 @@ import gc
 import re
 import time
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any
 
 import torch
 import yaml
@@ -68,7 +68,9 @@ def detect_data_path_and_tokens() -> tuple[str, float | None]:
         est_tokens = file_size_bytes / 3.5
         return data_path, float(est_tokens)
     except Exception as e:
-        logger.warning(f"Could not estimate dataset tokens via PreTrainedTokenizerFast from {data_path}: {e}")
+        logger.warning(
+            f"Could not estimate dataset tokens via PreTrainedTokenizerFast from {data_path}: {e}"
+        )
         return data_path, None
 
 

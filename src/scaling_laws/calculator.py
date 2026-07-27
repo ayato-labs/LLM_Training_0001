@@ -4,11 +4,7 @@ Chinchilla (Hoffmann et al.), Critical Batch Size (Kaplan/OpenAI),
 および Dynamic Proxy Benchmark を統括するファサード (Orchestrator) モジュール。
 """
 
-import math
-from pathlib import Path
-from typing import Any, Dict
-
-import yaml
+from typing import Any
 
 from src.common.logger import logger
 from src.common.vram_estimator import (
@@ -20,11 +16,8 @@ from src.hpo.hpo_manager import calculate_dynamic_n_trials
 from src.scaling_laws.chinchilla_law import (
     calculate_compute_optimal_n_d,
     generate_universal_architecture,
-    load_base_model_defaults,
 )
 from src.scaling_laws.critical_batch_law import (
-    calculate_critical_batch_size,
-    calculate_tensor_core_mfu,
     select_decoupled_batch_split,
 )
 from src.scaling_laws.proxy_benchmark import (
@@ -49,20 +42,22 @@ def _vram_estimate(
     checkpointing: str = "selective",
 ) -> VramEstimate:
     eff_intermediate = intermediate_size if intermediate_size > 0 else 4 * hidden_size
-    return estimate_training_vram_with_calibration(VramConfig(
-        n_params=n_params,
-        hidden_size=hidden_size,
-        intermediate_size=eff_intermediate,
-        num_layers=num_layers,
-        vocab_size=vocab_size,
-        micro_batch_size=batch_size,
-        seq_len=seq_len,
-        precision="bf16",
-        optimizer_type="adamw_bnb_8bit",
-        use_liger_kernel=True,
-        checkpointing=checkpointing,
-        total_vram_gb=vram_cap,
-    ))
+    return estimate_training_vram_with_calibration(
+        VramConfig(
+            n_params=n_params,
+            hidden_size=hidden_size,
+            intermediate_size=eff_intermediate,
+            num_layers=num_layers,
+            vocab_size=vocab_size,
+            micro_batch_size=batch_size,
+            seq_len=seq_len,
+            precision="bf16",
+            optimizer_type="adamw_bnb_8bit",
+            use_liger_kernel=True,
+            checkpointing=checkpointing,
+            total_vram_gb=vram_cap,
+        )
+    )
 
 
 def find_max_safe_batch_size(
@@ -72,7 +67,9 @@ def find_max_safe_batch_size(
     max_search_bs: int = 64,
     checkpointing: str = "selective",
 ) -> int:
-    micro_bs, _, _ = select_decoupled_batch_split(arch_dict, seq_len, true_free_vram_gb, checkpointing=checkpointing)
+    micro_bs, _, _ = select_decoupled_batch_split(
+        arch_dict, seq_len, true_free_vram_gb, checkpointing=checkpointing
+    )
     return micro_bs
 
 
@@ -107,7 +104,9 @@ def calculate_chinchilla_scaling(
         tps = bench_tps
         ref_n = bench_n
         tp_source = "proxy_benchmark"
-        logger.info(f"GPU proxy benchmark result: {bench_tps:.1f} tokens/sec (reference params={bench_n:,})")
+        logger.info(
+            f"GPU proxy benchmark result: {bench_tps:.1f} tokens/sec (reference params={bench_n:,})"
+        )
 
     # 1. コンピュートバジェットと総計算可能トークン数の計算
     seconds = target_hours * 3600.0
@@ -124,7 +123,7 @@ def calculate_chinchilla_scaling(
     data_capped_arch = None
     data_sufficiency_ratio = 100.0
 
-    max_allowed_n_by_data = float('inf')
+    max_allowed_n_by_data = float("inf")
 
     if actual_dataset_tokens is not None:
         data_sufficiency_ratio = round((actual_dataset_tokens / chinchilla_d_pure) * 100.0, 1)
@@ -145,9 +144,13 @@ def calculate_chinchilla_scaling(
     )
 
     est_vram = _vram_estimate(
-        arch["n_params"], seq_len, optimal_micro_bs,
-        arch["hidden_size"], arch["num_hidden_layers"],
-        arch["vocab_size"], arch.get("intermediate_size", 0),
+        arch["n_params"],
+        seq_len,
+        optimal_micro_bs,
+        arch["hidden_size"],
+        arch["num_hidden_layers"],
+        arch["vocab_size"],
+        arch.get("intermediate_size", 0),
         checkpointing="selective",
     ).breakdown.total_estimated_gb
 
@@ -180,7 +183,9 @@ def calculate_chinchilla_scaling(
         "dataset_info": {
             "data_path": data_path,
             "actual_dataset_tokens": actual_dataset_tokens,
-            "actual_tokens_str": f"~{actual_dataset_tokens/1e6:.2f}M tokens" if actual_dataset_tokens else "Unknown",
+            "actual_tokens_str": f"~{actual_dataset_tokens / 1e6:.2f}M tokens"
+            if actual_dataset_tokens
+            else "Unknown",
             "data_sufficiency_ratio_pct": data_sufficiency_ratio,
             "is_data_shortage": data_shortage_warn,
         },

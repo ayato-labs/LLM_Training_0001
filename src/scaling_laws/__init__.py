@@ -4,6 +4,10 @@ Hoffmann et al. (Chinchilla), McCandlish/Kaplan (Critical Batch Size),
 および Dynamic GPU Proxy Benchmark を責任と関心の分離 (SoC) に従い統合管理。
 """
 
+from src.scaling_laws.calculator import (
+    calculate_chinchilla_scaling,
+    find_max_safe_batch_size,
+)
 from src.scaling_laws.chinchilla_law import (
     calculate_compute_optimal_n_d,
     generate_universal_architecture,
@@ -21,10 +25,6 @@ from src.scaling_laws.proxy_benchmark import (
     detect_seq_len_from_config,
     extract_throughput_from_recent_logs,
     run_quick_proxy_benchmark,
-)
-from src.scaling_laws.calculator import (
-    calculate_chinchilla_scaling,
-    find_max_safe_batch_size,
 )
 
 __all__ = [

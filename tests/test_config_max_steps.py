@@ -1,4 +1,3 @@
-import pytest
 from src.training.config import _normalize_config
 
 

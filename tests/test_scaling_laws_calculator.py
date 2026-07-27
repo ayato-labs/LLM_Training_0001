@@ -1,9 +1,8 @@
-import pytest
-from src.chinchilla.calculator import calculate_chinchilla_scaling
+from src.scaling_laws.calculator import calculate_chinchilla_scaling
 
 
-def test_chinchilla_outputs_computable_tokens_not_max_steps():
-    """Chinchillaは max_steps ではなく computable_tokens を返す"""
+def test_scaling_laws_outputs_computable_tokens_not_max_steps():
+    """Scaling Laws は max_steps ではなく computable_tokens を返す"""
     result = calculate_chinchilla_scaling(
         target_hours=24.0,
         user_throughput_tps=14338.6,
@@ -20,13 +19,13 @@ def test_chinchilla_outputs_computable_tokens_not_max_steps():
     assert "reference_total_steps" not in result
 
 
-def test_chinchilla_computable_tokens_invariant():
+def test_scaling_laws_computable_tokens_invariant():
     """computable_tokens が安定して計算されること"""
     result = calculate_chinchilla_scaling(target_hours=24, user_throughput_tps=14338.6)
     assert result["computable_tokens"] > 0
 
 
-def test_chinchilla_theoretical_d_equals_20n():
+def test_scaling_laws_theoretical_d_equals_20n():
     """D = 20 × N の関係が成り立つ"""
     result = calculate_chinchilla_scaling(target_hours=24, user_throughput_tps=14338.6)
     N_pure = result["chinchilla_pure_optimal_n_million"] * 1e6
@@ -34,7 +33,7 @@ def test_chinchilla_theoretical_d_equals_20n():
     assert abs(D - 20 * N_pure) / D < 0.01  # 1%以内
 
 
-def test_chinchilla_output_has_required_keys():
+def test_scaling_laws_output_has_required_keys():
     """必須キーが含まれる"""
     result = calculate_chinchilla_scaling(target_hours=24, user_throughput_tps=14338.6)
 

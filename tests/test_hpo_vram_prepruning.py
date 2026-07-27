@@ -1,6 +1,5 @@
-import pytest
-import optuna
-from src.common.vram_estimator import VramConfig, estimate_training_vram, VramBreakdown
+from src.common.vram_estimator import VramConfig, estimate_training_vram
+
 
 def test_vram_estimator_prepruning_logic():
     """VRAM Estimator が危険な設定（90%超）を検出して枝刈り判定を出せることを検証"""
@@ -31,4 +30,6 @@ def test_vram_estimator_prepruning_logic():
         total_vram_gb=vram_gb,
     )
     est_danger = estimate_training_vram(danger_config)
-    assert (not est_danger.breakdown.is_safe) or (est_danger.breakdown.total_estimated_gb > vram_gb * 0.90)
+    assert (not est_danger.breakdown.is_safe) or (
+        est_danger.breakdown.total_estimated_gb > vram_gb * 0.90
+    )

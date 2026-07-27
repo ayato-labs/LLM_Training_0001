@@ -65,20 +65,23 @@ def calculate_optimal_batch_split(
     )
 
     cal = VramCalibration.load() if use_calibration else None
-    est = estimate_training_vram_with_calibration(VramConfig(
-        n_params=n_params,
-        hidden_size=hidden_size,
-        intermediate_size=intermediate_size,
-        num_layers=num_layers,
-        vocab_size=vocab_size,
-        micro_batch_size=total_batch_size,
-        seq_len=seq_len,
-        precision=precision,
-        optimizer_type=optimizer_type,
-        checkpointing="selective" if selective_checkpointing else "full",
-        use_liger_kernel=True,
-        total_vram_gb=vram_gb,
-    ), calibration=cal)
+    est = estimate_training_vram_with_calibration(
+        VramConfig(
+            n_params=n_params,
+            hidden_size=hidden_size,
+            intermediate_size=intermediate_size,
+            num_layers=num_layers,
+            vocab_size=vocab_size,
+            micro_batch_size=total_batch_size,
+            seq_len=seq_len,
+            precision=precision,
+            optimizer_type=optimizer_type,
+            checkpointing="selective" if selective_checkpointing else "full",
+            use_liger_kernel=True,
+            total_vram_gb=vram_gb,
+        ),
+        calibration=cal,
+    )
 
     max_safe = est.max_safe_micro_batch
     # GPU計算速度 (Tokens/sec) を最大化するため、VRAM容量が許す最大のマイクロバッチを優先設定
@@ -86,8 +89,6 @@ def calculate_optimal_batch_split(
     grad_accum_steps = max(1, total_batch_size // per_device_batch_size)
 
     return per_device_batch_size, grad_accum_steps
-
-
 
 
 def apply_selective_attention_checkpointing(model) -> int:
@@ -104,7 +105,9 @@ def apply_selective_attention_checkpointing(model) -> int:
 
     # PyTorch 2.x の Checkpoint Unpack Hook の再計算メタデータチェックを Liger 互換化
     if hasattr(torch.utils.checkpoint, "_CheckpointFrame"):
-        torch.utils.checkpoint._CheckpointFrame.check_recomputed_tensors_match = lambda self, *args, **kwargs: None
+        torch.utils.checkpoint._CheckpointFrame.check_recomputed_tensors_match = (
+            lambda self, *args, **kwargs: None
+        )
 
     applied_count = 0
     for module in model.modules():

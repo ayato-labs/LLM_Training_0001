@@ -67,10 +67,14 @@ def main():
             args[arg.lstrip("-").lower()] = "true"
 
     # ---- Load target architecture ----
-    scaling_cfg_path = "configs/scaling_config.yaml" if Path("configs/scaling_config.yaml").exists() else "configs/chinchilla_config.yaml"
+    scaling_cfg_path = (
+        "configs/scaling_config.yaml"
+        if Path("configs/scaling_config.yaml").exists()
+        else "configs/chinchilla_config.yaml"
+    )
     chinchilla_cfg = args.get("scaling_config", args.get("chinchilla_config", scaling_cfg_path))
     target_arch, chinchilla_batch_size = load_target_arch(chinchilla_cfg)
-    target_size = f'{target_arch["n_params"] / 1e6:.0f}M'
+    target_size = f"{target_arch['n_params'] / 1e6:.0f}M"
 
     # ---- Proxy model ----
     if "proxy" in args:
@@ -90,7 +94,12 @@ def main():
     # ---- Data prep ----
     logger.info(f"Loading dataset from {data_path}...")
     tokenizer = PreTrainedTokenizerFast(tokenizer_file="data/tokenizer.json")
-    for attr, val in [("unk_token", "<unk>"), ("bos_token", "<s>"), ("eos_token", "</s>"), ("pad_token", "<pad>")]:
+    for attr, val in [
+        ("unk_token", "<unk>"),
+        ("bos_token", "<s>"),
+        ("eos_token", "</s>"),
+        ("pad_token", "<pad>"),
+    ]:
         setattr(tokenizer, attr, val)
 
     dataset = load_dataset("json", data_files=str(data_path))
@@ -99,24 +108,41 @@ def main():
         if n_samples < len(dataset[split]):
             dataset[split] = dataset[split].select(range(n_samples))
 
-    cols_to_remove = [c for c in dataset["train"].column_names if c not in ["input_ids", "attention_mask", "labels"]]
+    cols_to_remove = [
+        c
+        for c in dataset["train"].column_names
+        if c not in ["input_ids", "attention_mask", "labels"]
+    ]
     num_proc = get_optimal_num_proc()
     tokenized_dataset = parallel_tokenize(
-        dataset, tokenizer, seq_len=seq_len, padding=True,
-        remove_columns=cols_to_remove, max_workers=num_proc, batch_size=1000,
+        dataset,
+        tokenizer,
+        seq_len=seq_len,
+        padding=True,
+        remove_columns=cols_to_remove,
+        max_workers=num_proc,
+        batch_size=1000,
     )
     tokenized_dataset.set_format("torch")
 
     # ---- Step Law ----
-    step_law_hpo = compute_hpo_for_target(n_params=proxy_arch["n_params"], n_tokens=n_tokens, seq_len=seq_len)
+    step_law_hpo = compute_hpo_for_target(
+        n_params=proxy_arch["n_params"], n_tokens=n_tokens, seq_len=seq_len
+    )
     step_law_hpo["batch_size_seqs"] = chinchilla_batch_size
 
     # ---- Optuna ----
     search_space = create_search_space(step_law_hpo, proxy_vram, n_params=proxy_arch["n_params"])
     user_n_trials = int(args.get("n_trials", "0"))
-    n_trials = user_n_trials if user_n_trials > 0 else calculate_dynamic_n_trials(search_space_dim=len(search_space))
+    n_trials = (
+        user_n_trials
+        if user_n_trials > 0
+        else calculate_dynamic_n_trials(search_space_dim=len(search_space))
+    )
 
-    logger.info(f"Proxy={proxy_size}, Target={target_size}, Tokens={n_tokens}, VRAM={proxy_vram} GB, SpaceDim={len(search_space)}, Trials={n_trials}")
+    logger.info(
+        f"Proxy={proxy_size}, Target={target_size}, Tokens={n_tokens}, VRAM={proxy_vram} GB, SpaceDim={len(search_space)}, Trials={n_trials}"
+    )
     study = optuna.create_study(
         direction="minimize",
         sampler=optuna.samplers.TPESampler(seed=42),
@@ -124,7 +150,9 @@ def main():
     )
     study.set_user_attr("n_trials", n_trials)
     study.optimize(
-        lambda trial: objective(trial, proxy_arch, tokenized_dataset, seq_len, proxy_vram, step_law_hpo),
+        lambda trial: objective(
+            trial, proxy_arch, tokenized_dataset, seq_len, proxy_vram, step_law_hpo
+        ),
         n_trials=n_trials,
     )
 

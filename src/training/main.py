@@ -15,14 +15,13 @@ Examples:
 """
 
 import hydra
+import torch.multiprocessing as mp
 from omegaconf import DictConfig
 
 from src.common.logger import log_exceptions
 from src.training.config import load_config
 from src.training.train_engine import train
 
-
-import torch.multiprocessing as mp
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 @log_exceptions

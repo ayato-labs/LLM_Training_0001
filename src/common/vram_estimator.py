@@ -30,6 +30,7 @@ def detect_vram() -> float:
     """
     try:
         import torch
+
         if torch.cuda.is_available():
             return round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2)
     except Exception:
@@ -103,6 +104,7 @@ class VramBreakdown:
 @dataclass(frozen=True)
 class VramEstimate:
     """estimate_training_vram の戻り値。内訳＋バッチ分割計算用の数値を含む。"""
+
     breakdown: VramBreakdown
     fixed_reserved_gb: float
     activation_per_sample_gb: float
@@ -126,6 +128,7 @@ class VramEstimate:
 @dataclass
 class VramSnapshot:
     """現在のCUDAメモリ状態のスナップショット"""
+
     allocated_bytes: int = 0
     reserved_bytes: int = 0
     peak_allocated_bytes: int = 0
@@ -134,6 +137,7 @@ class VramSnapshot:
 def _take_snapshot() -> VramSnapshot:
     try:
         import torch
+
         return VramSnapshot(
             allocated_bytes=torch.cuda.memory_allocated(),
             reserved_bytes=torch.cuda.memory_reserved(),
@@ -146,6 +150,7 @@ def _take_snapshot() -> VramSnapshot:
 def _reset_peak_stats() -> None:
     try:
         import torch
+
         torch.cuda.reset_peak_memory_stats()
     except (ImportError, RuntimeError):
         pass
@@ -204,6 +209,7 @@ class VramCalibration:
     flce_peak_gb: backward 時のピーク増分
     compile_overhead_gb: compile 有効時の追加増分
     """
+
     allocator_factor: float = 1.35
     activation_per_sample_gb: float = 0.0
     cuda_context_gb: float = 0.7
@@ -265,6 +271,7 @@ def measure_training_vram(
 
     try:
         import torch
+
         if not torch.cuda.is_available():
             return VramCalibration(n_params=n_params)
     except ImportError:
@@ -423,8 +430,11 @@ def estimate_liger_flce_peak_gb(
 
 
 def _activation_bytes_per_sample(
-    seq_len: int, hidden_size: int, intermediate_size: int,
-    num_layers: int, bytes_per_param: int,
+    seq_len: int,
+    hidden_size: int,
+    intermediate_size: int,
+    num_layers: int,
+    bytes_per_param: int,
     checkpointing: str,
 ) -> float:
     """Gradient Checkpointing モードに応じた1サンプルあたりの活性化メモリ (bytes)。
@@ -446,7 +456,10 @@ def _activation_bytes_per_sample(
 
 
 def _is_wsl() -> bool:
-    return "microsoft" in (getattr(sys, "_called_from_test", False) and "" or sys.platform.lower()) or "wsl" in sys.platform.lower()
+    return (
+        "microsoft" in (getattr(sys, "_called_from_test", False) and "" or sys.platform.lower())
+        or "wsl" in sys.platform.lower()
+    )
 
 
 def _calc_wsl_overhead_gb() -> float:
@@ -479,7 +492,11 @@ def estimate_training_vram_with_calibration(
         optim_bytes = 8
     optimizer_gb = (config.n_params * optim_bytes) / (1024**3)
 
-    cuda_context_gb = calibration.cuda_context_gb if calibration.cuda_context_gb > 0 else 0.7 + _calc_wsl_overhead_gb()
+    cuda_context_gb = (
+        calibration.cuda_context_gb
+        if calibration.cuda_context_gb > 0
+        else 0.7 + _calc_wsl_overhead_gb()
+    )
 
     compile_gb = 0.0
     if config.torch_compile:
@@ -489,32 +506,45 @@ def estimate_training_vram_with_calibration(
 
     raw_activation_per_sample_gb = (
         _activation_bytes_per_sample(
-            config.seq_len, config.hidden_size, config.intermediate_size,
-            config.num_layers, bpp, config.checkpointing,
+            config.seq_len,
+            config.hidden_size,
+            config.intermediate_size,
+            config.num_layers,
+            bpp,
+            config.checkpointing,
         )
     ) / (1024**3)
 
     liger_flce_gb = (
         estimate_liger_flce_peak_gb(
-            config.micro_batch_size, config.seq_len,
-            config.vocab_size, config.hidden_size,
+            config.micro_batch_size,
+            config.seq_len,
+            config.vocab_size,
+            config.hidden_size,
         )
         if config.use_liger_kernel
         else 0.0
     )
 
-    af = max(calibration.allocator_factor, 1.0) if calibration.allocator_factor > 0 else config.allocator_factor
+    af = (
+        max(calibration.allocator_factor, 1.0)
+        if calibration.allocator_factor > 0
+        else config.allocator_factor
+    )
     sum_before_frag = (
-        weights_gb + gradients_gb + optimizer_gb
+        weights_gb
+        + gradients_gb
+        + optimizer_gb
         + raw_activation_per_sample_gb * config.micro_batch_size
-        + liger_flce_gb + cuda_context_gb + compile_gb
+        + liger_flce_gb
+        + cuda_context_gb
+        + compile_gb
     )
     total_estimated_gb = sum_before_frag * af
     fragmentation_gb = total_estimated_gb - sum_before_frag
 
     fixed_before_frag = (
-        weights_gb + gradients_gb + optimizer_gb
-        + liger_flce_gb + cuda_context_gb + compile_gb
+        weights_gb + gradients_gb + optimizer_gb + liger_flce_gb + cuda_context_gb + compile_gb
     )
     fixed_reserved_gb = fixed_before_frag * af
     activation_per_sample_gb = raw_activation_per_sample_gb * af
@@ -576,15 +606,21 @@ def estimate_training_vram(config: VramConfig) -> VramEstimate:
     # ---- Components that depend on micro_batch_size ----
     raw_activation_per_sample_gb = (
         _activation_bytes_per_sample(
-            config.seq_len, config.hidden_size, config.intermediate_size,
-            config.num_layers, bytes_per_param, config.checkpointing,
+            config.seq_len,
+            config.hidden_size,
+            config.intermediate_size,
+            config.num_layers,
+            bytes_per_param,
+            config.checkpointing,
         )
     ) / (1024**3)
 
     liger_flce_gb = (
         estimate_liger_flce_peak_gb(
-            config.micro_batch_size, config.seq_len,
-            config.vocab_size, config.hidden_size,
+            config.micro_batch_size,
+            config.seq_len,
+            config.vocab_size,
+            config.hidden_size,
         )
         if config.use_liger_kernel
         else 0.0
@@ -593,17 +629,20 @@ def estimate_training_vram(config: VramConfig) -> VramEstimate:
     # ---- Fragmentation penalty (CUDACachingAllocator) ----
     af = config.allocator_factor
     sum_before_frag = (
-        weights_gb + gradients_gb + optimizer_gb
+        weights_gb
+        + gradients_gb
+        + optimizer_gb
         + raw_activation_per_sample_gb * config.micro_batch_size
-        + liger_flce_gb + cuda_context_gb + compile_gb
+        + liger_flce_gb
+        + cuda_context_gb
+        + compile_gb
     )
     total_estimated_gb = sum_before_frag * af
     fragmentation_gb = total_estimated_gb - sum_before_frag
 
     # ---- Fixed reserved (everything except activations) ----
     fixed_before_frag = (
-        weights_gb + gradients_gb + optimizer_gb
-        + liger_flce_gb + cuda_context_gb + compile_gb
+        weights_gb + gradients_gb + optimizer_gb + liger_flce_gb + cuda_context_gb + compile_gb
     )
     fixed_reserved_gb = fixed_before_frag * af
 
@@ -657,6 +696,7 @@ def auto_calibrate(
 
     try:
         import torch
+
         if not torch.cuda.is_available():
             logger.warning("[auto_calibrate] CUDA not available, skipping VRAM calibration")
             return False
@@ -674,7 +714,7 @@ def auto_calibrate(
 
     if estimate_weights_gb > total_gb * 0.85:
         logger.warning(
-            f"[auto_calibrate] Model {n_params/1e6:.0f}M too large "
+            f"[auto_calibrate] Model {n_params / 1e6:.0f}M too large "
             f"({estimate_weights_gb:.2f} GB estimated) for {total_gb:.0f} GB GPU, "
             f"skipping VRAM calibration. Falling back to formula."
         )
@@ -684,19 +724,20 @@ def auto_calibrate(
         from transformers import LlamaConfig, LlamaForCausalLM
 
         cfg = LlamaConfig(
-            vocab_size=vocab_size, hidden_size=hidden_size,
+            vocab_size=vocab_size,
+            hidden_size=hidden_size,
             intermediate_size=intermediate_size,
             num_hidden_layers=num_layers,
             num_attention_heads=max(4, hidden_size // 64),
             num_key_value_heads=max(1, (hidden_size // 64) // 4),
-            max_position_embeddings=seq_len, use_cache=False,
+            max_position_embeddings=seq_len,
+            use_cache=False,
             attn_implementation="sdpa",
         )
         model = LlamaForCausalLM(cfg).to("cuda", dtype=torch.bfloat16).train()
         actual_n = sum(p.numel() for p in model.parameters())
         logger.info(
-            f"[auto_calibrate] Built {actual_n/1e6:.1f}M model "
-            f"(H={hidden_size}, L={num_layers})"
+            f"[auto_calibrate] Built {actual_n / 1e6:.1f}M model (H={hidden_size}, L={num_layers})"
         )
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
@@ -704,27 +745,38 @@ def auto_calibrate(
         dummy_labels = dummy_ids.clone()
 
         cal = measure_training_vram(
-            model=model, optimizer=optimizer,
-            input_ids=dummy_ids, labels=dummy_labels,
-            micro_batch_size=micro_batch_size, seq_len=seq_len,
+            model=model,
+            optimizer=optimizer,
+            input_ids=dummy_ids,
+            labels=dummy_labels,
+            micro_batch_size=micro_batch_size,
+            seq_len=seq_len,
             n_params=actual_n,
-            precision="bf16", optimizer_type="adamw_bnb_8bit",
-            use_liger_kernel=True, torch_compile=False,
-            label=label or f"{actual_n/1e6:.0f}M",
-            n_samples=n_samples, warmup=True, agg="median",
+            precision="bf16",
+            optimizer_type="adamw_bnb_8bit",
+            use_liger_kernel=True,
+            torch_compile=False,
+            label=label or f"{actual_n / 1e6:.0f}M",
+            n_samples=n_samples,
+            warmup=True,
+            agg="median",
         )
         cal.save()
         logger.info("[auto_calibrate] Saved vram_calibration.json")
 
         model.cpu()
         del model, optimizer
-        import gc; gc.collect()
+        import gc
+
+        gc.collect()
         torch.cuda.empty_cache()
         return True
 
     except Exception as e:
         logger.warning(f"[auto_calibrate] Calibration failed: {e}")
-        import gc; gc.collect()
+        import gc
+
+        gc.collect()
         try:
             torch.cuda.empty_cache()
         except Exception:

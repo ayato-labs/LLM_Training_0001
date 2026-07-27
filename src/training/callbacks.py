@@ -160,9 +160,9 @@ class DetailedLoggingCallback(TrainerCallback):
                 fwd_ms = getattr(self.trainer, "_last_fwd_bwd_ms", 0.0)
                 total_ms = max(1.0, data_ms + h2d_ms + fwd_ms)
                 breakdown_str = (
-                    f" | Breakdown: DataFetch={data_ms:.1f}ms ({data_ms/total_ms*100:.1f}%), "
-                    f"H2D={h2d_ms:.1f}ms ({h2d_ms/total_ms*100:.1f}%), "
-                    f"FwdBwd={fwd_ms:.1f}ms ({fwd_ms/total_ms*100:.1f}%)"
+                    f" | Breakdown: DataFetch={data_ms:.1f}ms ({data_ms / total_ms * 100:.1f}%), "
+                    f"H2D={h2d_ms:.1f}ms ({h2d_ms / total_ms * 100:.1f}%), "
+                    f"FwdBwd={fwd_ms:.1f}ms ({fwd_ms / total_ms * 100:.1f}%)"
                 )
 
             logger.info(
@@ -234,7 +234,11 @@ class PeriodicEvaluationCallback(TrainerCallback):
             vocab_size = None
             if self.tokenizer and hasattr(self.tokenizer, "vocab_size"):
                 vocab_size = self.tokenizer.vocab_size
-            elif self.trainer and hasattr(self.trainer, "model") and hasattr(self.trainer.model, "config"):
+            elif (
+                self.trainer
+                and hasattr(self.trainer, "model")
+                and hasattr(self.trainer.model, "config")
+            ):
                 vocab_size = getattr(self.trainer.model.config, "vocab_size", None)
 
             if vocab_size and vocab_size > 0:
@@ -256,7 +260,9 @@ class PeriodicEvaluationCallback(TrainerCallback):
             if last_loss is not None:
                 # 1. NaN / Inf 判定
                 if math.isnan(last_loss) or math.isinf(last_loss):
-                    logger.error(f"NUMERICAL INSTABILITY DETECTED at step {step}: loss is {last_loss}. Stopping training.")
+                    logger.error(
+                        f"NUMERICAL INSTABILITY DETECTED at step {step}: loss is {last_loss}. Stopping training."
+                    )
                     control.should_training_stop = True
                     return control
 
@@ -279,7 +285,11 @@ class PeriodicEvaluationCallback(TrainerCallback):
                 # warmup 完了およびセッション開始から一定ステップ経過するまでは過渡現象を猶予する
                 steps_since_start = step - getattr(self, "start_step", 0)
                 grace_steps = max(warmup_grace * 2, 50)
-                if step > grace_steps and steps_since_start > grace_steps and self.min_loss is not None:
+                if (
+                    step > grace_steps
+                    and steps_since_start > grace_steps
+                    and self.min_loss is not None
+                ):
                     spike_limit = max(self.min_loss * 2.5, self.min_loss + 4.0)
                     if last_loss > spike_limit:
                         logger.error(

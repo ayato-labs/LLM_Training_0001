@@ -48,7 +48,9 @@ def load_merged_config(cfg: DictConfig | dict) -> dict:
                 hpo_data = json.load(f)
                 if "best_params" in hpo_data:
                     hpo_override = hpo_data["best_params"]
-                    logger.info(f"Loaded best HPO parameters from {hpo_result_path}: {hpo_override}")
+                    logger.info(
+                        f"Loaded best HPO parameters from {hpo_result_path}: {hpo_override}"
+                    )
         except Exception as e:
             logger.warning(f"Could not parse {hpo_result_path}: {e}")
 

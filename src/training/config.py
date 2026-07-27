@@ -78,6 +78,7 @@ def load_config(cfg: DictConfig) -> dict:
 def _normalize_config(raw: dict) -> dict:
     """ネストしたYAML構造を学習パイプライン用フラットdictに変換"""
     import copy
+
     raw = copy.deepcopy(raw)
 
     # model_params 抽出
@@ -112,6 +113,7 @@ def _normalize_config(raw: dict) -> dict:
         total_batch = t["batch_size_seqs"]
     else:
         from src.hpo.step_law import step_law_optimal_batch
+
         n_tokens_est = raw.get("n_tokens", 10_000_000)
         seq_len = t.get("seq_len", 1024)
         calculated_tokens = step_law_optimal_batch(n_tokens_est)
@@ -160,8 +162,11 @@ def _normalize_config(raw: dict) -> dict:
         if "max_steps" not in t or t["max_steps"] == -1:
             t["max_steps"] = calculated_max_steps
             from src.common.logger import logger
-            logger.info(f"[Chinchilla] Dynamic max_steps calculated: {calculated_max_steps:,} "
-                       f"(D={computable_tokens:,}, batch={batch_size_seqs}, seq_len={seq_len})")
+
+            logger.info(
+                f"[Chinchilla] Dynamic max_steps calculated: {calculated_max_steps:,} "
+                f"(D={computable_tokens:,}, batch={batch_size_seqs}, seq_len={seq_len})"
+            )
 
     training = {
         "seq_len": seq_len,

@@ -4,8 +4,8 @@
 および VRAM 物理制限と GPU MFU (Roofline Model) による 2段階完全分離型バッチ分割モジュール。
 """
 
-import math
 from pathlib import Path
+
 import yaml
 
 from src.common.logger import logger
@@ -36,12 +36,22 @@ def calculate_critical_batch_size(
             with open(path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             if isinstance(cfg, dict):
-                if "model" in cfg and isinstance(cfg["model"], dict) and "target_params" in cfg["model"]:
+                if (
+                    "model" in cfg
+                    and isinstance(cfg["model"], dict)
+                    and "target_params" in cfg["model"]
+                ):
                     ref_n = int(cfg["model"]["target_params"])
-                if "training" in cfg and isinstance(cfg["training"], dict) and "batch_size_seqs" in cfg["training"]:
+                if (
+                    "training" in cfg
+                    and isinstance(cfg["training"], dict)
+                    and "batch_size_seqs" in cfg["training"]
+                ):
                     ref_batch_seqs = int(cfg["training"]["batch_size_seqs"])
         except Exception as e:
-            logger.warning(f"Could not load scaling_config.yaml for Critical Batch Size scaling ({e}). Using default reference values.")
+            logger.warning(
+                f"Could not load scaling_config.yaml for Critical Batch Size scaling ({e}). Using default reference values."
+            )
 
     ref_tokens = ref_batch_seqs * seq_len
 
@@ -114,20 +124,22 @@ def select_decoupled_batch_split(
     best_micro_bs = 1
 
     for test_bs in candidates:
-        est = estimate_training_vram_with_calibration(VramConfig(
-            n_params=arch_dict["n_params"],
-            hidden_size=arch_dict["hidden_size"],
-            intermediate_size=arch_dict.get("intermediate_size", 4 * arch_dict["hidden_size"]),
-            num_layers=arch_dict["num_hidden_layers"],
-            vocab_size=arch_dict["vocab_size"],
-            micro_batch_size=test_bs,
-            seq_len=seq_len,
-            precision="bf16",
-            optimizer_type="adamw_bnb_8bit",
-            use_liger_kernel=True,
-            checkpointing=checkpointing,
-            total_vram_gb=999.0,
-        ))
+        est = estimate_training_vram_with_calibration(
+            VramConfig(
+                n_params=arch_dict["n_params"],
+                hidden_size=arch_dict["hidden_size"],
+                intermediate_size=arch_dict.get("intermediate_size", 4 * arch_dict["hidden_size"]),
+                num_layers=arch_dict["num_hidden_layers"],
+                vocab_size=arch_dict["vocab_size"],
+                micro_batch_size=test_bs,
+                seq_len=seq_len,
+                precision="bf16",
+                optimizer_type="adamw_bnb_8bit",
+                use_liger_kernel=True,
+                checkpointing=checkpointing,
+                total_vram_gb=999.0,
+            )
+        )
         est_vram = est.breakdown.total_estimated_gb
 
         if est_vram <= safe_limit_gb:
