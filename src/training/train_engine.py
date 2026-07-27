@@ -512,8 +512,32 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     hpo_config = config.get("hpo", config)
 
     max_steps = config.get("max_steps", -1)
-    per_device_batch = config.get("per_device_batch_size", 1)
-    grad_accum_steps = config.get("grad_accum_steps", 1)
+    
+    # configs/scaling_config.yaml または HPO からのマイクロバッチ解決
+    batch_size_seqs = config.get("batch_size_seqs", config.get("training", {}).get("batch_size_seqs", 64))
+    per_device_batch = config.get("per_device_batch_size", config.get("training", {}).get("per_device_batch_size", None))
+    grad_accum_steps = config.get("grad_accum_steps", config.get("training", {}).get("grad_accum_steps", None))
+
+    if per_device_batch is None or grad_accum_steps is None:
+        from src.training.model_utils import calculate_optimal_batch_split
+        vram_cap = config.get("vram_limit_gb", 4.0)
+        per_device_batch, grad_accum_steps = calculate_optimal_batch_split(
+            total_batch_size=batch_size_seqs,
+            vram_gb=vram_cap,
+            n_params=model_config.vocab_size * model_config.hidden_size + model_config.num_hidden_layers * 12 * (model_config.hidden_size**2),
+            seq_len=model_config.max_position_embeddings,
+            hidden_size=model_config.hidden_size,
+            num_layers=model_config.num_hidden_layers,
+            vocab_size=model_config.vocab_size,
+            precision=precision,
+            selective_checkpointing=False,
+        )
+
+    logger.info(
+        f"[Train Engine] Resolved Training Batch Split: "
+        f"per_device_batch_size={per_device_batch}, grad_accum_steps={grad_accum_steps} "
+        f"(Total Batch Seqs={per_device_batch * grad_accum_steps})"
+    )
 
     if max_steps > 0:
         import math

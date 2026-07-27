@@ -94,6 +94,8 @@ def main():
             },
             "training": {
                 "batch_size_seqs": res["batch_size_seqs"],
+                "per_device_batch_size": res["per_device_batch_size"],
+                "grad_accum_steps": res["grad_accum_steps"],
             },
             "metadata": {
                 "target_hours": target_hours,
