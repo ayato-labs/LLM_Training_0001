@@ -1,6 +1,4 @@
-"""Chinchilla Scaling Laws Calculator Module
-
-目標学習時間とGPUリソースから、最適モデル規模と構成パラメータを自律算定するモジュール。
+"""Backward compatibility package alias layer for src.scaling_laws
 """
 
-__version__ = "1.0.0"
+from src.scaling_laws import *

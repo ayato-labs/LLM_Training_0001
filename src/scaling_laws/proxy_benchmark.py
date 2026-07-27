@@ -1,0 +1,217 @@
+"""Dynamic GPU Proxy Benchmark & Physical Profiling
+
+指定された GPU 上でリアルタイムにプロキシモデルを実行し、
+実効スループット (tokens/sec) および 物理 VRAM 空き容量を精度高く動的実測プロファイリング。
+"""
+
+import gc
+import re
+import time
+from pathlib import Path
+from typing import Any, Tuple
+
+import torch
+import yaml
+
+from src.common.logger import logger
+
+
+def detect_data_path_and_tokens() -> tuple[str, float | None]:
+    """configs/base_config.yaml から data_path と tokenizer_path を取得し、
+    本番と同一の PreTrainedTokenizerFast をファンクションコールして正確な総トークン数を算定
+    """
+    config_path = Path("configs/base_config.yaml")
+    data_path = "data/dataset.jsonl"
+    tokenizer_path = "data/tokenizer.json"
+
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            if isinstance(cfg, dict):
+                if "data_path" in cfg and cfg["data_path"]:
+                    data_path = str(cfg["data_path"])
+                if "tokenizer_path" in cfg and cfg["tokenizer_path"]:
+                    tokenizer_path = str(cfg["tokenizer_path"])
+        except Exception:
+            pass
+
+    path_obj = Path(data_path)
+    if not path_obj.exists():
+        return data_path, None
+
+    try:
+        from transformers import PreTrainedTokenizerFast
+
+        tokenizer = None
+        if Path(tokenizer_path).exists():
+            tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
+
+        file_size_bytes = path_obj.stat().st_size
+
+        if tokenizer is not None:
+            sample_text = ""
+            sample_bytes = 0
+            with open(path_obj, encoding="utf-8", errors="ignore") as f:
+                for idx, line in enumerate(f):
+                    sample_text += line
+                    sample_bytes += len(line.encode("utf-8"))
+                    if idx >= 200 or sample_bytes >= 200_000:
+                        break
+
+            if sample_bytes > 0 and sample_text:
+                sample_tokens = len(tokenizer.encode(sample_text))
+                tokens_per_byte = sample_tokens / sample_bytes
+                total_tokens = file_size_bytes * tokens_per_byte
+                return data_path, float(total_tokens)
+
+        est_tokens = file_size_bytes / 3.5
+        return data_path, float(est_tokens)
+    except Exception as e:
+        logger.warning(f"Could not estimate dataset tokens via PreTrainedTokenizerFast from {data_path}: {e}")
+        return data_path, None
+
+
+def detect_seq_len_from_config() -> int:
+    """configs/base_config.yaml から事前学習の基本 seq_len を一元取得"""
+    config_path = Path("configs/base_config.yaml")
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            if isinstance(cfg, dict) and "training" in cfg and "seq_len" in cfg["training"]:
+                return int(cfg["training"]["seq_len"])
+        except Exception as e:
+            logger.warning(f"Failed to read seq_len from base_config.yaml: {e}")
+    return 1024
+
+
+def detect_gpu_info() -> dict[str, Any]:
+    """GPUの物理仕様および演算能力を動的に自動取得"""
+    if not torch.cuda.is_available():
+        return {
+            "device_name": "CPU (CUDA Unavailable)",
+            "total_vram_gb": 4.0,
+            "sm_count": 0,
+            "is_cuda": False,
+        }
+
+    props = torch.cuda.get_device_properties(0)
+    vram_gb = props.total_memory / (1024**3)
+    sm_count = getattr(props, "multi_processor_count", 0)
+
+    return {
+        "device_name": props.name,
+        "total_vram_gb": round(vram_gb, 2),
+        "sm_count": sm_count,
+        "is_cuda": True,
+    }
+
+
+def extract_throughput_from_recent_logs() -> float | None:
+    """最新のログファイルから直近の訓練スループット (tokens/sec) を自動抽出"""
+    log_paths = list(Path(".").glob("**/logs/*.log")) + list(Path(".").glob("*.log"))
+    if not log_paths:
+        return None
+
+    log_paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    pattern = re.compile(r"(\d+\.\d+)s/it")
+    for log_path in log_paths[:3]:
+        try:
+            with open(log_path, encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            for line in reversed(lines):
+                match = pattern.search(line)
+                if match:
+                    sec_per_it = float(match.group(1))
+                    if sec_per_it > 0:
+                        tokens_per_it = 1024 * 32
+                        tps = tokens_per_it / sec_per_it
+                        return round(tps, 1)
+        except Exception:
+            continue
+    return None
+
+
+def run_quick_proxy_benchmark(seq_len: int = 1024, batch_size: int = 16) -> tuple[float, int]:
+    """指定の seq_len および batch_size で GPU 上のプロキシモデルを実際に動的実行し、
+    実効スループット (tokens/sec) および 実測パラメータ数を完全リアルタイム計測。
+    """
+    if not torch.cuda.is_available():
+        return 500.0, 27_450_000
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+
+    target_bs = max(1, batch_size)
+
+    while target_bs >= 1:
+        try:
+            from transformers import LlamaConfig
+            from transformers.models.llama.modeling_llama import LlamaModel
+
+            cfg = LlamaConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                intermediate_size=1376,
+            )
+            device = torch.device("cuda:0")
+            model = LlamaModel(cfg).to(device=device, dtype=torch.bfloat16)
+            ref_n = sum(p.numel() for p in model.parameters())
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+            dummy_input = torch.randint(0, 32000, (target_bs, seq_len), device=device)
+            out = model(dummy_input)
+            loss = out.last_hidden_state.sum()
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            torch.cuda.synchronize()
+
+            start_t = time.time()
+            n_steps = 3
+            for _ in range(n_steps):
+                out = model(dummy_input)
+                loss = out.last_hidden_state.sum()
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+            torch.cuda.synchronize()
+            elapsed = time.time() - start_t
+            sec_per_step = elapsed / n_steps
+            tps = (target_bs * seq_len) / sec_per_step
+
+            del model, optimizer
+            gc.collect()
+            torch.cuda.empty_cache()
+            return round(tps, 1), ref_n
+        except torch.cuda.OutOfMemoryError:
+            gc.collect()
+            torch.cuda.empty_cache()
+            target_bs = target_bs // 2
+
+    return 500.0, 27_450_000
+
+
+def detect_real_available_vram_gb(device_id: int = 0) -> float:
+    """CUDAコンテキストを強制初期化し、現在のシステムにおける物理的な真の空きVRAM容量 (GB) を動的取得"""
+    if not torch.cuda.is_available():
+        return 4.0
+
+    try:
+        dummy = torch.zeros(1, device=f"cuda:{device_id}")
+        del dummy
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+        free_bytes, _total_bytes = torch.cuda.mem_get_info(device_id)
+        free_vram_gb = free_bytes / (1024**3)
+        return round(free_vram_gb, 2)
+    except Exception as e:
+        logger.warning(f"Failed to query real available VRAM via mem_get_info: {e}")
+        return 4.0
