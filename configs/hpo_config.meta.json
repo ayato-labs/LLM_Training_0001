@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-07-27T02:07:38.331531",
+  "proxy_model_size": "50M",
+  "target_model_size": "87M",
+  "n_tokens": 596585,
+  "proxy_vram_gb": 4.0,
+  "best_value": 4.7230810546875,
+  "n_trials": 120,
+  "n_pruned": 87,
+  "scaling_ratio": 0.632943269487012
+}

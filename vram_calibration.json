@@ -1,13 +1,13 @@
 {
-  "allocator_factor": 2.2353,
-  "activation_per_sample_gb": 0.22909,
-  "cuda_context_gb": 0.0792,
-  "flce_peak_gb": 0.246086,
+  "allocator_factor": 1.4762,
+  "activation_per_sample_gb": 0.114975,
+  "cuda_context_gb": 0.0488,
+  "flce_peak_gb": 0.122066,
   "compile_overhead_gb": 0.0,
   "model_name": "proxy",
   "precision": "bf16",
   "optimizer_type": "adamw_bnb_8bit",
-  "seq_len": 1024,
+  "seq_len": 512,
   "micro_batch_size": 1,
   "n_params": 45880832
 }

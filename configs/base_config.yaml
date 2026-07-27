@@ -15,14 +15,17 @@ tokenizer_path: "data/tokenizer.json"
 # 学習実行制御デフォルト
 training:
   seq_len: 512
+  batch_size_seqs: 16  # 総バッチサイズ（Chinchilla max_steps 計算用・HPOで上書き）
+  beta2: 0.95
+  grad_clip: 1.0
   num_epochs: 1
   save_steps: 500
   eval_steps: 2500
-  logging_steps: 10
+  logging_steps: 200
   torch_compile: false
   use_liger_kernel: true
   dataloader_pin_memory: true
-  dataloader_num_workers: 0
+  dataloader_num_workers: 2
   allow_tf32: true
   torch_empty_cache_steps: 100
   dataloader_prefetch_factor: 2

@@ -1,8 +1,8 @@
 # @package _global_
-# マスター設定（base, chinchilla, hpo 成果物の統合レイヤー）
+# マスター設定（base, scaling, hpo 成果物の統合レイヤー）
 
 defaults:
   - base_config
-  - chinchilla_config
+  - scaling_config
   - hpo_config
   - _self_
