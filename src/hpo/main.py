@@ -34,8 +34,13 @@ from src.training.model_utils import (
 )
 
 
-def load_target_arch(path: str = "configs/chinchilla_config.yaml") -> tuple[dict, int]:
-    with open(path) as f:
+def load_target_arch(path: str = "configs/scaling_config.yaml") -> tuple[dict, int]:
+    p = Path(path)
+    if not p.exists():
+        fallback_p = Path("configs/chinchilla_config.yaml")
+        if fallback_p.exists():
+            p = fallback_p
+    with open(p, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     model_cfg = cfg.get("model", {})
     llama = model_cfg.get("llama", {})
@@ -62,7 +67,8 @@ def main():
             args[arg.lstrip("-").lower()] = "true"
 
     # ---- Load target architecture ----
-    chinchilla_cfg = args.get("chinchilla_config", "configs/chinchilla_config.yaml")
+    scaling_cfg_path = "configs/scaling_config.yaml" if Path("configs/scaling_config.yaml").exists() else "configs/chinchilla_config.yaml"
+    chinchilla_cfg = args.get("scaling_config", args.get("chinchilla_config", scaling_cfg_path))
     target_arch, chinchilla_batch_size = load_target_arch(chinchilla_cfg)
     target_size = f'{target_arch["n_params"] / 1e6:.0f}M'
 

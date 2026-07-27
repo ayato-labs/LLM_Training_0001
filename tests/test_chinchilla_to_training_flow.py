@@ -7,8 +7,8 @@ from src.training.config import _normalize_config
 
 
 def test_chinchilla_to_training_pipeline():
-    """Chinchilla出力 → config.py → 正しいmax_steps の全工程"""
-    # 1. Chinchilla計算
+    """Scaling Laws 出力 → config.py → 正しい max_steps の全工程"""
+    # 1. Scaling Laws 計算
     chinchilla_result = calculate_chinchilla_scaling(
         target_hours=24.0,
         user_throughput_tps=14338.6,
@@ -17,9 +17,9 @@ def test_chinchilla_to_training_pipeline():
 
     D = chinchilla_result["computable_tokens"]
 
-    # 2. chinchilla_config.yaml 相当の生成
+    # 2. scaling_config.yaml 相当の生成
     with tempfile.TemporaryDirectory() as tmpdir:
-        config_path = Path(tmpdir) / "chinchilla_config.yaml"
+        config_path = Path(tmpdir) / "scaling_config.yaml"
         yaml_content = {
             "metadata": {"computable_tokens": D},
             "training": {"seq_len": 512, "batch_size_seqs": 16},
@@ -43,7 +43,7 @@ def test_chinchilla_to_training_pipeline():
 def test_chinchilla_hpo_batch_size_change_updates_max_steps():
     """HPOで batch_size_seqs が変われば max_steps も再計算される"""
     with tempfile.TemporaryDirectory() as tmpdir:
-        config_path = Path(tmpdir) / "chinchilla_config.yaml"
+        config_path = Path(tmpdir) / "scaling_config.yaml"
         yaml_content = {
             "metadata": {"computable_tokens": 1_240_000_000},
             "training": {"seq_len": 512, "batch_size_seqs": 16},  # 初期値

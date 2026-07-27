@@ -14,18 +14,23 @@ from src.common.logger import logger
 def calculate_critical_batch_size(
     n_params: int,
     seq_len: int,
-    config_path: str = "configs/chinchilla_config.yaml",
+    config_path: str = "configs/scaling_config.yaml",
 ) -> int:
     """Kaplan / OpenAI スケーリング法則 (Critical Batch Size Theory) に基づき、
     モデル規模 n_params において最小ステップ・最高収束効率を与える理論最適トータルバッチシーケンス数を算出。
 
-    configs/chinchilla_config.yaml からモデル規模と基準バッチサイズを SSOT として動的ロード。
+    configs/scaling_config.yaml からモデル規模と基準バッチサイズを SSOT として動的ロード。
     """
     ref_n = 86_523_648
     ref_batch_seqs = 64
 
-    # chinchilla_config.yaml から動的ロード (SSOT原則)
+    # scaling_config.yaml (または chinchilla_config.yaml) から動的ロード (SSOT原則)
     path = Path(config_path)
+    if not path.exists():
+        fallback_path = Path("configs/chinchilla_config.yaml")
+        if fallback_path.exists():
+            path = fallback_path
+
     if path.exists():
         try:
             with open(path, encoding="utf-8") as f:
@@ -36,7 +41,7 @@ def calculate_critical_batch_size(
                 if "training" in cfg and isinstance(cfg["training"], dict) and "batch_size_seqs" in cfg["training"]:
                     ref_batch_seqs = int(cfg["training"]["batch_size_seqs"])
         except Exception as e:
-            logger.warning(f"Could not load chinchilla_config.yaml for Critical Batch Size scaling ({e}). Using default reference values.")
+            logger.warning(f"Could not load scaling_config.yaml for Critical Batch Size scaling ({e}). Using default reference values.")
 
     ref_tokens = ref_batch_seqs * seq_len
 

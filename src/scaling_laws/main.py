@@ -74,7 +74,7 @@ def main():
     print("=" * 70 + "\n")
 
     if apply:
-        output_yaml = Path("configs/chinchilla_config.yaml")
+        output_yaml = Path("configs/scaling_config.yaml")
         output_yaml.parent.mkdir(parents=True, exist_ok=True)
 
         config_data = {
@@ -112,9 +112,9 @@ def main():
         }
 
         with open(output_yaml, "w", encoding="utf-8") as f:
-            f.write("# @package _global_\抓")
+            f.write("# @package _global_\n")
             f.write("# -----------------------------------------------------------------------------\n")
-            f.write("# チンチラの法則・スケーリング法則 (src.scaling_laws) による自動算定成果物\n")
+            f.write("# スケーリング法則 (src.scaling_laws) による自動算定成果物\n")
             f.write(f"# タイムスタンプ: {datetime.now().isoformat()}\n")
             f.write("# -----------------------------------------------------------------------------\n\n")
             yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
