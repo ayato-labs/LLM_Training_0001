@@ -87,8 +87,9 @@ def select_decoupled_batch_split(
 ) -> tuple[int, int, int]:
     """2段階完全分離型バッチ設計 (Decoupled Batch Architecture):
     1. Critical Batch Size スケーリング法則で理論最適トータルバッチ B_total を算定。
-    2. VRAM 90% 容量以内で Tensor Core が最高速度となるマイクロバッチ b_micro を選定。
-    3. 勾配蓄積数 GA = max(1, round(B_total / b_micro)) を算定し、B_actual = b_micro * GA を確定。
+    2. VRAM 90% 容量以内で PyTorch 自動微分・勾配蓄積オーバーヘッドを最小化する最速マイクロバッチ b_micro を選定。
+       (VRAM に収まる場合は GA=1 となる最大バッチが最速。VRAM 超過時のみ最小の GA へ動的分割)
+    3. 勾配蓄積数 GA = max(1, round(B_total / b_micro)) を算定。
 
     返り値: (b_micro, grad_accum_steps, b_total_actual)
     """
@@ -102,7 +103,6 @@ def select_decoupled_batch_split(
     # Step 2: VRAM 物理限界を満たす最速マイクロバッチ選定 (256, 128, 64, 32, 16, 8, 4, 2, 1)
     safe_limit_gb = true_free_vram_gb * 0.90
 
-    # 2の累乗のマイクロバッチ候補を動的生成 (最大 256 から 1 まで)
     max_bs = max(256, target_b_total)
     candidates = []
     curr = 1
@@ -112,7 +112,6 @@ def select_decoupled_batch_split(
     candidates.sort(reverse=True)
 
     best_micro_bs = 1
-    best_score = -1.0
 
     for test_bs in candidates:
         est = estimate_training_vram_with_calibration(VramConfig(
@@ -132,12 +131,8 @@ def select_decoupled_batch_split(
         est_vram = est.breakdown.total_estimated_gb
 
         if est_vram <= safe_limit_gb:
-            # 物理 Roofline ＋ Tensor Core アライメントモデルによる MFU 効率の動的計算
-            mfu_factor = calculate_tensor_core_mfu(test_bs, seq_len, arch_dict)
-            score = test_bs * mfu_factor
-            if score > best_score:
-                best_score = score
-                best_micro_bs = test_bs
+            best_micro_bs = test_bs
+            break
 
     # Step 3: 自動結合 (Gradient Accumulation 計算)
     grad_accum_steps = max(1, round(target_b_total / best_micro_bs))

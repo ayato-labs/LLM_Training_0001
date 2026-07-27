@@ -20,8 +20,8 @@ model:
 # [学習実行制御] スケーリング法則・2段階分離型バッチ設計による最適バッチパラメータ
 training:
   batch_size_seqs: 64  # 理論最適トータルバッチサイズ (B_total = B_crit)
-  per_device_batch_size: 16  # 物理 VRAM 90% 内で Tensor Core MFU が最高速度となるマイクロバッチ (b_micro)
-  grad_accum_steps: 4  # 勾配蓄積数 (GA = ceil(B_total / b_micro))
+  per_device_batch_size: 64  # 物理 VRAM 90% 容量内で収まるため、勾配蓄積オーバーヘッドゼロの最大マイクロバッチ (b_micro = 64)
+  grad_accum_steps: 1  # 勾配蓄積数 (GA = 1)
 
 # [計算環境・データセット監査および HPO 探索時間シミュレーション (参考メタデータ)]
 metadata:
