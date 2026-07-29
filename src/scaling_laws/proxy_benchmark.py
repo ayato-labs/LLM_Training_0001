@@ -5,6 +5,7 @@
 """
 
 import gc
+import json
 import re
 import time
 from pathlib import Path
@@ -18,7 +19,13 @@ from src.common.logger import logger
 
 def detect_data_path_and_tokens() -> tuple[str, float | None]:
     """configs/base_config.yaml から data_path と tokenizer_path を取得し、
-    本番と同一の PreTrainedTokenizerFast をファンクションコールして正確な総トークン数を算定
+    本番と同一の PreTrainedTokenizerFast と同一の text 抽出ロジックで
+    データセットの総トークン数を正確に算定する。
+
+    訓練パイプライン (train_engine.py:469-470, model_utils.py:203-212) と同様に:
+      1. JSONL の各行から "text" フィールドのみを抽出
+      2. PreTrainedTokenizerFast で tokenize
+      3. 全行の文字数をカウント + 均一サンプリングで token/char 比率を推定
     """
     cfg = load_base_config_yaml()
     data_path = str(cfg.get("data_path", "data/dataset.jsonl"))
@@ -35,26 +42,53 @@ def detect_data_path_and_tokens() -> tuple[str, float | None]:
         if Path(tokenizer_path).exists():
             tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
 
-        file_size_bytes = path_obj.stat().st_size
+        if tokenizer is None:
+            file_size_bytes = path_obj.stat().st_size
+            est_tokens = file_size_bytes / 3.5
+            return data_path, float(est_tokens)
 
-        if tokenizer is not None:
-            sample_text = ""
-            sample_bytes = 0
-            with open(path_obj, encoding="utf-8", errors="ignore") as f:
-                for idx, line in enumerate(f):
-                    sample_text += line
-                    sample_bytes += len(line.encode("utf-8"))
-                    if idx >= 200 or sample_bytes >= 200_000:
-                        break
+        logger.info(f"Counting dataset tokens from {data_path} (this may take a few minutes)...")
 
-            if sample_bytes > 0 and sample_text:
-                sample_tokens = len(tokenizer.encode(sample_text))
-                tokens_per_byte = sample_tokens / sample_bytes
-                total_tokens = file_size_bytes * tokens_per_byte
-                return data_path, float(total_tokens)
+        # --- First pass: count total chars of all "text" fields ---
+        total_text_chars = 0
+        record_count = 0
+        with open(path_obj, encoding="utf-8") as f:
+            for line in f:
+                data = json.loads(line)
+                text = data.get("text", "")
+                total_text_chars += len(text)
+                record_count += 1
 
-        est_tokens = file_size_bytes / 3.5
-        return data_path, float(est_tokens)
+        # --- Second pass: uniform sampling for token/char ratio ---
+        sample_interval = max(1, record_count // 2000)  # ~2000 samples
+        sample_chars = 0
+        sample_tokens = 0
+        sample_count = 0
+
+        with open(path_obj, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i % sample_interval == 0:
+                    data = json.loads(line)
+                    text = data.get("text", "")
+                    sample_chars += len(text)
+                    sample_tokens += len(tokenizer.encode(text))
+                    sample_count += 1
+
+        if sample_chars == 0:
+            return data_path, 0.0
+
+        ratio = sample_tokens / sample_chars
+        total_tokens = total_text_chars * ratio
+
+        logger.info(
+            f"Dataset: {record_count:,} chapters, "
+            f"{total_text_chars:,} chars, "
+            f"~{total_tokens:,.0f} tokens "
+            f"(sampled {sample_count:,} chapters, token/char={ratio:.4f})"
+        )
+
+        return data_path, float(total_tokens)
+
     except Exception as e:
         logger.warning(
             f"Could not estimate dataset tokens via PreTrainedTokenizerFast from {data_path}: {e}"

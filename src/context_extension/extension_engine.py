@@ -86,10 +86,14 @@ def prepare_model_and_tokenizer_for_extension(config: dict) -> tuple[Any, Any]:
     rope_scaling_cfg = config.get("rope_scaling", {"type": "yarn", "factor": 4.0})
 
     logger.info(f"Loading base model for context extension from: {base_model_path}")
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.get("tokenizer_path", "data/tokenizer.json"),
-        trust_remote_code=True,
-    )
+
+    tokenizer_path = config.get("tokenizer_path", "data/tokenizer.json")
+    tokenizer_path_obj = Path(tokenizer_path)
+    if tokenizer_path_obj.suffix == ".json" and tokenizer_path_obj.exists():
+        from transformers import PreTrainedTokenizerFast as _PTF
+        tokenizer = _PTF(tokenizer_file=str(tokenizer_path_obj))
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -145,8 +149,16 @@ def run_context_extension(config_input: DictConfig | dict) -> dict:
     # 2. 長文用データセットのロードと Packing
     data_files = {"train": config.get("data_path", "data/dataset.jsonl")}
     raw_dataset = load_dataset("json", data_files=data_files)["train"]
-    num_proc = get_optimal_num_proc(config)
-    tokenized_ds = parallel_tokenize(raw_dataset, tokenizer, num_proc=num_proc)
+    num_proc = get_optimal_num_proc()
+    packing = config.get("packing", True)
+    remove_columns = [c for c in raw_dataset.column_names if c in {"text", "metadata"}]
+    tokenized_ds = parallel_tokenize(
+        raw_dataset, tokenizer,
+        seq_len=target_seq_len,
+        padding=not packing,
+        remove_columns=remove_columns,
+        max_workers=num_proc,
+    )
 
     packer = PackedDatasetWrapper(
         tokenized_ds,
