@@ -80,12 +80,12 @@ def zeropower_via_newtonschulz(G: torch.Tensor, steps: int = 3) -> torch.Tensor:
     a=3.4445, b=-4.7750, c=2.03153
     """
     a, b, c = 3.4445, -4.7750, 2.03153
-    # 数値的オーバーフロー（fp16溢れ）および精度低下を防ぐため、
-    # 計算過程のみ float32 にキャストする
-    G_fp32 = G.to(torch.float32)
-    X = G_fp32 / (G_fp32.norm() + 1e-7)
+    # 数値的オーバーフロー（fp16/bf16）および精度低下を防ぐため、計算過程のみ float32 にキャスト
+    X = G.to(torch.float32)
+    # Norm calculation in-place scale to avoid extra allocation
+    X = X / (X.norm() + 1e-7)
 
-    transposed = G.size(0) > G.size(1)
+    transposed = X.size(0) > X.size(1)
     if transposed:
         X = X.T
 
