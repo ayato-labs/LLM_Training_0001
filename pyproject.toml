@@ -13,29 +13,23 @@ dependencies = [
     "transformers>=4.40.0",
     "datasets>=2.19.0",
     "accelerate>=0.30.0",
-    "tokenizers>=0.19.0",
     "pyyaml>=6.0",
     "hydra-core>=1.3.0",
     "omegaconf>=2.3.0",
     "scipy>=1.11.0",
-    "dvc>=3.0.0",
     "optuna>=3.0.0",
-    "sentencepiece>=0.2.0",
     "loguru>=0.7.0",
     "tensorboard",
     "psutil>=5.9.0",
-    "google-auth>=2.20.0",
-    "google-auth-oauthlib>=1.0.0",
-    "google-api-python-client>=2.95.0",
     "liger-kernel>=0.3.0; sys_platform != 'win32'",
     "bitsandbytes>=0.45.0",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src"]
-
-[tool.uv]
-package = true
+[project.scripts]
+scaling-laws = "src.scaling_laws.main:main"
+hpo = "src.hpo.main:main"
+train = "src.training.main:main"
+extend-context = "src.rope.main:main"
 
 [project.optional-dependencies]
 dev = [
@@ -43,21 +37,8 @@ dev = [
     "ruff>=0.4.0",
 ]
 
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cu124", marker = "sys_platform == 'win32'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true
-
-[project.scripts]
-scaling-laws = "src.scaling_laws.main:main"
-hpo = "src.hpo.main:main"
-train = "src.training.main:main"
-extend-context = "src.rope.main:main"
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
 
 [tool.ruff]
 line-length = 100
@@ -69,3 +50,16 @@ ignore = ["E501", "E402"]
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
