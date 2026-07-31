@@ -195,7 +195,8 @@ def calculate_chinchilla_scaling(
     projected_target_tps = tps * (flops_per_token_proxy / flops_per_token_target)
 
     # HPO シミュレーション時間の導出
-    proxy_n = max(35_000_000, int(arch["n_params"] * 0.10))
+    # hpo/main.py と同じ規則 (約10%、下限 50M、ターゲット未満にキャップ) でプロキシ規模を算定
+    proxy_n = min(int(arch["n_params"]), max(50_000_000, int(arch["n_params"] * 0.10)))
     proxy_arch = generate_universal_architecture(proxy_n)
     n_trials = calculate_dynamic_n_trials(search_space_dim=4)
     proxy_step_time_sec = 0.50

@@ -32,9 +32,13 @@ class OptunaPruningCallback(TrainerCallback):
 
 
 def determine_optimal_proxy_size(target_n_params: int) -> str:
-    """ターゲットモデルサイズに対する最良のプロキシモデルサイズ (約10%) を決定"""
+    """ターゲットモデルサイズに対する最良のプロキシモデルサイズ (約10%) を決定
+
+    下限 50M を適用するが、ターゲットが 50M 未満の場合はターゲットサイズをそのまま
+    使用する (プロキシがターゲットより大きくなるのを防ぐ)。
+    """
     ratio = 0.1
-    proxy_n = max(50_000_000, int(target_n_params * ratio))
+    proxy_n = min(int(target_n_params), max(50_000_000, int(target_n_params * ratio)))
     return f"{proxy_n // 1_000_000}M"
 
 

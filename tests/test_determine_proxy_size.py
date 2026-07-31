@@ -19,6 +19,17 @@ class TestDetermineOptimalProxySize(unittest.TestCase):
         size_str = determine_optimal_proxy_size(100_000_000)
         self.assertEqual(size_str, "50M")
 
+    def test_determine_proxy_below_min_bound(self):
+        # 46M (46,284,800) < 50M -> 10% is 4.6M but must NOT exceed target.
+        # Use the target size itself as the proxy.
+        size_str = determine_optimal_proxy_size(46_284_800)
+        self.assertEqual(size_str, "46M")
+
+    def test_determine_proxy_below_min_bound_rounds_down(self):
+        # 5M (5,000,000) < 50M -> proxy == target (rounded down to M)
+        size_str = determine_optimal_proxy_size(5_000_000)
+        self.assertEqual(size_str, "5M")
+
 
 if __name__ == "__main__":
     unittest.main()

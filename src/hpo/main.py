@@ -75,7 +75,12 @@ def main():
     if "proxy" in args:
         proxy_size = args["proxy"]
     else:
-        proxy_n = max(50_000_000, int(target_arch["n_params"] * 0.1))
+        # プロキシはターゲットの約10% (下限 50M)。ターゲットが 50M 未満の場合は
+        # ターゲットサイズをそのまま使用 (プロキシがターゲットより大きくなるのを防ぐ)
+        proxy_n = min(
+            int(target_arch["n_params"]),
+            max(50_000_000, int(target_arch["n_params"] * 0.1)),
+        )
         proxy_size = f"{proxy_n // 1_000_000}M"
     proxy_n = int(proxy_size.replace("M", "")) * 1_000_000
     proxy_arch = generate_universal_architecture(proxy_n)
