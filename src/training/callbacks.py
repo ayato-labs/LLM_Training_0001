@@ -310,22 +310,32 @@ class PeriodicEvaluationCallback(TrainerCallback):
         logger.info(f"=== Periodic Evaluation at Step {state.global_step} ===")
 
         # 1. Perplexity 計算 (eval_datasetがある場合)
+        #    HF 標準評価 (eval_strategy="steps") が同じ eval_steps で実行されるため、
+        #    trainer.evaluate() を再呼び出しせず log_history の結果を参照する (二重評価防止)。
         if self.trainer is not None and self.trainer.eval_dataset is not None:
-            try:
-                eval_results = self.trainer.evaluate()
-                eval_loss = eval_results.get("eval_loss")
-                if eval_loss is not None:
-                    perplexity = math.exp(min(eval_loss, 20))  # overflow防止
-                    logger.info(f"  Eval Loss: {eval_loss:.4f} | Perplexity: {perplexity:.2f}")
+            eval_loss = None
+            eval_step = None
+            for entry in reversed(self.trainer.state.log_history):
+                if "eval_loss" in entry:
+                    eval_loss = entry["eval_loss"]
+                    eval_step = entry.get("step")
+                    break
 
-                    # TensorBoard記録
-                    if self.trainer.tb_writer:
-                        self.trainer.tb_writer.add_scalar("eval/loss", eval_loss, state.global_step)
-                        self.trainer.tb_writer.add_scalar(
-                            "eval/perplexity", perplexity, state.global_step
-                        )
-            except Exception as e:
-                logger.warning(f"Periodic evaluation failed: {e}")
+            if eval_loss is not None:
+                perplexity = math.exp(min(eval_loss, 20))  # overflow防止
+                eval_step_str = f" (step {eval_step})" if eval_step is not None else ""
+                logger.info(
+                    f"  Eval Loss: {eval_loss:.4f} | Perplexity: {perplexity:.2f}{eval_step_str}"
+                )
+
+                # TensorBoard記録
+                if self.trainer.tb_writer:
+                    self.trainer.tb_writer.add_scalar(
+                        "eval/loss", eval_loss, state.global_step
+                    )
+                    self.trainer.tb_writer.add_scalar(
+                        "eval/perplexity", perplexity, state.global_step
+                    )
 
         # 2. 生成サンプル出力
         if self.log_generations and self.trainer is not None and self.tokenizer is not None:

@@ -17,7 +17,10 @@ from src.common.config_utils import load_base_config_yaml
 from src.common.logger import logger
 
 
-def detect_data_path_and_tokens() -> tuple[str, float | None]:
+def detect_data_path_and_tokens(
+    data_path: str | None = None,
+    tokenizer_path: str | None = None,
+) -> tuple[str, float | None]:
     """configs/base_config.yaml から data_path と tokenizer_path を取得し、
     本番と同一の PreTrainedTokenizerFast と同一の text 抽出ロジックで
     データセットの総トークン数を正確に算定する。
@@ -26,10 +29,14 @@ def detect_data_path_and_tokens() -> tuple[str, float | None]:
       1. JSONL の各行から "text" フィールドのみを抽出
       2. PreTrainedTokenizerFast で tokenize
       3. 全行の文字数をカウント + 均一サンプリングで token/char 比率を推定
+
+    Args:
+        data_path: 対象データセットのパス (None なら base_config.yaml の値を使用)
+        tokenizer_path: トークナイザーのパス (None なら base_config.yaml の値を使用)
     """
     cfg = load_base_config_yaml()
-    data_path = str(cfg.get("data_path", "data/dataset.jsonl"))
-    tokenizer_path = str(cfg.get("tokenizer_path", "data/tokenizer.json"))
+    data_path = str(data_path or cfg.get("data_path", "data/dataset.jsonl"))
+    tokenizer_path = str(tokenizer_path or cfg.get("tokenizer_path", "data/tokenizer.json"))
 
     path_obj = Path(data_path)
     if not path_obj.exists():

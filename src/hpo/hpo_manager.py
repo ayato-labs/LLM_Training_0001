@@ -184,6 +184,13 @@ def objective(
     hpo["beta2"] = 0.95
     hpo["grad_clip"] = 1.0
 
+    # LRスケジューラ設定 (proxy用) — train_engine は config["hpo"] を参照するため
+    # トップレベルではなく hpo サブ辞書側に格納する (Step Law推奨: Constant+Cosine)
+    hpo["lr_scheduler_type"] = "constant_cosine"
+    hpo["warmup_steps"] = 2
+    hpo["constant_steps"] = 10
+    hpo["num_cycles"] = 0.5
+
     from pathlib import Path
 
     from omegaconf import OmegaConf
@@ -241,11 +248,6 @@ def objective(
         "seed": 42,
         "tokenizer_path": "data/tokenizer.json",
         "output_dir": "models/output",
-        # LRスケジューラ設定 (proxy用)
-        "lr_scheduler_type": "constant_cosine",
-        "warmup_steps": 2,
-        "constant_steps": 10,
-        "num_cycles": 0.5,
     }
 
     # Chinchilla 物理 VRAM 自動分解エンジン: トータルバッチサイズを物理 VRAM 安全上限へ動的自動分割

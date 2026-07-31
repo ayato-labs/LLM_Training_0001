@@ -34,6 +34,7 @@ from src.training.callbacks import (
 )
 from src.training.model_utils import (
     PackedDatasetWrapper,
+    compute_config_hash,
     compute_dataset_fingerprint,
     compute_file_hash,
     create_model_config,
@@ -336,11 +337,11 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     if config.get("use_liger_kernel", False):
         _warmup_liger_kernels(config)
 
-    # 2. 現在の設定ファイルとデータセットのハッシュ値の算出（整合性チェック用）
-    config_path = Path("configs/config.yaml")
+    # 2. 現在の合成設定とデータセットのハッシュ値の算出（整合性チェック用）
+    #    configs/config.yaml は Hydra defaults のポインタのため、適用される合成設定全体をハッシュ化する
+    logger.info("Computing merged config hash (base_config + scaling_config + hpo_config)...")
+    current_config_hash = compute_config_hash(config)
     data_path_str = config.get("data_path", "data/dataset.jsonl")
-    logger.info(f"Computing config hash: {config_path}")
-    current_config_hash = compute_file_hash(str(config_path))
     logger.info(f"Computing data hash: {data_path_str}")
     current_data_hash = compute_file_hash(data_path_str)
 
@@ -539,6 +540,22 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     precision = config.get("precision", "bf16")
     output_dir = config.get("output_dir", "models/output")
     hpo_config = config.get("hpo", config)
+    if not isinstance(hpo_config, dict):
+        hpo_config = config
+    else:
+        # hpo サブ辞書に無いスケジューラ系キーはトップレベルからフォールバック
+        # (hpo/main.py 等から直接渡される config はトップレベルに設定を持つため)
+        hpo_config = dict(hpo_config)
+        for _scheduler_key in (
+            "lr_scheduler_type",
+            "warmup_steps",
+            "warmup_ratio",
+            "constant_steps",
+            "constant_ratio",
+            "num_cycles",
+        ):
+            if _scheduler_key not in hpo_config and config.get(_scheduler_key) is not None:
+                hpo_config[_scheduler_key] = config[_scheduler_key]
 
     max_steps = config.get("max_steps", -1)
 

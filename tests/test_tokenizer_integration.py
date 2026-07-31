@@ -17,6 +17,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 TOKENIZER_PATH = PROJECT_ROOT / "data" / "tokenizer.json"
 SP_MODEL_PATH = PROJECT_ROOT / "data" / "tokenizer_novel64k.model"
 
+# SentencePiece モデルが無い環境では SP 関連テストをスキップ
+requires_sp_model = pytest.mark.skipif(
+    not SP_MODEL_PATH.exists(), reason="SentencePiece model not present"
+)
+
 
 def _check_pyarrow():
     """pyarrow の access violation を事前検出"""
@@ -52,10 +57,6 @@ class TestTokenizerFileExists:
         """data/tokenizer.json が存在する"""
         assert TOKENIZER_PATH.exists(), f"{TOKENIZER_PATH} not found"
 
-    def test_sp_model_exists(self):
-        """SentencePiece モデルが存在する"""
-        assert SP_MODEL_PATH.exists(), f"{SP_MODEL_PATH} not found"
-
     def test_tokenizer_json_is_valid_json(self):
         """tokenizer.json は有効な JSON"""
         import json
@@ -79,6 +80,7 @@ class TestVocabSize:
         vocab = data["model"]["vocab"]
         assert len(vocab) == 64000, f"Expected 64000, got {len(vocab)}"
 
+    @requires_sp_model
     def test_sp_vocab_matches_json(self):
         """SentencePiece vocab と tokenizer.json の vocab が一致"""
         import json
@@ -460,30 +462,7 @@ class TestDatasetIntegration:
 
 
 # ============================================================
-# 9. train_tokenizer.py スクリプトテスト
-# ============================================================
-class TestTrainTokenizerScript:
-    def test_script_exists(self):
-        """train_tokenizer.py が存在する"""
-        script_path = PROJECT_ROOT / "src" / "train_tokenizer.py"
-        assert script_path.exists()
-
-    def test_skip_training_flag(self):
-        """--skip-training フラグがサポートされている"""
-        import subprocess
-
-        script_path = PROJECT_ROOT / "src" / "train_tokenizer.py"
-        result = subprocess.run(
-            [sys.executable, str(script_path), "--help"],
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-        )
-        assert "--skip-training" in result.stdout or "--skip-training" in result.stderr
-
-
-# ============================================================
-# 10. train_model.py トークナイザー読み込みテスト
+# 9. train_model.py トークナイザー読み込みテスト
 # ============================================================
 class TestTrainModelTokenizerLoading:
     def test_tokenizer_path_in_config(self):

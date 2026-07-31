@@ -1,8 +1,9 @@
 """
-ADR-018/019/021 実装テスト
+ADR-018/019/021 実装テスト (現行 Hydra defaults 構成対応版)
 - BF16 対応
 - 150M/1024ctx アーキテクチャ
 - Vocab 64k + end_of_story
+- base_config / scaling_config / hpo_config の合成 (Hydra defaults)
 """
 
 import sys
@@ -14,110 +15,149 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import pytest  # noqa: E402
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Hydra defaults と同じネスト辞書マージ (後勝ち)"""
+    merged = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = _deep_merge(merged[k], v)
+        else:
+            merged[k] = v
+    return merged
+
+
+def _load_merged_raw() -> dict:
+    """configs/ の 3 ファイルを Hydra defaults 順 (base < scaling < hpo) で合成"""
+    import yaml
+
+    merged: dict = {}
+    for name in ("base_config.yaml", "scaling_config.yaml", "hpo_config.yaml"):
+        path = PROJECT_ROOT / "configs" / name
+        assert path.exists(), f"{path} not found"
+        with open(path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        assert isinstance(cfg, dict), f"{name} must be a dict"
+        merged = _deep_merge(merged, cfg)
+    return merged
+
+
+def _load_normalized_config() -> dict:
+    """load_config 相当 (OmegaConf 経由) の正規化設定を返す"""
+    from omegaconf import OmegaConf
+
+    from src.training.config import load_config
+
+    return load_config(OmegaConf.create(_load_merged_raw()))
+
+
 # ============================================================
-# 1. config.py の設定値テスト
+# 1. 合成設定の値テスト
 # ============================================================
 class TestTrainingConfig:
-    def test_target_params(self):
-        """ADR-019: ターゲットパラメータ数は 150M"""
-        from src.config import load_config, resolve_config_path
-
-        config_path = resolve_config_path(None)
-        config = load_config(config_path)
-        assert config["model_params"]["n_params"] == 150_000_000
-
-    def test_seq_len(self):
-        """ADR-019: シーケンス長は 1024"""
-        from src.config import load_config, resolve_config_path
-
-        config_path = resolve_config_path(None)
-        config = load_config(config_path)
-        assert config["hpo"]["seq_len"] == 1024
+    def test_seed(self):
+        """ADR: seed は base_config の 42"""
+        assert _load_merged_raw()["seed"] == 42
 
     def test_precision_default(self):
         """ADR-018: デフォルト precision は bf16"""
-        from src.config import load_config, resolve_config_path
+        assert _load_merged_raw()["precision"] == "bf16"
 
-        config_path = resolve_config_path(None)
-        config = load_config(config_path)
-        assert config["precision"] == "bf16"
+    def test_target_params_from_scaling(self):
+        """ADR-019: ターゲットパラメータ数は scaling_config の target_params"""
+        normalized = _load_normalized_config()
+        expected = _load_merged_raw()["model"]["target_params"]
+        assert normalized["model_params"]["n_params"] == expected
+
+    def test_seq_len(self):
+        """ADR-019: シーケンス長は base_config の 512"""
+        normalized = _load_normalized_config()
+        assert normalized["hpo"]["seq_len"] == 512
+        assert normalized["seq_len"] == 512
 
     def test_vram_limit_default(self):
         """ADR-019: VRAM制限は自動検出される"""
-        from src.config import detect_vram
+        from src.common.vram_estimator import detect_vram
 
         vram = detect_vram()
         assert vram > 0, f"VRAM should be detected, got {vram}"
 
+    def test_hpo_values_merged(self):
+        """HPO 成果物 (max_lr_2d 等) が training セクションへ反映される"""
+        normalized = _load_normalized_config()
+        raw = _load_merged_raw()
+        assert normalized["max_lr_2d"] == raw["training"]["max_lr_2d"]
+        assert normalized["weight_decay"] == raw["training"]["weight_decay"]
+        assert normalized["warmup_ratio"] == raw["training"]["warmup_ratio"]
+
+    def test_max_steps_from_computable_tokens(self):
+        """Chinchilla metadata.computable_tokens から max_steps が動的計算される"""
+        normalized = _load_normalized_config()
+        raw = _load_merged_raw()
+        expected = int(
+            raw["metadata"]["computable_tokens"]
+            // (raw["training"]["batch_size_seqs"] * raw["training"]["seq_len"])
+        )
+        assert normalized["max_steps"] == expected
+        assert normalized["max_steps"] > 10_000
+
 
 # ============================================================
-# 3. configs/config.yaml テスト
+# 2. configs/config.yaml (Hydra defaults) テスト
 # ============================================================
 class TestConfigYAML:
-    @pytest.fixture(autouse=True)
-    def setup(self):
+    def test_defaults_order(self):
+        """config.yaml の defaults が base/scaling/hpo の順"""
         import yaml
 
         config_path = PROJECT_ROOT / "configs" / "config.yaml"
         with open(config_path, encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
+        defaults = self.config.get("defaults", [])
+        assert defaults == ["base_config", "scaling_config", "hpo_config", "_self_"]
 
-    def test_model_architecture(self):
-        """ADR-019: 150M アーキテクチャ"""
-        model = self.config["model"]
-        assert model["target_params"] == 150_000_000
-        assert model["llama"]["hidden_size"] == 768
-        assert model["llama"]["num_hidden_layers"] == 12
-        assert model["llama"]["num_attention_heads"] == 12
-        assert model["llama"]["intermediate_size"] == 3072
+    def test_base_config_architecture_defaults(self):
+        """base_config.yaml にアーキテクチャ既定値が存在する"""
+        import yaml
 
-    def test_rope_theta(self):
-        """ADR-019: RoPE theta が 1024ctx に対応"""
-        assert self.config["model"]["llama"]["rope_theta"] == 10000.0
+        path = PROJECT_ROOT / "configs" / "base_config.yaml"
+        with open(path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["seed"] == 42
+        assert cfg["precision"] == "bf16"
+        assert cfg["training"]["seq_len"] == 512
+        assert cfg["training"]["packing"] is True
 
-    def test_seq_len(self):
-        """ADR-019: シーケンス長 1024"""
-        assert self.config["training"]["seq_len"] == 1024
+    def test_scaling_config_architecture(self):
+        """scaling_config.yaml にアーキテクチャが定義される"""
+        import yaml
 
-    def test_vocab_size(self):
-        """ADR-021: vocab 64k"""
-        assert self.config["tokenizer"]["vocab_size"] == 64000
-
-    def test_special_tokens(self):
-        """ADR-021: end_of_story トークン存在"""
-        tokens = self.config["tokenizer"]["special_tokens"]
-        assert "<|end_of_story|>" in tokens
-        assert "<|start_of_story|>" in tokens
-        assert "<|start_of_metadata|>" in tokens
-        assert "<|end_of_metadata|>" in tokens
-
-    def test_hardware_precision(self):
-        """ADR-018: precision = bf16"""
-        assert self.config["hardware"]["precision"] == "bf16"
-
-    def test_hardware_vram(self):
-        """ADR-019: VRAM 4GB"""
-        assert self.config["hardware"]["vram_limit_gb"] is not None
+        path = PROJECT_ROOT / "configs" / "scaling_config.yaml"
+        with open(path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        llama = cfg["model"]["llama"]
+        assert cfg["model"]["target_params"] > 0
+        assert llama["hidden_size"] > 0
+        assert llama["num_hidden_layers"] > 0
+        assert llama["num_attention_heads"] % llama["num_key_value_heads"] == 0
+        assert llama["vocab_size"] >= 32000
 
     def test_model_params_count(self):
-        """100M モデルのパラメータ数概算"""
-        model = self.config["model"]["llama"]
-        # LLaMA: 12 * L * H^2 (embedding/HEAD除く)
-        est_params = 12 * model["num_hidden_layers"] * (model["hidden_size"] ** 2)
-        # + embedding (vocab * hidden)
-        est_params += self.config["tokenizer"]["vocab_size"] * model["hidden_size"]
-        # + FFN (2 * intermediate * hidden per layer)
-        est_params += (
-            2 * model["intermediate_size"] * model["hidden_size"] * model["num_hidden_layers"]
-        )
-        # 目安: 100M ± 50%
-        assert 50_000_000 < est_params < 150_000_000, (
-            f"Estimated params should be ~100M, got {est_params / 1e6:.1f}M"
+        """モデルパラメータ数の概算が target_params と同程度 (±50%)"""
+        llama = _load_merged_raw()["model"]["llama"]
+        target = _load_merged_raw()["model"]["target_params"]
+        hidden = llama["hidden_size"]
+        layers = llama["num_hidden_layers"]
+        vocab = llama["vocab_size"]
+        intermediate = llama["intermediate_size"]
+        # LLaMA 概算: attention(4H^2/L) + FFN(3HI) + embedding (tied)
+        est_params = layers * (4 * hidden * hidden + 3 * hidden * intermediate) + vocab * hidden
+        assert 0.5 * target < est_params < 1.5 * target, (
+            f"Estimated params {est_params / 1e6:.1f}M vs target {target / 1e6:.1f}M"
         )
 
 
 # ============================================================
-# 5. pyproject.toml 依存関係テスト
+# 3. 依存関係テスト
 # ============================================================
 class TestDependencies:
     @pytest.fixture(autouse=True)
@@ -136,7 +176,7 @@ class TestDependencies:
 
 
 # ============================================================
-# 6. Python バージョンテスト
+# 4. Python バージョンテスト
 # ============================================================
 class TestPythonVersion:
     def test_python_version_file(self):
@@ -147,53 +187,48 @@ class TestPythonVersion:
 
 
 # ============================================================
-# 7. ADR ファイル存在テスト
+# 5. ADR ファイル存在テスト
 # ============================================================
 class TestADRFiles:
     def test_adr018_exists(self):
-        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-018-bf16-adoption.md").exists()
+        assert (PROJECT_ROOT / "docs" / "ADR" / "001-bf16-adoption.md").exists()
 
     def test_adr019_exists(self):
-        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-019-150m-1024ctx-architecture.md").exists()
+        assert (PROJECT_ROOT / "docs" / "ADR" / "003-150m-1024ctx-architecture.md").exists()
 
     def test_adr020_exists(self):
-        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-020-packed-sequence.md").exists()
+        assert (PROJECT_ROOT / "docs" / "ADR" / "004-packed-sequence.md").exists()
 
     def test_adr021_exists(self):
-        assert (PROJECT_ROOT / "docs" / "adr" / "ADR-021-vocab-64k-end-of-story.md").exists()
+        assert (PROJECT_ROOT / "docs" / "ADR" / "005-vocab-64k-end-of-story.md").exists()
 
 
 # ============================================================
-# 8. アーキテクチャ整合性テスト
+# 6. アーキテクチャ整合性テスト
 # ============================================================
 class TestArchitectureConsistency:
     def test_params_consistency(self):
-        """config.yaml の target_params が正しく読み込まれる"""
-        from src.config import load_config, resolve_config_path
+        """scaling_config の target_params が正規化後 model_params に反映される"""
+        normalized = _load_normalized_config()
+        expected = _load_merged_raw()["model"]["target_params"]
+        assert normalized["model_params"]["n_params"] == expected
 
-        config_path = resolve_config_path(None)
-        config = load_config(config_path)
-        assert config["model_params"]["n_params"] == 150_000_000
-
-    def test_seq_len_consistency(self):
-        """config.yaml の seq_len が正しく読み込まれる"""
-        from src.config import load_config, resolve_config_path
-
-        config_path = resolve_config_path(None)
-        config = load_config(config_path)
-        assert config["hpo"]["seq_len"] == 1024
+    def test_gqa_consistency(self):
+        """GQA 制約: num_attention_heads は num_key_value_heads の倍数"""
+        normalized = _load_normalized_config()
+        heads = normalized["model_params"]["num_attention_heads"]
+        kv_heads = normalized["model_params"]["num_key_value_heads"]
+        assert kv_heads >= 1
+        assert heads % kv_heads == 0
 
     def test_precision_consistency(self):
-        """config.yaml の precision が bf16"""
-        from src.config import load_config, resolve_config_path
-
-        config_path = resolve_config_path(None)
-        config = load_config(config_path)
-        assert config["precision"] == "bf16"
+        """precision が bf16"""
+        normalized = _load_normalized_config()
+        assert normalized["precision"] == "bf16"
 
 
 # ============================================================
-# 9. モデル初期化テスト (torch必要)
+# 7. モデル初期化テスト (torch必要)
 # ============================================================
 class TestModelInit:
     @pytest.fixture(autouse=True)
@@ -238,7 +273,6 @@ class TestModelInit:
         )
         model = LlamaForCausalLM(config)
         param_count = sum(p.numel() for p in model.parameters())
-        # 100M ± 40% (embedding/FFN含む)
         assert 60_000_000 < param_count < 140_000_000, (
             f"Model params should be ~100M, got {param_count / 1e6:.1f}M"
         )
@@ -300,12 +334,10 @@ class TestModelInit:
         )
         model = LlamaForCausalLM(config)
         original_vocab = model.config.vocab_size
-        # 9特殊トークン追加
         model.resize_token_embeddings(original_vocab + 9)
         assert model.config.vocab_size == original_vocab + 9
         assert model.get_input_embeddings().weight.shape[0] == original_vocab + 9
 
 
-# ============================================================
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

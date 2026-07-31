@@ -87,7 +87,18 @@ def main():
 
     # ---- Resources ----
     data_path = args.get("data_path", "data/dataset.jsonl")
-    n_tokens = sum(1 for _ in open(data_path, encoding="utf-8"))
+    # 行数ではなく実トークン数を算定 (Step Law はトークン数前提のため)
+    from src.scaling_laws.proxy_benchmark import detect_data_path_and_tokens
+
+    _, est_tokens = detect_data_path_and_tokens(data_path=data_path)
+    if est_tokens is None or est_tokens <= 0:
+        n_tokens = sum(1 for _ in open(data_path, encoding="utf-8"))
+        logger.warning(
+            f"Token estimation failed for {data_path}. Falling back to line count ({n_tokens:,} lines)."
+        )
+    else:
+        n_tokens = est_tokens
+        logger.info(f"Estimated dataset tokens: {n_tokens:,.0f}")
     proxy_vram = float(args.get("vram_gb", 0)) or detect_vram()
     seq_len = int(args.get("seq_len", "0")) or detect_seq_len_from_config()
 

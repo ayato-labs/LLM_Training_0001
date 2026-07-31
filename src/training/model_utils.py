@@ -430,6 +430,19 @@ def compute_file_hash(filepath: str, max_size_mb: int = _MAX_HASH_SIZE_MB) -> st
     return sha256.hexdigest()
 
 
+def compute_config_hash(config: dict) -> str:
+    """正規化・合成済み設定辞書全体の決定論的 SHA256 ハッシュを算出。
+
+    configs/config.yaml は Hydra defaults のポインタに過ぎないため、ファイル単体の
+    ハッシュでは base_config / scaling_config / hpo_config の変更を検知できない。
+    実際に学習へ適用される合成後の設定全体をシリアライズしてハッシュ化する。
+    """
+    import json
+
+    normalized = json.dumps(config, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def compute_dataset_fingerprint(dataset_path: str) -> dict:
     path = Path(dataset_path)
     if not path.exists():
