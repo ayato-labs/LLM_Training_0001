@@ -1,42 +1,38 @@
 # @package _global_
 # -----------------------------------------------------------------------------
-# チンチラの法則 (src.chinchilla) による目標時間逆算成果物
+# スケーリング法則 (src.scaling_laws) による自動算定成果物
+# タイムスタンプ: 2026-07-31T10:30:02.488772
 # -----------------------------------------------------------------------------
 
-# [モデル構造設定] 目標時間 (24.0時間) で Loss が最も低くなる黄金比率アーキテクチャ
 model:
-  target_params: 86523648  # 推定パラメータ数 (~86.5M)
+  target_params: 46284800
   llama:
-    hidden_size: 768  # 隠れ層ベクトル次元
-    num_hidden_layers: 10  # Transformerレイヤー数
-    num_attention_heads: 12  # Attention Head数 (head_dim = 64)
-    num_key_value_heads: 3  # Key/Value Head数 (GQA 4:1)
-    intermediate_size: 2048  # SwiGLU FFN中間層次元
-    rope_theta: 10000.0  # RoPE位置エンコーディング基準周波数
-    vocab_size: 64000  # 語彙数 (checkpoint-15000 config.json 整合)
-    attn_implementation: "sdpa"  # PyTorch SDPA バックエンド
-    tie_word_embeddings: true  # 埋め込み層とLM Headの重み共有
-
-# [学習実行制御] スケーリング法則・2段階分離型バッチ設計による最適バッチパラメータ
+    hidden_size: 640
+    num_hidden_layers: 5
+    num_attention_heads: 10
+    num_key_value_heads: 2
+    intermediate_size: 1664
+    rope_theta: 10000.0
+    vocab_size: 32000
+    attn_implementation: sdpa
+    tie_word_embeddings: true
 training:
-  batch_size_seqs: 64  # 理論最適トータルバッチサイズ (B_total = B_crit)
-  per_device_batch_size: 64  # 物理 VRAM 90% 容量内で収まるため、勾配蓄積オーバーヘッドゼロの最大マイクロバッチ (b_micro = 64)
-  grad_accum_steps: 1  # 勾配蓄積数 (GA = 1)
-
-# [計算環境・データセット監査および HPO 探索時間シミュレーション (参考メタデータ)]
+  batch_size_seqs: 53
+  per_device_batch_size: 53
+  grad_accum_steps: 1
 metadata:
-  target_hours: 24.0  # 目標学習時間 (hours)
-  gpu: "NVIDIA GeForce RTX 3050 Laptop GPU"  # 検出されたGPU型番
-  measured_throughput_tps: 75640.3  # 実測スループット (tokens/sec)
-  estimated_peak_vram_gb: 2.4851  # 訓練時推定 Peak VRAM (GB)
-  computable_tokens: 1894662693  # Chinchilla理論計算可能トークン数 D=20N
+  target_hours: 7.0
+  gpu: NVIDIA GeForce RTX 3050 Laptop GPU
+  measured_throughput_tps: 57083.7
+  estimated_peak_vram_gb: 0.7476
+  computable_tokens: 1438509240
   dataset:
-    data_path: "data/dataset.jsonl"  # 使用データセットパス
-    actual_tokens: "~1977.27M tokens"  # データセット内実測トークン数
-    sufficiency_ratio_pct: 104.4  # 必要トークン数に対するデータ充足率 (%)
-    is_data_shortage: false  # データ不足警告フラグ
+    data_path: data/dataset.jsonl
+    actual_tokens: ~1388.06M tokens
+    sufficiency_ratio_pct: 96.5
+    is_data_shortage: true
   hpo_simulation:
-    proxy_params: 45555840  # 探索に使用するプロキシモデル規模 (~10%)
-    n_trials: 100  # 5次元探索の標準試行回数 (30 trials/dim)
-    worst_case_no_pruning_minutes: 119.8  # 枝刈りゼロ時の最悪総探索時間 (分)
-    expected_with_median_pruner_minutes: 41.9  # MedianPruner適用時の期待探索時間 (分)
+    proxy_params: 30277632
+    n_trials: 120
+    worst_case_no_pruning_minutes: 50.0
+    expected_with_median_pruner_minutes: 17.5
