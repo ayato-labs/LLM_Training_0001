@@ -155,6 +155,7 @@ def extract_throughput_from_recent_logs() -> float | None:
 def run_quick_proxy_benchmark(seq_len: int = 1024, batch_size: int = 16) -> tuple[float, int]:
     """指定の seq_len および batch_size で GPU 上のプロキシモデルを実際に動的実行し、
     実効スループット (tokens/sec) および 実測パラメータ数を完全リアルタイム計測。
+    base_config.yaml の gradient_checkpointing 設定を反映する。
     """
     if not torch.cuda.is_available():
         return 500.0, 27_450_000
@@ -162,6 +163,10 @@ def run_quick_proxy_benchmark(seq_len: int = 1024, batch_size: int = 16) -> tupl
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
+
+    base_cfg = load_base_config_yaml()
+    use_grad_ckpt = base_cfg.get("gradient_checkpointing", True)
+    optim_name = base_cfg.get("training", {}).get("optim", base_cfg.get("optim", "adamw_bnb_8bit"))
 
     target_bs = max(1, batch_size)
 
@@ -177,11 +182,24 @@ def run_quick_proxy_benchmark(seq_len: int = 1024, batch_size: int = 16) -> tupl
                 num_attention_heads=8,
                 num_key_value_heads=2,
                 intermediate_size=1376,
+                use_cache=False,
             )
             device = torch.device("cuda:0")
             model = LlamaModel(cfg).to(device=device, dtype=torch.bfloat16)
+
+            if use_grad_ckpt:
+                model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+
             ref_n = sum(p.numel() for p in model.parameters())
-            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+            if "8bit" in optim_name:
+                try:
+                    import bitsandbytes as bnb
+                    optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-3)
+                except Exception:
+                    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+            else:
+                optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
             dummy_input = torch.randint(0, 32000, (target_bs, seq_len), device=device)
             out = model(dummy_input)

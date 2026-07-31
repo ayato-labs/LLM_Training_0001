@@ -59,7 +59,9 @@ def _vram_estimate(
     vocab_size: int = 32000,
     intermediate_size: int = 0,
     vram_cap: float = 4.0,
-    checkpointing: str = "selective",
+    checkpointing: str = "full",
+    use_liger_kernel: bool = True,
+    optimizer_type: str = "adamw_bnb_8bit",
 ) -> VramEstimate:
     eff_intermediate = intermediate_size if intermediate_size > 0 else 4 * hidden_size
     return estimate_training_vram_with_calibration(
@@ -72,8 +74,8 @@ def _vram_estimate(
             micro_batch_size=batch_size,
             seq_len=seq_len,
             precision="bf16",
-            optimizer_type="adamw_bnb_8bit",
-            use_liger_kernel=True,
+            optimizer_type=optimizer_type,
+            use_liger_kernel=use_liger_kernel,
             checkpointing=checkpointing,
             total_vram_gb=vram_cap,
         )
@@ -85,7 +87,7 @@ def find_max_safe_batch_size(
     seq_len: int,
     true_free_vram_gb: float,
     max_search_bs: int = 64,
-    checkpointing: str = "selective",
+    checkpointing: str = "full",
 ) -> int:
     micro_bs, _, _ = select_decoupled_batch_split(
         arch_dict, seq_len, true_free_vram_gb, checkpointing=checkpointing
@@ -103,7 +105,16 @@ def calculate_chinchilla_scaling(
 ) -> dict[str, Any]:
     """与えられた目標学習時間 (target_hours) から可習得トークン数 D = 20N および
     最適な Chinchilla アーキテクチャを完全自律算定するメイン・ファンクション。
+    base_config.yaml の設定（gradient_checkpointing 等）を考慮する。
     """
+    from src.common.config_utils import load_base_config_yaml
+
+    base_cfg = load_base_config_yaml()
+    use_grad_ckpt = base_cfg.get("gradient_checkpointing", True)
+    ckpt_mode = "full" if use_grad_ckpt else "none"
+    use_liger = base_cfg.get("use_liger_kernel", True)
+    optim_type = base_cfg.get("training", {}).get("optim", base_cfg.get("optim", "adamw_bnb_8bit"))
+
     gpu_info = detect_gpu_info()
     seq_len = user_seq_len or detect_seq_len_from_config()
 
@@ -160,7 +171,7 @@ def calculate_chinchilla_scaling(
 
     # 2段階分離型バッチ設計 (Critical Batch Size ＋ VRAM Physical Micro-batch)
     optimal_micro_bs, grad_accum_steps, actual_b_total = select_decoupled_batch_split(
-        arch, seq_len, true_free_vram_gb, checkpointing="selective"
+        arch, seq_len, true_free_vram_gb, checkpointing=ckpt_mode
     )
 
     est_vram = _vram_estimate(
@@ -171,12 +182,16 @@ def calculate_chinchilla_scaling(
         arch["num_hidden_layers"],
         arch["vocab_size"],
         arch.get("intermediate_size", 0),
-        checkpointing="selective",
+        checkpointing=ckpt_mode,
+        use_liger_kernel=use_liger,
+        optimizer_type=optim_type,
     ).breakdown.total_estimated_gb
 
     # プロキシモデルに対するターゲットモデルの相対スケール FLOPs 補正 TPS
-    flops_per_token_proxy = 6.0 * ref_n
-    flops_per_token_target = 6.0 * arch["n_params"]
+    # Gradient Checkpointing 有効時は 8N FLOPs/token、無効時は 6N FLOPs/token
+    flop_multiplier = 8.0 if use_grad_ckpt else 6.0
+    flops_per_token_proxy = flop_multiplier * ref_n
+    flops_per_token_target = flop_multiplier * arch["n_params"]
     projected_target_tps = tps * (flops_per_token_proxy / flops_per_token_target)
 
     # HPO シミュレーション時間の導出
