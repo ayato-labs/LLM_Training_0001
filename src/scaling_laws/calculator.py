@@ -95,8 +95,8 @@ def _max_n_within_vram(
 
     micro_batch_size=1 (勾配蓄積でどこまでも分割可能) を前提とするため、
     これがVRAMに収まらないモデルは物理的に実行不可能。
-    generate_universal_architecture の量子化後も推定VRAMは N に対して単調増加なので
-    二分探索が最大 feasible N を厳密に求める。
+    select_decoupled_batch_split と同じ safe_ratio (0.90) を使い、
+    二分探索が承認したアーキが後段で拒否されないことを保証する。
     """
     safe_limit_gb = true_free_vram_gb * safe_ratio
 
@@ -124,6 +124,15 @@ def _max_n_within_vram(
             lo = mid + 1
         else:
             hi = mid - 1
+
+    # 線形微調整: 量子化アーキテクチャの階段に沿って +2% 刻みで詰め、
+    # VRAM 上限を最大限活用できる最大 N に収束させる (best_n は既に feasible)。
+    n_try = best_n + max(1, int(best_n * 0.02))
+    for _ in range(30):
+        if n_try > upper_bound_n or estimate_for(n_try) > safe_limit_gb:
+            break
+        best_n = n_try
+        n_try += max(1, int(best_n * 0.02))
 
     if estimate_for(best_n) > safe_limit_gb:
         raise ValueError(
@@ -225,6 +234,8 @@ def calculate_chinchilla_scaling(
     #    純粋 Chinchilla 値と VRAM 実測値からの実行可能上限の最小値を採用
     target_n = int(min(chinchilla_n_pure, max_n_by_vram))
     arch = generate_universal_architecture(target_n)
+    requested_n_params = target_n
+    arch_deviation_pct = round((arch["n_params"] - target_n) / target_n * 100.0, 1)
 
     # 5. 推奨モデルの学習計画 D (target_hours 内に処理可能なトークン数) を導出。
     #    この D は 20N と等価であり、予測学習時間は target_hours に自己整合する。
@@ -323,6 +334,8 @@ def calculate_chinchilla_scaling(
         },
         "chinchilla_pure_optimal_n_million": round(chinchilla_n_pure / 1e6, 2),
         "chinchilla_pure_optimal_d_million": round(chinchilla_d_pure / 1e6, 2),
+        "requested_n_params": requested_n_params,
+        "arch_deviation_pct": arch_deviation_pct,
         "recommended_architecture": arch,
         "data_capped_architecture": data_capped_arch,
         "is_vram_capped": vram_shortage_warn,

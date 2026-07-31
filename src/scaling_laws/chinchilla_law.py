@@ -102,42 +102,35 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
             )
 
     # 2. パラメータ比率によるスケールから中心 (H, L) を決め、グリッド探索で最良候補を選択。
-    #    下振れは倍ペナルティで評価し、±15% 以内の候補が無い場合は探索幅を拡大する。
+    #    スコアは絶対誤差で評価し、同点の場合は下振れ (VRAM/品質リスク) より
+    #    上振れを優先する。±15% 以内の候補が無い場合は探索幅を拡大する。
     scale = (target_n_params / base_n) ** (1 / 3)
     center_hidden = int(round(base_hidden * scale / 128) * 128)
     center_layers = int(round(base_layers * scale))
 
-    best_candidate: tuple[float, int, int] | None = None
-    best_within: tuple[float, int, int] | None = None
+    best_candidate: tuple[float, float, int, int] | None = None
+    best_within: tuple[float, float, int, int] | None = None
 
-    for step in (2, 4, 6):
-        hidden_values = [
-            max(256, center_hidden + k * 128) for k in range(-step, step + 1)
-        ]
-        hidden_values = list(dict.fromkeys(hidden_values))
-        layer_values = [
-            max(2, center_layers + k) for k in range(-step, step + 1)
-        ]
-        layer_values = list(dict.fromkeys(layer_values))
+    hidden_values = [
+        max(256, center_hidden + k * 128) for k in range(-6, 7)
+    ]
+    hidden_values = list(dict.fromkeys(hidden_values))
+    layer_values = [max(2, center_layers + k) for k in range(-6, 7)]
+    layer_values = list(dict.fromkeys(layer_values))
 
-        for hidden_size in hidden_values:
-            for num_layers in layer_values:
-                est = estimate_universal_arch_params(
-                    hidden_size, num_layers, vocab_size
-                )["n_params_estimate"]
-                err = (est - target_n_params) / target_n_params
-                score = err if err >= 0.0 else 2.0 * err
-                candidate = (score, hidden_size, num_layers)
-                if best_candidate is None or score < best_candidate[0]:
-                    best_candidate = candidate
-                if abs(err) <= 0.15 and (
-                    best_within is None or score < best_within[0]
-                ):
-                    best_within = candidate
-        if best_within is not None:
-            break
+    for hidden_size in hidden_values:
+        for num_layers in layer_values:
+            est = estimate_universal_arch_params(
+                hidden_size, num_layers, vocab_size
+            )["n_params_estimate"]
+            err = (est - target_n_params) / target_n_params
+            candidate = (abs(err), 0.0 if err >= 0.0 else 1.0, hidden_size, num_layers)
+            if best_candidate is None or candidate < best_candidate:
+                best_candidate = candidate
+            if abs(err) <= 0.15 and (best_within is None or candidate < best_within):
+                best_within = candidate
 
-    _, hidden_size, num_layers = best_within or best_candidate
+    _, _, hidden_size, num_layers = best_within or best_candidate
 
     # GQA 設定
     arch_meta = estimate_universal_arch_params(hidden_size, num_layers, vocab_size)

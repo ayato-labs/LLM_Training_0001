@@ -148,6 +148,46 @@ def test_scaling_laws_data_shortage_is_warning_only():
     )
 
 
+def test_universal_architecture_within_15_percent():
+    """generate_universal_architecture の量子化誤差は ±15% 以内 (回帰: -47% の大幅下振れ)"""
+    from src.scaling_laws.chinchilla_law import generate_universal_architecture
+
+    for target in (37_000_000, 87_150_000, 617_290_000):
+        arch = generate_universal_architecture(target)
+        err = (arch["n_params"] - target) / target
+        assert abs(err) <= 0.15, (
+            f"target={target/1e6:.2f}M -> {arch['n_params']/1e6:.2f}M ({err:+.1%})"
+        )
+
+
+def test_scaling_laws_recommended_not_data_capped_at_20h():
+    """20h で recommended が data_capped と偶然一致しないこと (回帰: 46.28M の一致問題)"""
+    result = calculate_chinchilla_scaling(
+        target_hours=20.0,
+        user_throughput_tps=14338.6,
+        user_seq_len=512,
+    )
+
+    if result["dataset_info"]["is_data_shortage"]:
+        assert (
+            result["recommended_architecture"]["n_params"]
+            != result["data_capped_architecture"]["n_params"]
+        )
+
+
+def test_scaling_laws_arch_deviation_reported():
+    """量子化前の要求 N と実アーキの乖離が結果に含まれる"""
+    result = calculate_chinchilla_scaling(
+        target_hours=24.0,
+        user_throughput_tps=14338.6,
+        user_seq_len=512,
+    )
+
+    assert "requested_n_params" in result
+    assert "arch_deviation_pct" in result
+    assert abs(result["arch_deviation_pct"]) <= 15.0
+
+
 def test_decoupled_batch_split_raises_on_infeasible_architecture():
     """bs=1 でも VRAM 上限を超過するアーキテクチャは黙って (1, GA) を返さず ValueError を送出する"""
     infeasible_arch = {
