@@ -44,6 +44,29 @@ def check_uv() -> None:
     print("[OK] uv is available")
 
 
+def check_c_compiler() -> None:
+    _step("Check C compiler (required by Triton JIT)")
+    compiler = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+    if compiler is None:
+        print("[ERROR] C compiler not found. Triton requires a C compiler at runtime to JIT-compile CUDA kernels.")
+        if sys.platform == "win32":
+            print("  Windows: Install Build Tools for Visual Studio or GCC via MSYS2 / Cygwin")
+            print("  Suggested: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio")
+        elif sys.platform == "darwin":
+            print("  macOS:   xcode-select --install")
+        else:
+            print("  Linux:   sudo apt install -y build-essential   (Debian/Ubuntu)")
+            print("           sudo dnf install -y gcc gcc-c++       (Fedora)")
+            print("           sudo pacman -S base-devel             (Arch)")
+            print("  WSL:     sudo apt install -y build-essential")
+        print("")
+        print("  You can also set the CC environment variable to point to your C compiler.")
+        print("  Example: CC=/usr/bin/gcc uv run python setup.py")
+        input("Press Enter to exit...")
+        sys.exit(1)
+    print(f"[OK] C compiler found: {compiler}")
+
+
 def remove_venv() -> None:
     _step("Remove existing virtual environment")
     if VENV_DIR.exists():
@@ -87,6 +110,7 @@ else:
 
 def main() -> None:
     check_uv()
+    check_c_compiler()
     remove_venv()
     create_venv()
     sync_dependencies()
