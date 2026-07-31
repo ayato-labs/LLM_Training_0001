@@ -98,6 +98,8 @@ def select_decoupled_batch_split(
     3. 勾配蓄積数 GA = max(1, round(B_total / b_micro)) を算定。
 
     返り値: (b_micro, grad_accum_steps, b_total_actual)
+
+    例外: ValueError — micro_batch_size=1 でも VRAM 安全上限を超過する実現不可能な場合
     """
     from src.common.vram_estimator import VramConfig, estimate_training_vram_with_calibration
 
@@ -120,7 +122,7 @@ def select_decoupled_batch_split(
         candidates.append(target_b_total)
     candidates.sort(reverse=True)
 
-    best_micro_bs = 1
+    best_micro_bs = None
 
     for test_bs in candidates:
         est = estimate_training_vram_with_calibration(
@@ -136,7 +138,7 @@ def select_decoupled_batch_split(
                 optimizer_type="adamw_bnb_8bit",
                 use_liger_kernel=True,
                 checkpointing=checkpointing,
-                total_vram_gb=999.0,
+                total_vram_gb=true_free_vram_gb,
             )
         )
         est_vram = est.breakdown.total_estimated_gb
@@ -144,6 +146,14 @@ def select_decoupled_batch_split(
         if est_vram <= safe_limit_gb:
             best_micro_bs = test_bs
             break
+
+    if best_micro_bs is None:
+        raise ValueError(
+            f"VRAM infeasibility: even micro_batch_size=1 exceeds the safe VRAM limit "
+            f"({safe_limit_gb:.2f} GB = {true_free_vram_gb:.2f} GB free x 0.90) "
+            f"for this architecture (n_params={n_params:,}). "
+            f"The model itself cannot be loaded on this GPU. Reduce model size or free up VRAM."
+        )
 
     best_micro_bs = min(best_micro_bs, target_b_total)
 

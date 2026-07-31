@@ -49,11 +49,15 @@ def main():
         f"  Measured Throughput  : {res['measured_throughput_tps']} tokens/sec (Source: {res['throughput_source']})"
     )
     print(
-        f"  Total Tokens (D)     : {res['computable_tokens']:,} tokens ({res['computable_tokens_million']:.2f}M)"
+        f"  Total Tokens (D)     : {res['computable_tokens']:,} tokens ({res['computable_tokens_million']:.2f}M) - "
+        f"plan for the recommended model in {target_hours:.1f}h"
     )
     print(f"  Context Length       : {res['seq_len']} tokens")
 
-    print("\n[Recommended Model Architecture (Pure Chinchilla Golden Ratio: D = 20N)]")
+    print("\n[Recommended Model Architecture (Chinchilla Golden Ratio: D = 20N)]")
+    print(
+        f"  Pure Compute-Optimal N (reference) : {res['chinchilla_pure_optimal_n_million']:.2f}M"
+    )
     print(f"  Model Parameters (N) : {arch['n_params']:,} (~{arch['n_params'] / 1e6:.2f}M)")
     print(f"  Hidden Size          : {arch['hidden_size']}")
     print(f"  Num Layers           : {arch['num_hidden_layers']}")
@@ -61,11 +65,25 @@ def main():
         f"  Attention Heads      : {arch['num_attention_heads']} (KV Heads: {arch['num_key_value_heads']})"
     )
     print(f"  Intermediate Size    : {arch['intermediate_size']}")
+    print(
+        f"  Projected Throughput : {res['projected_target_tps']:,} tokens/sec (recommended model)"
+    )
+    print(
+        f"  Predicted Training   : ~{res['predicted_training_hours']:,} hours "
+        f"({res['predicted_training_hours'] / 24.0:,.1f} days) to process {res['computable_tokens_million']:.2f}M tokens"
+    )
+    print(
+        f"  Chinchilla Budget    : {res['optimal_budget_tokens']:,} tokens (20N) = "
+        f"~{res['optimal_budget_training_hours']:,} hours at projected throughput"
+    )
 
     print("\n[VRAM & Physical Micro-Batch Split Safety]")
     print(f"  Real Free VRAM       : {res['true_free_vram_gb']} GB")
     print(
         f"  Estimated Peak VRAM  : {res['estimated_peak_vram_gb']} GB / {res['vram_limit_gb']} GB"
+    )
+    print(
+        f"  Safety               : {'OK' if res['is_vram_safe'] else 'DANGER - exceeds VRAM limit'}"
     )
     print(
         f"  Physical Micro-Batch : per_device_batch_size={res['optimal_batch_size']}, grad_accum_steps={res['grad_accum_steps']} -> Total Batch={res['batch_size_seqs']}"
@@ -80,7 +98,21 @@ def main():
         capped_arch = res["data_capped_architecture"]
         print("\n  [WARN] Dataset tokens are insufficient for pure compute-optimal training!")
         print(
-            f"         Recommended Data-Capped Model Size: {capped_arch['n_params']:,} (~{capped_arch['n_params'] / 1e6:.2f}M)"
+            f"         Dataset Tokens : {data_info['actual_tokens_str']} "
+            f"(required: {res['computable_tokens_million']:.2f}M, sufficiency: {data_info['data_sufficiency_ratio_pct']}%)"
+        )
+        print(
+            f"         Data-Capped Model Size (reference): {capped_arch['n_params']:,} "
+            f"(~{capped_arch['n_params'] / 1e6:.2f}M) - collect more data to reach the pure optimal"
+        )
+
+    if res.get("is_vram_capped", False):
+        capped_arch = res["vram_capped_architecture"]
+        print("\n  [WARN] Pure Compute-Optimal (D = 20N) is NOT feasible on the current VRAM!")
+        print(
+            f"         Pure Optimal requires ~{res['pure_optimal_estimated_peak_vram_gb']:.2f} GB -> "
+            f"VRAM-Capped Model Size: {capped_arch['n_params']:,} (~{capped_arch['n_params'] / 1e6:.2f}M) "
+            f"is applied as the recommendation"
         )
 
     print("\n[HPO Simulation]")
@@ -120,6 +152,8 @@ def main():
                 "target_hours": target_hours,
                 "gpu": res["gpu_info"]["device_name"],
                 "measured_throughput_tps": res["measured_throughput_tps"],
+                "projected_target_tps": res["projected_target_tps"],
+                "predicted_training_hours": res["predicted_training_hours"],
                 "estimated_peak_vram_gb": res["estimated_peak_vram_gb"],
                 "computable_tokens": res["computable_tokens"],
                 "dataset": {

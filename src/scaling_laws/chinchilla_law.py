@@ -22,6 +22,20 @@ def calculate_compute_optimal_n_d(total_tokens_computable: float) -> tuple[float
     return chinchilla_n, chinchilla_d
 
 
+def calculate_compute_optimal_n_d_from_flops(total_compute_flops: float) -> tuple[float, float]:
+    """計算予算 C (FLOPs) から Compute-Optimal な N, D を導出.
+
+    トークン/sec はモデル規模 N に依存するため、時間予算はトークンではなく
+    ハードウェアの実効FLOPsレート (実測tps x プロキシ規模 x 6or8 FLOPs/token) で
+    定義するのが唯一自己整合的な方法。
+
+    Chinchilla: C = 6ND, D = 20N より C = 120 N^2 → N = sqrt(C / 120), D = 20N
+    """
+    chinchilla_n = (max(total_compute_flops, 0.0) / 120.0) ** 0.5
+    chinchilla_d = 20.0 * chinchilla_n
+    return chinchilla_n, chinchilla_d
+
+
 def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
     """任意のターゲットパラメータ数 N に対し、幾何学的かつ本番と 100% 同一の
     Standard LLaMA アーキテクチャを動的に自動設計生成。

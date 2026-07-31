@@ -34,7 +34,7 @@ def load_scaling_config(config_path: str = "configs/scaling_config.yaml") -> dic
 
 from src.hpo.hpo_manager import calculate_dynamic_n_trials
 from src.scaling_laws.chinchilla_law import (
-    calculate_compute_optimal_n_d,
+    calculate_compute_optimal_n_d_from_flops,
     generate_universal_architecture,
 )
 from src.scaling_laws.critical_batch_law import (
@@ -80,6 +80,58 @@ def _vram_estimate(
             total_vram_gb=vram_cap,
         )
     )
+
+
+def _max_n_within_vram(
+    seq_len: int,
+    true_free_vram_gb: float,
+    checkpointing: str,
+    use_liger: bool,
+    optim_type: str,
+    upper_bound_n: int,
+    safe_ratio: float = 0.90,
+) -> int:
+    """VRAM制約 (safe_ratio × 空きVRAM) 以内に収まる最大のモデル規模 N を二分探索で算出。
+
+    micro_batch_size=1 (勾配蓄積でどこまでも分割可能) を前提とするため、
+    これがVRAMに収まらないモデルは物理的に実行不可能。
+    generate_universal_architecture の量子化後も推定VRAMは N に対して単調増加なので
+    二分探索が最大 feasible N を厳密に求める。
+    """
+    safe_limit_gb = true_free_vram_gb * safe_ratio
+
+    def estimate_for(n: int) -> float:
+        arch = generate_universal_architecture(int(n))
+        return _vram_estimate(
+            arch["n_params"],
+            seq_len,
+            1,
+            arch["hidden_size"],
+            arch["num_hidden_layers"],
+            arch["vocab_size"],
+            arch.get("intermediate_size", 0),
+            checkpointing=checkpointing,
+            use_liger_kernel=use_liger,
+            optimizer_type=optim_type,
+        ).breakdown.total_estimated_gb
+
+    lo, hi = 1, max(1, int(upper_bound_n))
+    best_n = 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if estimate_for(mid) <= safe_limit_gb:
+            best_n = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    if estimate_for(best_n) > safe_limit_gb:
+        raise ValueError(
+            f"VRAM infeasibility: even the smallest model exceeds the safe VRAM limit "
+            f"({safe_limit_gb:.2f} GB) on this GPU (free VRAM: {true_free_vram_gb:.2f} GB). "
+            f"Free up VRAM or lower the target."
+        )
+    return best_n
 
 
 def find_max_safe_batch_size(
@@ -139,17 +191,48 @@ def calculate_chinchilla_scaling(
             f"GPU proxy benchmark result: {bench_tps:.1f} tokens/sec (reference params={bench_n:,})"
         )
 
-    # 1. コンピュートバジェットと総計算可能トークン数の計算
+    # 1. 時間予算から総計算量 C (FLOPs) を算定
+    #    トークン/sec はモデル規模に依存するため、ハードウェアの実効FLOPsレート
+    #    (実測tps x プロキシ規模 x 1トークンあたりFLOPs) をモデル非依存の不変量として使う。
+    #    Gradient Checkpointing 有効時は 8N FLOPs/token、無効時は 6N FLOPs/token
     seconds = target_hours * 3600.0
-    total_tokens_computable = seconds * tps
+    flop_multiplier = 8.0 if use_grad_ckpt else 6.0
+    eff_flops_per_sec = flop_multiplier * ref_n * tps
+    total_compute_flops = eff_flops_per_sec * seconds
 
-    # 2. チンチラ基本法則による Compute-Optimal モデル規模 N, D の導出
-    chinchilla_n_pure, chinchilla_d_pure = calculate_compute_optimal_n_d(total_tokens_computable)
+    # 2. チンチラ基本法則 (C = 6ND, D = 20N → N = sqrt(C/120)) による
+    #    純粋 Compute-Optimal モデル規模 N, D の導出
+    chinchilla_n_pure, chinchilla_d_pure = calculate_compute_optimal_n_d_from_flops(
+        total_compute_flops
+    )
 
-    # 3. データセット実効トークン数の正確な事前監査
+    # 3. VRAM 物理制約によるモデル規模キャップ (bs=1 で収まる最大 N を探索)
+    true_free_vram_gb = detect_real_available_vram_gb()
+    max_n_by_vram = _max_n_within_vram(
+        seq_len,
+        true_free_vram_gb,
+        ckpt_mode,
+        use_liger,
+        optim_type,
+        int(chinchilla_n_pure),
+    )
+    vram_capped_arch = generate_universal_architecture(max_n_by_vram)
+    pure_arch_ref = generate_universal_architecture(int(chinchilla_n_pure))
+    # 量子化後アーキ同士で比較 (生の N 比較は int 切捨てによる偽陽性が出る)
+    vram_shortage_warn = vram_capped_arch["n_params"] < pure_arch_ref["n_params"]
+
+    # 4. 最終推奨規模: データは追加収集可能なため警告のみ。
+    #    純粋 Chinchilla 値と VRAM 実測値からの実行可能上限の最小値を採用
+    target_n = int(min(chinchilla_n_pure, max_n_by_vram))
+    arch = generate_universal_architecture(target_n)
+
+    # 5. 推奨モデルの学習計画 D (target_hours 内に処理可能なトークン数) を導出。
+    #    この D は 20N と等価であり、予測学習時間は target_hours に自己整合する。
+    d_plan = total_compute_flops / (flop_multiplier * arch["n_params"])
+
+    # 6. データセット実効トークン数の正確な事前監査 (計画 D に対する充足率)
     data_path, actual_dataset_tokens = detect_data_path_and_tokens()
 
-    target_n = chinchilla_n_pure
     data_shortage_warn = False
     data_capped_arch = None
     data_sufficiency_ratio = 100.0
@@ -157,17 +240,15 @@ def calculate_chinchilla_scaling(
     max_allowed_n_by_data = float("inf")
 
     if actual_dataset_tokens is not None:
-        data_sufficiency_ratio = round((actual_dataset_tokens / chinchilla_d_pure) * 100.0, 1)
+        data_sufficiency_ratio = round((actual_dataset_tokens / d_plan) * 100.0, 1)
 
-        if chinchilla_d_pure > actual_dataset_tokens:
+        if d_plan > actual_dataset_tokens:
             data_shortage_warn = True
             max_allowed_n_by_data = actual_dataset_tokens / 20.0
             data_capped_arch = generate_universal_architecture(int(max_allowed_n_by_data))
 
-    true_free_vram_gb = detect_real_available_vram_gb()
-
-    # 4. 最適アーキテクチャの生成と 2段階分離型バッチサイズの自動決定
-    arch = generate_universal_architecture(int(target_n))
+    # 7. 最適アーキテクチャの生成と 2段階分離型バッチサイズの自動決定
+    arch = generate_universal_architecture(target_n)
 
     # 2段階分離型バッチ設計 (Critical Batch Size ＋ VRAM Physical Micro-batch)
     optimal_micro_bs, grad_accum_steps, actual_b_total = select_decoupled_batch_split(
@@ -187,12 +268,26 @@ def calculate_chinchilla_scaling(
         optimizer_type=optim_type,
     ).breakdown.total_estimated_gb
 
-    # プロキシモデルに対するターゲットモデルの相対スケール FLOPs 補正 TPS
-    # Gradient Checkpointing 有効時は 8N FLOPs/token、無効時は 6N FLOPs/token
-    flop_multiplier = 8.0 if use_grad_ckpt else 6.0
-    flops_per_token_proxy = flop_multiplier * ref_n
-    flops_per_token_target = flop_multiplier * arch["n_params"]
-    projected_target_tps = tps * (flops_per_token_proxy / flops_per_token_target)
+    # 純粋な Compute-Optimal アーキテクチャの VRAM 必要量 (bs=1 前提・報告用)
+    pure_arch = pure_arch_ref
+    pure_est_vram = _vram_estimate(
+        pure_arch["n_params"],
+        seq_len,
+        1,
+        pure_arch["hidden_size"],
+        pure_arch["num_hidden_layers"],
+        pure_arch["vocab_size"],
+        pure_arch.get("intermediate_size", 0),
+        checkpointing=ckpt_mode,
+        use_liger_kernel=use_liger,
+        optimizer_type=optim_type,
+    ).breakdown.total_estimated_gb
+
+    # 推奨モデルの実効スループット・予測学習時間 (FLOPs レートと自己整合)
+    projected_target_tps = eff_flops_per_sec / (flop_multiplier * arch["n_params"])
+    predicted_training_hours = d_plan / projected_target_tps / 3600.0
+    optimal_budget_tokens = 20 * arch["n_params"]
+    optimal_budget_training_hours = optimal_budget_tokens / projected_target_tps / 3600.0
 
     # HPO シミュレーション時間の導出
     # hpo/main.py と同じ規則 (約10%、下限 50M、ターゲット未満にキャップ) でプロキシ規模を算定
@@ -203,7 +298,7 @@ def calculate_chinchilla_scaling(
     worst_case_minutes = (n_trials * 50 * proxy_step_time_sec) / 60.0
     expected_median_minutes = worst_case_minutes * 0.35
 
-    effective_tflops = round((6.0 * ref_n * tps) / 1e12, 4)
+    effective_tflops = round(eff_flops_per_sec / 1e12, 4)
     vram_limit_gb = gpu_info.get("total_vram_gb", 4.0)
 
     return {
@@ -214,8 +309,9 @@ def calculate_chinchilla_scaling(
         "throughput_source": tp_source,
         "reference_model_params": ref_n,
         "effective_tflops": effective_tflops,
-        "computable_tokens": round(total_tokens_computable),
-        "computable_tokens_million": round(total_tokens_computable / 1e6, 2),
+        "total_compute_flops": round(total_compute_flops),
+        "computable_tokens": round(d_plan),
+        "computable_tokens_million": round(d_plan / 1e6, 2),
         "dataset_info": {
             "data_path": data_path,
             "actual_dataset_tokens": actual_dataset_tokens,
@@ -226,8 +322,12 @@ def calculate_chinchilla_scaling(
             "is_data_shortage": data_shortage_warn,
         },
         "chinchilla_pure_optimal_n_million": round(chinchilla_n_pure / 1e6, 2),
+        "chinchilla_pure_optimal_d_million": round(chinchilla_d_pure / 1e6, 2),
         "recommended_architecture": arch,
         "data_capped_architecture": data_capped_arch,
+        "is_vram_capped": vram_shortage_warn,
+        "vram_capped_architecture": vram_capped_arch,
+        "pure_optimal_estimated_peak_vram_gb": round(pure_est_vram, 4),
         "true_free_vram_gb": true_free_vram_gb,
         "estimated_peak_vram_gb": est_vram,
         "vram_limit_gb": vram_limit_gb,
@@ -237,6 +337,9 @@ def calculate_chinchilla_scaling(
         "grad_accum_steps": grad_accum_steps,
         "batch_size_seqs": actual_b_total,
         "projected_target_tps": round(projected_target_tps, 1),
+        "predicted_training_hours": round(predicted_training_hours, 1),
+        "optimal_budget_tokens": round(optimal_budget_tokens),
+        "optimal_budget_training_hours": round(optimal_budget_training_hours, 1),
         "hpo_simulation": {
             "proxy_params": proxy_arch["n_params"],
             "n_trials": n_trials,
