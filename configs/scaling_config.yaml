@@ -1,7 +1,7 @@
 # @package _global_
 # -----------------------------------------------------------------------------
 # スケーリング法則 (src.scaling_laws) による自動算定成果物
-# タイムスタンプ: 2026-07-31T10:30:02.488772
+# タイムスタンプ: 2026-07-31T13:08:03.743723
 # -----------------------------------------------------------------------------
 
 model:
@@ -21,15 +21,17 @@ training:
   per_device_batch_size: 53
   grad_accum_steps: 1
 metadata:
-  target_hours: 7.0
+  target_hours: 24.0
   gpu: NVIDIA GeForce RTX 3050 Laptop GPU
-  measured_throughput_tps: 57083.7
+  measured_throughput_tps: 54328.8
+  projected_target_tps: 32237.3
+  predicted_training_hours: 24.0
   estimated_peak_vram_gb: 0.7476
-  computable_tokens: 1438509240
+  computable_tokens: 2785301994
   dataset:
     data_path: data/dataset.jsonl
     actual_tokens: ~1388.06M tokens
-    sufficiency_ratio_pct: 96.5
+    sufficiency_ratio_pct: 49.8
     is_data_shortage: true
   hpo_simulation:
     proxy_params: 30277632

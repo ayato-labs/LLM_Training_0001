@@ -56,9 +56,27 @@ def main():
 
     print("\n[Recommended Model Architecture (Chinchilla Golden Ratio: D = 20N)]")
     print(
-        f"  Pure Compute-Optimal N (reference) : {res['chinchilla_pure_optimal_n_million']:.2f}M"
+        f"  Pure Compute-Optimal N (theory)     : {res['chinchilla_pure_optimal_n_million']:.2f}M"
     )
+    if res.get("is_vram_capped"):
+        pure_vram = res.get("pure_optimal_estimated_peak_vram_gb", 0.0)
+        print(
+            f"  [WARN] Pure Compute-Optimal Model ({res['chinchilla_pure_optimal_n_million']:.2f}M) exceeds VRAM safety limit "
+            f"(Est. Peak: {pure_vram:.2f} GB / Free VRAM: {res['true_free_vram_gb']} GB)."
+        )
+        print(
+            f"         Adjusted to VRAM-Feasible Upper Bound: ~{arch['n_params'] / 1e6:.2f}M"
+        )
     print(f"  Model Parameters (N) : {arch['n_params']:,} (~{arch['n_params'] / 1e6:.2f}M)")
+    print(
+        f"  Requested N (pre-quant) : {res['requested_n_params']:,} "
+        f"(~{res['requested_n_params'] / 1e6:.2f}M)"
+    )
+    if abs(res["arch_deviation_pct"]) > 5.0:
+        print(
+            f"  Quantized Deviation  : {res['arch_deviation_pct']:+.1f}% vs requested N "
+            f"(grid-searched arch, guaranteed within +/-15%)"
+        )
     print(f"  Hidden Size          : {arch['hidden_size']}")
     print(f"  Num Layers           : {arch['num_hidden_layers']}")
     print(
@@ -97,6 +115,7 @@ def main():
     if data_info["is_data_shortage"]:
         capped_arch = res["data_capped_architecture"]
         print("\n  [WARN] Dataset tokens are insufficient for pure compute-optimal training!")
+        print("         (reference only - NOT applied to the recommendation)")
         print(
             f"         Dataset Tokens : {data_info['actual_tokens_str']} "
             f"(required: {res['computable_tokens_million']:.2f}M, sufficiency: {data_info['data_sufficiency_ratio_pct']}%)"

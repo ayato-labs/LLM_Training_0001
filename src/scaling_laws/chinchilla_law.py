@@ -36,16 +36,46 @@ def calculate_compute_optimal_n_d_from_flops(total_compute_flops: float) -> tupl
     return chinchilla_n, chinchilla_d
 
 
-def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
-    """任意のターゲットパラメータ数 N に対し、幾何学的かつ本番と 100% 同一の
-    Standard LLaMA アーキテクチャを動的に自動設計生成。
+def estimate_universal_arch_params(
+    hidden_size: int,
+    num_layers: int,
+    vocab_size: int = 32000,
+) -> dict[str, int]:
+    """Grid Search 用の軽量な解析パラメータ推定 (torch 不要)。
 
     LLaMA パラメータ近似式:
     - 埋め込み層 + LM Head (Tie Weights 適用): V * H
     - 1レイヤーあたりのパラメータ数:
       - Self-Attention (GQA): 4 * H^2 * (1 + 1/group_ratio)
-      - SwiGLU FFN: 3 * H * I  (中間層 I = 2.67 * H)
+      - SwiGLU FFN: 3 * H * I  (中間層 I = 2.67 * H の 128 倍数)
       - RMSNorm + RoPE: ~4 * H
+    """
+    num_attention_heads = max(4, hidden_size // 64)
+    num_key_value_heads = max(1, num_attention_heads // 4)
+    intermediate_size = int(round(2.67 * hidden_size / 128) * 128)
+
+    gqa_ratio = num_key_value_heads / num_attention_heads
+    params = vocab_size * hidden_size + num_layers * (
+        4 * (hidden_size**2) * (1.0 + gqa_ratio)
+        + 3 * hidden_size * intermediate_size
+        + 4 * hidden_size
+    )
+    return {
+        "n_params_estimate": int(params),
+        "num_attention_heads": num_attention_heads,
+        "num_key_value_heads": num_key_value_heads,
+        "intermediate_size": intermediate_size,
+    }
+
+
+def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
+    """任意のターゲットパラメータ数 N に対し、本番と 100% 同一の
+    Standard LLaMA アーキテクチャを動的に自動設計生成。
+
+    (hidden_size, num_layers) のグリッド探索により、解析式パラメータ推定の
+    相対誤差が ±15% 以内 (可能な限り小さく、下振れよりも上振れを優先) になる
+    候補を選択する。量子化粒度 (H: 128倍数, L: 整数) に起因する -47% 級の
+    大幅下振れを構造的に排除する。
     """
     from pathlib import Path
 
@@ -71,27 +101,50 @@ def generate_universal_architecture(target_n_params: int) -> dict[str, Any]:
                 f"Could not load base_config.yaml in generate_universal_architecture: {e}"
             )
 
-    # パラメータ比率によるスケール
+    # 2. パラメータ比率によるスケールから中心 (H, L) を決め、グリッド探索で最良候補を選択。
+    #    下振れは倍ペナルティで評価し、±15% 以内の候補が無い場合は探索幅を拡大する。
     scale = (target_n_params / base_n) ** (1 / 3)
-    hidden_size = int(round(base_hidden * scale / 128) * 128)
-    hidden_size = max(256, hidden_size)
+    center_hidden = int(round(base_hidden * scale / 128) * 128)
+    center_layers = int(round(base_layers * scale))
 
-    num_layers = int(round(base_layers * scale))
-    num_layers = max(2, num_layers)
+    best_candidate: tuple[float, int, int] | None = None
+    best_within: tuple[float, int, int] | None = None
+
+    for step in (2, 4, 6):
+        hidden_values = [
+            max(256, center_hidden + k * 128) for k in range(-step, step + 1)
+        ]
+        hidden_values = list(dict.fromkeys(hidden_values))
+        layer_values = [
+            max(2, center_layers + k) for k in range(-step, step + 1)
+        ]
+        layer_values = list(dict.fromkeys(layer_values))
+
+        for hidden_size in hidden_values:
+            for num_layers in layer_values:
+                est = estimate_universal_arch_params(
+                    hidden_size, num_layers, vocab_size
+                )["n_params_estimate"]
+                err = (est - target_n_params) / target_n_params
+                score = err if err >= 0.0 else 2.0 * err
+                candidate = (score, hidden_size, num_layers)
+                if best_candidate is None or score < best_candidate[0]:
+                    best_candidate = candidate
+                if abs(err) <= 0.15 and (
+                    best_within is None or score < best_within[0]
+                ):
+                    best_within = candidate
+        if best_within is not None:
+            break
+
+    _, hidden_size, num_layers = best_within or best_candidate
 
     # GQA 設定
-    num_attention_heads = max(4, hidden_size // 64)
-    num_key_value_heads = max(1, num_attention_heads // 4)
-
-    # SwiGLU FFN 中間層次元 (128 の倍数)
-    intermediate_size = int(round(2.67 * hidden_size / 128) * 128)
-
-    embed_params = vocab_size * hidden_size
-    gqa_ratio = num_key_value_heads / num_attention_heads
-    attn_params = 4 * (hidden_size**2) * (1.0 + gqa_ratio)
-    ffn_params = 3 * hidden_size * intermediate_size
-    params_per_layer = attn_params + ffn_params
-    exact_n_params = embed_params + (num_layers * params_per_layer)
+    arch_meta = estimate_universal_arch_params(hidden_size, num_layers, vocab_size)
+    num_attention_heads = arch_meta["num_attention_heads"]
+    num_key_value_heads = arch_meta["num_key_value_heads"]
+    intermediate_size = arch_meta["intermediate_size"]
+    exact_n_params = arch_meta["n_params_estimate"]
 
     # PyTorch meta device による高精度計測検証
     try:
