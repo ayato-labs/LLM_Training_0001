@@ -110,11 +110,11 @@ def apply_selective_attention_checkpointing(model) -> int:
             original_attn_forward = module.self_attn.forward
 
             @wraps(original_attn_forward)
-            def custom_attn_forward(*args, **kwargs):
+            def custom_attn_forward(*args, _fwd=original_attn_forward, **kwargs):
                 bound_kwargs = dict(kwargs)
 
                 def custom_forward_closure(*inputs):
-                    return original_attn_forward(*inputs, **bound_kwargs)
+                    return _fwd(*inputs, **bound_kwargs)
 
                 return torch.utils.checkpoint.checkpoint(
                     custom_forward_closure,
