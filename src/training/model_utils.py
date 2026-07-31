@@ -8,6 +8,16 @@ def create_model_config(config: dict, tokenizer) -> LlamaConfig:
     mp = config["model_params"]
     hidden = mp["hidden_size"]
     heads = mp["num_attention_heads"]
+    kv_heads = mp["num_key_value_heads"]
+    # GQA 制約: num_attention_heads は num_key_value_heads で割り切れる必要がある。
+    # これを破ると SDPA 内部で "size of tensor a (N) must match tensor b (M)" という
+    # 暗号的な RuntimeError になるため、モデル構築前に fail-fast で検証する。
+    if kv_heads < 1 or heads % kv_heads != 0:
+        raise ValueError(
+            f"Invalid GQA configuration: num_attention_heads={heads} must be a "
+            f"multiple of num_key_value_heads={kv_heads} "
+            f"(e.g. hidden_size={hidden} -> heads={heads}, kv_heads must divide {heads})."
+        )
     # hidden_size を heads の倍数に調整
     adjusted_hidden = (hidden // heads) * heads
 

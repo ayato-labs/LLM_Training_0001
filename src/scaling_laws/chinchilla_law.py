@@ -51,7 +51,11 @@ def estimate_universal_arch_params(
       - RMSNorm + RoPE: ~4 * H
     """
     num_attention_heads = max(4, hidden_size // 64)
+    # GQA 制約: num_attention_heads は num_key_value_heads で割り切れる必要がある。
+    # (例: 14ヘッドのとき 14//4=3 は非約数 → 3→2 に降下して 14%2==0 を保証)
     num_key_value_heads = max(1, num_attention_heads // 4)
+    while num_key_value_heads > 1 and num_attention_heads % num_key_value_heads != 0:
+        num_key_value_heads -= 1
     intermediate_size = int(round(2.67 * hidden_size / 128) * 128)
 
     gqa_ratio = num_key_value_heads / num_attention_heads

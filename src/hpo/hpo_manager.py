@@ -399,13 +399,18 @@ def objective(
             func(path)
 
         def _cleanup_with_retry(output_path: Path, max_retries: int = 3):
-            """リトライ付きクリーンアップ (Windowsファイルロック対応)"""
+            """リトライ付きクリーンアップ (Windowsファイルロック対応)
+
+            `runs/` (TensorBoard ログ) は削除しない。
+            別の HPO インスタンスや進行中の学習が共有する可能性があり、
+            削除すると EventFileWriter スレッドが FileNotFoundError で落ちる。
+            """
             for attempt in range(max_retries):
                 try:
                     gc.collect()
                     time.sleep(0.5 * (attempt + 1))
                     for item in output_path.iterdir():
-                        if item.name == "tmp":
+                        if item.name in ("tmp", "runs"):
                             continue
                         try:
                             if item.is_dir():

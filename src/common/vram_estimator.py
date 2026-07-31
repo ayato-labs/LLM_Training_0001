@@ -723,13 +723,19 @@ def auto_calibrate(
     try:
         from transformers import LlamaConfig, LlamaForCausalLM
 
+        num_attention_heads = max(4, hidden_size // 64)
+        # GQA 制約: kv_heads は heads の約数である必要がある (chinchilla_law と同一規則)
+        num_key_value_heads = max(1, num_attention_heads // 4)
+        while num_key_value_heads > 1 and num_attention_heads % num_key_value_heads != 0:
+            num_key_value_heads -= 1
+
         cfg = LlamaConfig(
             vocab_size=vocab_size,
             hidden_size=hidden_size,
             intermediate_size=intermediate_size,
             num_hidden_layers=num_layers,
-            num_attention_heads=max(4, hidden_size // 64),
-            num_key_value_heads=max(1, (hidden_size // 64) // 4),
+            num_attention_heads=num_attention_heads,
+            num_key_value_heads=num_key_value_heads,
             max_position_embeddings=seq_len,
             use_cache=False,
             attn_implementation="sdpa",

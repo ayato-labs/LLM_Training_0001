@@ -16,10 +16,6 @@ import yaml
 from datasets import load_dataset
 from transformers import PreTrainedTokenizerFast
 
-from src.chinchilla.calculator import (
-    detect_seq_len_from_config,
-    generate_universal_architecture,
-)
 from src.common.logger import logger
 from src.common.vram_estimator import detect_vram
 from src.hpo.hpo_manager import (
@@ -28,7 +24,11 @@ from src.hpo.hpo_manager import (
     objective,
 )
 from src.hpo.step_law import compute_hpo_for_target
-from src.scaling_laws.calculator import load_scaling_config
+from src.scaling_laws.calculator import (
+    detect_seq_len_from_config,
+    generate_universal_architecture,
+    load_scaling_config,
+)
 from src.training.model_utils import (
     get_optimal_num_proc,
     parallel_tokenize,
