@@ -72,12 +72,13 @@ class Muon(Optimizer):
                 p.add_(update, alpha=-group["lr"])
 
 
-@torch.jit.script
 def zeropower_via_newtonschulz(G: torch.Tensor, steps: int = 3) -> torch.Tensor:
-    """Newton-Schulz iteration for orthogonalization (JIT Compiled).
+    """Newton-Schulz iteration for orthogonalization.
 
     5x5 Toeplitz coefficients (最適化済み):
     a=3.4445, b=-4.7750, c=2.03153
+
+    Note: torch.jit.script deprecated in torch 2.13+, using plain eager function.
     """
     a, b, c = 3.4445, -4.7750, 2.03153
     # 数値的オーバーフロー（fp16/bf16）および精度低下を防ぐため、計算過程のみ float32 にキャスト

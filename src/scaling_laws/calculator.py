@@ -184,7 +184,8 @@ def calculate_chinchilla_scaling(
     tp_source = "user_input"
 
     if tps is None and not force_benchmark:
-        tps = extract_throughput_from_recent_logs()
+        # ログからのスループット抽出には実測 seq_len/batch_size が必要
+        tps = extract_throughput_from_recent_logs(seq_len=seq_len, batch_size=16)
         if tps is not None:
             tp_source = "recent_logs"
 

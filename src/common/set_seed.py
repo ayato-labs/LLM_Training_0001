@@ -34,7 +34,8 @@ def set_seed(seed: int = 42, deterministic: bool = True) -> int:
         np.random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        os.environ["PYTHONHASHSEED"] = str(seed)
+        # PYTHONHASHSEED はインタプリタ起動前に設定する必要があるため、
+        # ここでは設定しない (os.environ["PYTHONHASHSEED"] = str(seed) は無効)
 
         if deterministic:
             torch.use_deterministic_algorithms(True)

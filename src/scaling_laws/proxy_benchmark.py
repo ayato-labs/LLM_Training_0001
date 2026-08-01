@@ -133,8 +133,13 @@ def detect_gpu_info() -> dict[str, Any]:
     }
 
 
-def extract_throughput_from_recent_logs() -> float | None:
-    """最新のログファイルから直近の訓練スループット (tokens/sec) を自動抽出"""
+def extract_throughput_from_recent_logs(seq_len: int = 1024, batch_size: int = 32) -> float | None:
+    """最新のログファイルから直近の訓練スループット (tokens/sec) を自動抽出
+
+    Args:
+        seq_len: シーケンス長 (ログから推定できないため引数で指定)
+        batch_size: グローバルバッチサイズ (ログから推定できないため引数で指定)
+    """
     log_paths = list(Path(".").glob("**/logs/*.log")) + list(Path(".").glob("*.log"))
     if not log_paths:
         return None
@@ -151,7 +156,7 @@ def extract_throughput_from_recent_logs() -> float | None:
                 if match:
                     sec_per_it = float(match.group(1))
                     if sec_per_it > 0:
-                        tokens_per_it = 1024 * 32
+                        tokens_per_it = seq_len * batch_size
                         tps = tokens_per_it / sec_per_it
                         return round(tps, 1)
         except Exception:

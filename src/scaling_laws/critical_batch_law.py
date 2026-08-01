@@ -57,33 +57,6 @@ def calculate_critical_batch_size(
     return target_seqs
 
 
-def calculate_tensor_core_mfu(test_bs: int, seq_len: int, arch_dict: dict) -> float:
-    """物理 Roofline モデルおよび Tensor Core 行列アライメントに基づき MFU 効率係数を動的計算。
-
-    1. Tensor Core 行列アライメント: ワープ境界 (8 または 16 の倍数) で演算器充填率が最大化。
-    2. L2 キャッシュ収容性: アクティベーションサイズと L2 キャッシュ容量の物理比率。
-    """
-    # 1. Tensor Core Warp Alignment (8/16 の倍数)
-    if test_bs % 16 == 0:
-        alignment_efficiency = 1.00
-    elif test_bs % 8 == 0:
-        alignment_efficiency = 0.90
-    else:
-        alignment_efficiency = 0.70
-
-    # 2. L2 Cache vs Activation Memory Pressure (Roofline)
-    hidden_size = arch_dict.get("hidden_size", 768)
-    activation_bytes = test_bs * seq_len * hidden_size * 2.0  # bfloat16 / float16
-
-    l2_capacity_bytes = 4 * 1024 * 1024  # 4MB L2 Baseline
-    if activation_bytes > l2_capacity_bytes:
-        cache_factor = max(0.80, l2_capacity_bytes / activation_bytes)
-    else:
-        cache_factor = 1.00
-
-    return round(alignment_efficiency * cache_factor, 4)
-
-
 def select_decoupled_batch_split(
     arch_dict: dict,
     seq_len: int,

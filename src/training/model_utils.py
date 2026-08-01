@@ -421,6 +421,11 @@ def compute_file_hash(filepath: str, max_size_mb: int = _MAX_HASH_SIZE_MB) -> st
             f"{max_size_mb} MB threshold. Using fast metadata hash "
             f"({hashlib.sha256.__name__} of size+mtime) instead of full SHA256."
         )
+        logger.warning(
+            f"NOTE: Metadata hash (size+mtime) cannot detect content changes "
+            f"if mtime is preserved (e.g., tar/cp -p, some editors). "
+            f"This is a best-effort fallback for large files (> {max_size_mb} MB)."
+        )
         return fast_hash
 
     sha256 = hashlib.sha256()

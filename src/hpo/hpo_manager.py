@@ -144,15 +144,6 @@ def _run_training_process(config, tokenized_dataset, queue):
         )
 
 
-def _wait_for_cuda_ready(max_retries: int = 10, delay: float = 3.0) -> bool:
-    if not torch.cuda.is_available():
-        return True
-    # is_available() only checks driver presence, does NOT create CUDA context.
-    # Actual GPU health check runs inside the subprocess to avoid contaminating
-    # the parent process with a CUDA context (WSL2 TDR safety).
-    return True
-
-
 def objective(
     trial: optuna.Trial,
     arch: dict,

@@ -15,7 +15,6 @@ from src.scaling_laws.chinchilla_law import (
 )
 from src.scaling_laws.critical_batch_law import (
     calculate_critical_batch_size,
-    calculate_tensor_core_mfu,
     select_decoupled_batch_split,
 )
 from src.scaling_laws.proxy_benchmark import (
@@ -32,7 +31,6 @@ __all__ = [
     "generate_universal_architecture",
     "load_base_model_defaults",
     "calculate_critical_batch_size",
-    "calculate_tensor_core_mfu",
     "select_decoupled_batch_split",
     "detect_data_path_and_tokens",
     "detect_gpu_info",

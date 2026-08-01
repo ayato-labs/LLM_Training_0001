@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import os
 import statistics
-import sys
 from dataclasses import dataclass
 from typing import Literal
 
@@ -455,15 +454,8 @@ def _activation_bytes_per_sample(
         return bytes_per_param * hidden_size * num_layers * 2
 
 
-def _is_wsl() -> bool:
-    return (
-        "microsoft" in (getattr(sys, "_called_from_test", False) and "" or sys.platform.lower())
-        or "wsl" in sys.platform.lower()
-    )
-
-
 def _calc_wsl_overhead_gb() -> float:
-    return 0.3 if sys.platform.startswith("linux") else 0.0
+    return 0.0  # WSL-specific overhead removed; formula-based estimate used instead
 
 
 def estimate_training_vram_with_calibration(

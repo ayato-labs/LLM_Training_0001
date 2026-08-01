@@ -155,6 +155,16 @@ class DualOptimizerTrainer(Trainer):
         self._last_h2d_ms = 0.0
         self._last_fwd_bwd_ms = 0.0
 
+    def _prepare_inputs(self, inputs):
+        """親クラスの _prepare_inputs をラップし、H2D 転送時間を計測"""
+        import time
+
+        t_h2d_start = time.perf_counter()
+        prepared = super()._prepare_inputs(inputs)
+        t_h2d_end = time.perf_counter()
+        self._last_h2d_ms = (t_h2d_end - t_h2d_start) * 1000.0
+        return prepared
+
     def training_step(self, model, inputs, num_items_in_batch=None):
         import time
 
@@ -163,11 +173,6 @@ class DualOptimizerTrainer(Trainer):
             self._last_data_fetch_ms = (t_start - self._last_step_start_time) * 1000.0
 
         try:
-            t_h2d_start = time.perf_counter()
-            inputs = self._prepare_inputs(inputs)
-            t_h2d_end = time.perf_counter()
-            self._last_h2d_ms = (t_h2d_end - t_h2d_start) * 1000.0
-
             t_fwd_start = time.perf_counter()
             loss = super().training_step(model, inputs, num_items_in_batch=num_items_in_batch)
             if torch.cuda.is_available():

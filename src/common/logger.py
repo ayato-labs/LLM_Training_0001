@@ -148,15 +148,17 @@ class LogContext:
 
     def __init__(self, **context):
         self.context = context
-        self._context_id = None
+        self._cm = None
 
     def __enter__(self):
-        self._context_id = logger.contextualize(**self.context).__enter__()
+        self._cm = logger.contextualize(**self.context)
+        self._cm.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._context_id is not None:
-            logger.contextualize(**self.context).__exit__(exc_type, None, None)
+        if self._cm is not None:
+            self._cm.__exit__(exc_type, exc_val, exc_tb)
+            self._cm = None
 
 
 def get_logger(name: str | None = None):

@@ -327,9 +327,6 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
             "torch.compile alone for compute optimization."
         )
 
-    # 1.65 torch.compile コンパイラ最適化設定 (Graph break の抑制)
-    torch._dynamo.config.capture_scalar_outputs = True
-
     # 1.7 FlashAttention のディスパッチ検証（サイレントフォールバックの防止）
     _verify_flash_attention(config.get("precision", "bf16"))
 
@@ -598,8 +595,12 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
 
         steps_per_epoch = max(1, len(train_ds) // (per_device_batch * grad_accum_steps))
         num_epochs = max(100, math.ceil(max_steps / steps_per_epoch))
+        estimated_total_steps = max_steps
     else:
         num_epochs = config.get("num_epochs", 3)
+        # epoch モード: 総ステップ数をデータセット長から導出
+        steps_per_epoch = max(1, len(train_ds) // (per_device_batch * grad_accum_steps))
+        estimated_total_steps = steps_per_epoch * num_epochs
 
     # Pagedオプティマイザが選択されている場合、性能低下の可能性を警告
     optim_selected = config.get("optim", "adamw_torch_fused")
@@ -626,11 +627,8 @@ def train(config: dict, tokenized_datasets=None, extra_callbacks=None):
     constant_steps = hpo_config.get("constant_steps", 0)
     constant_ratio = hpo_config.get("constant_ratio", 0.1)
     if warmup_steps == 0 and warmup_ratio > 0:
-        # epochモード時の比率解決
-        estimated_total_steps = max_steps if max_steps > 0 else 10000
         warmup_steps = int(estimated_total_steps * warmup_ratio)
     if constant_steps == 0 and constant_ratio > 0:
-        estimated_total_steps = max_steps if max_steps > 0 else 10000
         constant_steps = int(estimated_total_steps * constant_ratio)
 
     # dataloader_num_workers の動的パフォーマンス適合設定
